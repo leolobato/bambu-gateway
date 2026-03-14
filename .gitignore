@@ -1,0 +1,12 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+data/
+printers.json
+.DS_Store
+.claude/

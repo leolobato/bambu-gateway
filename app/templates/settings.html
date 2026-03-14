@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings — Bambu Gateway</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Bambu Gateway</h1>
+    <nav><a href="/">Dashboard</a></nav>
+  </header>
+
+  <main>
+    <section>
+      <h2>Printers</h2>
+      <div id="printer-list"><p class="muted">Loading...</p></div>
+    </section>
+
+    <section id="add-section">
+      <h2 id="form-title">Add Printer</h2>
+      <form id="printer-form">
+        <input type="hidden" id="edit-serial">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="input-name">Name</label>
+            <input type="text" id="input-name" placeholder="My Printer">
+          </div>
+          <div class="form-group">
+            <label for="input-serial">Serial</label>
+            <input type="text" id="input-serial" required>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="input-ip">IP Address</label>
+            <input type="text" id="input-ip" required>
+          </div>
+          <div class="form-group">
+            <label for="input-code">Access Code</label>
+            <input type="password" id="input-code">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="input-machine">Machine Model</label>
+            <select id="input-machine">
+              <option value="">None (no filament filtering)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" id="btn-submit">Add Printer</button>
+          <button type="button" id="btn-cancel" class="btn-cancel hidden"
+                  onclick="cancelEdit()">Cancel</button>
+        </div>
+      </form>
+      <p id="form-status" class="muted"></p>
+    </section>
+  </main>
+
+  <script>
+    const printerList = document.getElementById('printer-list');
+    const form = document.getElementById('printer-form');
+    const formTitle = document.getElementById('form-title');
+    const formStatus = document.getElementById('form-status');
+    const btnSubmit = document.getElementById('btn-submit');
+    const btnCancel = document.getElementById('btn-cancel');
+    const editSerial = document.getElementById('edit-serial');
+    const inputName = document.getElementById('input-name');
+    const inputSerial = document.getElementById('input-serial');
+    const inputIp = document.getElementById('input-ip');
+    const inputCode = document.getElementById('input-code');
+    const inputMachine = document.getElementById('input-machine');
+
+    let editing = false;
+    let machinesLoaded = false;
+
+    async function loadMachines() {
+      if (machinesLoaded) return;
+      try {
+        const resp = await fetch('/api/slicer/machines');
+        if (resp.ok) {
+          const machines = await resp.json();
+          for (const m of machines) {
+            const opt = document.createElement('option');
+            opt.value = m.setting_id;
+            opt.textContent = m.name;
+            inputMachine.appendChild(opt);
+          }
+        }
+      } catch {}
+      machinesLoaded = true;
+    }
+
+    async function refresh() {
+      try {
+        const resp = await fetch('/api/settings/printers');
+        const data = await resp.json();
+        renderPrinters(data.printers);
+      } catch (e) {
+        printerList.innerHTML = '<p class="muted">Could not reach server.</p>';
+      }
+    }
+
+    function renderPrinters(printers) {
+      if (!printers.length) {
+        printerList.innerHTML = '<p class="muted">No printers configured.</p>';
+        return;
+      }
+
+      printerList.innerHTML = printers.map(p => `
+        <div class="settings-card">
+          <div class="settings-card-header">
+            <strong>${p.name || 'Printer ' + p.serial.slice(-4)}</strong>
+            <div class="settings-card-actions">
+              <button class="btn-sm btn-edit" onclick="startEdit('${p.serial}', '${esc(p.name)}', '${esc(p.ip)}', '${esc(p.machine_model)}')">Edit</button>
+              <button class="btn-sm btn-danger" onclick="deletePrinter('${p.serial}')">Delete</button>
+            </div>
+          </div>
+          <div class="settings-card-detail">
+            ${p.ip} &middot; ${p.serial}${p.machine_model ? ' &middot; ' + p.machine_model : ''}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function esc(str) {
+      return (str || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    }
+
+    async function startEdit(serial, name, ip, machineModel) {
+      await loadMachines();
+      editing = true;
+      editSerial.value = serial;
+      inputSerial.value = serial;
+      inputSerial.readOnly = true;
+      inputName.value = name;
+      inputIp.value = ip;
+      inputCode.value = '';
+      inputCode.placeholder = '(unchanged)';
+      inputMachine.value = machineModel || '';
+      formTitle.textContent = 'Edit Printer';
+      btnSubmit.textContent = 'Save Changes';
+      btnCancel.classList.remove('hidden');
+      formStatus.textContent = '';
+      inputName.focus();
+    }
+
+    function cancelEdit() {
+      editing = false;
+      editSerial.value = '';
+      form.reset();
+      inputSerial.readOnly = false;
+      inputCode.placeholder = '';
+      inputMachine.value = '';
+      formTitle.textContent = 'Add Printer';
+      btnSubmit.textContent = 'Add Printer';
+      btnCancel.classList.add('hidden');
+      formStatus.textContent = '';
+    }
+
+    async function deletePrinter(serial) {
+      if (!confirm('Remove this printer?')) return;
+      try {
+        const resp = await fetch(`/api/settings/printers/${serial}`, {
+          method: 'DELETE',
+        });
+        if (resp.ok) {
+          formStatus.textContent = 'Printer removed.';
+          formStatus.className = 'success';
+          refresh();
+        } else {
+          const data = await resp.json();
+          formStatus.textContent = data.detail || 'Delete failed';
+          formStatus.className = 'error-text';
+        }
+      } catch (e) {
+        formStatus.textContent = 'Network error';
+        formStatus.className = 'error-text';
+      }
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      await loadMachines();
+      const payload = {
+        serial: inputSerial.value.trim(),
+        ip: inputIp.value.trim(),
+        access_code: inputCode.value,
+        name: inputName.value.trim(),
+        machine_model: inputMachine.value,
+      };
+
+      let url, method;
+      if (editing) {
+        url = `/api/settings/printers/${editSerial.value}`;
+        method = 'PUT';
+      } else {
+        url = '/api/settings/printers';
+        method = 'POST';
+      }
+
+      try {
+        const resp = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+          formStatus.textContent = editing ? 'Printer updated.' : 'Printer added.';
+          formStatus.className = 'success';
+          cancelEdit();
+          refresh();
+        } else {
+          formStatus.textContent = data.detail || 'Save failed';
+          formStatus.className = 'error-text';
+        }
+      } catch (e) {
+        formStatus.textContent = 'Network error';
+        formStatus.className = 'error-text';
+      }
+    });
+
+    refresh();
+    loadMachines();
+  </script>
+</body>
+</html>

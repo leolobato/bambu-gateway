@@ -1,0 +1,14 @@
+.venv/
+.env
+.git/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+data/
+printers.json
+PRD.md
+TASKS.md
+CLAUDE.md

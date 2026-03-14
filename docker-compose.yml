@@ -1,0 +1,8 @@
+services:
+  bambu-gateway:
+    build: .
+    network_mode: host
+    env_file: .env
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
