@@ -22,6 +22,7 @@ from app.filament_selection import build_slicer_filament_payload
 from app.models import (
     AMSResponse,
     AMSTray,
+    AMSUnit,
     FilamentMatchRequest,
     FilamentMatchResponse,
     FilamentMatchReason,
@@ -374,16 +375,25 @@ def _build_project_filament_matches(
 
 
 async def _get_ams_tray_profile_map(printer_id: str) -> dict[int, str]:
-    """Return current AMS tray slot -> matched slicer filament setting_id."""
-    raw_trays = printer_service.get_ams_trays(printer_id)
-    if raw_trays is None:
+    """Return current AMS tray slot -> matched slicer filament setting_id.
+
+    Includes both AMS trays and the external spool holder (vt_tray).
+    """
+    ams_info = printer_service.get_ams_info(printer_id)
+    if ams_info is None:
         return {}
+
+    raw_trays, _raw_units, raw_vt_tray = ams_info
 
     slicer_filaments, machine = await _get_machine_slicer_filaments(printer_id)
     filaments_by_id = _index_filaments_by_id(slicer_filaments, machine)
 
+    all_trays = list(raw_trays)
+    if raw_vt_tray is not None:
+        all_trays.append(raw_vt_tray)
+
     tray_profile_map: dict[int, str] = {}
-    for raw in raw_trays:
+    for raw in all_trays:
         try:
             slot = int(raw.get("slot", -1))
         except (TypeError, ValueError):
@@ -450,33 +460,46 @@ async def get_ams():
     if pid is None:
         raise HTTPException(status_code=404, detail="No printers configured")
 
-    raw_trays = printer_service.get_ams_trays(pid)
-    if raw_trays is None:
+    ams_info = printer_service.get_ams_info(pid)
+    if ams_info is None:
         raise HTTPException(status_code=404, detail="Printer not found")
+
+    raw_trays, raw_units, raw_vt_tray = ams_info
 
     slicer_filaments, machine = await _get_machine_slicer_filaments(pid)
     filaments_by_id = _index_filaments_by_id(slicer_filaments, machine)
 
     trays: list[AMSTray] = []
     for raw in raw_trays:
-        raw_with_defaults = dict(raw)
-        tray_info_idx = str(raw_with_defaults.pop("tray_info_idx", "")).strip()
-        matched = None
-        if tray_info_idx:
-            f = filaments_by_id.get(_normalize_filament_id(tray_info_idx))
-            if f is not None:
-                matched = SlicerFilament(
-                    name=f.get("name", ""),
-                    filament_id=f.get("filament_id", ""),
-                    setting_id=f.get("setting_id", ""),
-                )
-        trays.append(AMSTray(
-            **raw_with_defaults,
-            filament_id=tray_info_idx,
-            matched_filament=matched,
-        ))
+        trays.append(_build_ams_tray(raw, filaments_by_id))
 
-    return AMSResponse(printer_id=pid, trays=trays)
+    units = [AMSUnit(**u) for u in raw_units]
+
+    vt_tray: AMSTray | None = None
+    if raw_vt_tray is not None:
+        vt_tray = _build_ams_tray(raw_vt_tray, filaments_by_id)
+
+    return AMSResponse(printer_id=pid, trays=trays, units=units, vt_tray=vt_tray)
+
+
+def _build_ams_tray(raw: dict, filaments_by_id: dict) -> AMSTray:
+    """Build an AMSTray from a raw dict, matching filament profile if possible."""
+    raw_with_defaults = dict(raw)
+    tray_info_idx = str(raw_with_defaults.pop("tray_info_idx", "")).strip()
+    matched = None
+    if tray_info_idx:
+        f = filaments_by_id.get(_normalize_filament_id(tray_info_idx))
+        if f is not None:
+            matched = SlicerFilament(
+                name=f.get("name", ""),
+                filament_id=f.get("filament_id", ""),
+                setting_id=f.get("setting_id", ""),
+            )
+    return AMSTray(
+        **raw_with_defaults,
+        filament_id=tray_info_idx,
+        matched_filament=matched,
+    )
 
 
 @app.post("/api/filament-matches", response_model=FilamentMatchResponse)
@@ -485,14 +508,19 @@ async def filament_matches(request: FilamentMatchRequest):
     if pid is None:
         raise HTTPException(status_code=404, detail="No printers configured")
 
-    raw_trays = printer_service.get_ams_trays(pid)
-    if raw_trays is None:
+    ams_info = printer_service.get_ams_info(pid)
+    if ams_info is None:
         raise HTTPException(status_code=404, detail="Printer not found")
+
+    raw_trays, _raw_units, raw_vt_tray = ams_info
+    all_trays = list(raw_trays)
+    if raw_vt_tray is not None:
+        all_trays.append(raw_vt_tray)
 
     filtered_profiles, all_profiles, _machine = await _get_slicer_filament_catalog(pid)
     matches = _build_project_filament_matches(
         request.filaments,
-        raw_trays,
+        all_trays,
         filtered_profiles,
         all_profiles,
     )

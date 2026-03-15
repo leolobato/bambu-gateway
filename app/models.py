@@ -114,9 +114,20 @@ class AMSTray(BaseModel):
     matched_filament: SlicerFilament | None = None
 
 
+class AMSUnit(BaseModel):
+    """A single AMS unit with its trays and environmental data."""
+
+    id: int
+    humidity: int = -1
+    temperature: float = 0.0
+    tray_count: int = 0
+
+
 class AMSResponse(BaseModel):
     printer_id: str
     trays: list[AMSTray]
+    units: list[AMSUnit] = []
+    vt_tray: AMSTray | None = None
 
 
 # --- Filament matching models ---

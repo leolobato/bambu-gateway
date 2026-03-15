@@ -116,6 +116,13 @@ class PrinterService:
             return None
         return client.get_ams_trays()
 
+    def get_ams_info(self, printer_id: str) -> tuple[list[dict], list[dict], dict | None] | None:
+        """Return (trays, units, vt_tray) for a printer, or None if not found."""
+        client = self._clients.get(printer_id)
+        if client is None:
+            return None
+        return client.get_ams_info()
+
     def submit_print(
         self,
         printer_id: str,

@@ -38,6 +38,8 @@ class BambuMQTTClient:
             machine_model=config.machine_model,
         )
         self._ams_trays: list[dict] = []
+        self._ams_units: list[dict] = []
+        self._vt_tray: dict | None = None
         self._lock = threading.Lock()
         self._disconnect_timer: threading.Timer | None = None
 
@@ -55,6 +57,13 @@ class BambuMQTTClient:
         self.request_pushall()
         with self._lock:
             return list(self._ams_trays)
+
+    def get_ams_info(self) -> tuple[list[dict], list[dict], dict | None]:
+        """Return (trays, units, vt_tray) for this printer."""
+        self.ensure_connected()
+        self.request_pushall()
+        with self._lock:
+            return list(self._ams_trays), list(self._ams_units), (dict(self._vt_tray) if self._vt_tray else None)
 
     def start(self) -> None:
         """Connect to the printer MQTT broker and start the network loop."""
@@ -248,6 +257,31 @@ class BambuMQTTClient:
 
         self._update_status(print_info)
 
+    def _parse_vt_tray(self, data: dict) -> None:
+        """Parse the external spool holder (vt_tray) from an MQTT payload dict.
+
+        Must be called while self._lock is held.
+        """
+        _missing = object()
+        vt_tray_raw = data.get("vt_tray", _missing)
+        if isinstance(vt_tray_raw, dict) and vt_tray_raw:
+            entry = {
+                "slot": 254,
+                "ams_id": -1,
+                "tray_id": -1,
+            }
+            for k, v in vt_tray_raw.items():
+                if k != "id":
+                    entry[k] = v
+            try:
+                entry["remain"] = int(entry.get("remain", -1))
+            except (ValueError, TypeError):
+                entry["remain"] = -1
+            self._vt_tray = entry
+        elif vt_tray_raw is not _missing:
+            # Explicitly sent as null or empty — clear it
+            self._vt_tray = None
+
     def _update_status(self, print_info: dict) -> None:
         """Apply fields from an MQTT print report to the in-memory status."""
         with self._lock:
@@ -300,9 +334,28 @@ class BambuMQTTClient:
             ams_data = print_info.get("ams")
             if ams_data is not None:
                 trays = []
+                units = []
                 for unit in ams_data.get("ams", []):
                     ams_id = int(unit.get("id", 0))
-                    for tray in unit.get("tray", []):
+                    unit_trays = unit.get("tray", [])
+                    # Unit-level info
+                    humidity = -1
+                    try:
+                        humidity = int(unit.get("humidity", -1))
+                    except (ValueError, TypeError):
+                        pass
+                    temperature = 0.0
+                    try:
+                        temperature = float(unit.get("temp", 0.0))
+                    except (ValueError, TypeError):
+                        pass
+                    units.append({
+                        "id": ams_id,
+                        "humidity": humidity,
+                        "temperature": temperature,
+                        "tray_count": len(unit_trays),
+                    })
+                    for tray in unit_trays:
                         tray_id = int(tray.get("id", 0))
                         slot = ams_id * 4 + tray_id
                         entry = {
@@ -321,4 +374,12 @@ class BambuMQTTClient:
                             entry["remain"] = -1
                         trays.append(entry)
                 self._ams_trays = trays
+                self._ams_units = units
+
+                self._parse_vt_tray(ams_data)
+
+            # Some printers (e.g. A1 Mini) report vt_tray at the top
+            # level of the print payload, not inside the ams block.
+            if "vt_tray" in print_info:
+                self._parse_vt_tray(print_info)
             self._schedule_disconnect_locked()
