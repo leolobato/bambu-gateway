@@ -7,9 +7,12 @@ submitting print jobs.
 Works with any Bambu Lab printer in **developer/LAN mode** (A1 Mini, X1C, P1S,
 etc.).
 
+An iOS client is also available: **[BambuGateway iOS](https://github.com/leolobato/bambu-gateway-ios)** — print 3MF files from MakerWorld directly from your phone.
+
 ## Features
 
 - Real-time printer status (state, temperatures, print progress)
+- AMS unit info (humidity, temperature) and external spool holder support
 - Upload and print 3MF files from the browser
 - Multi-printer support
 - Add/remove/edit printers at runtime via settings page
@@ -91,6 +94,7 @@ python -m app -c /data/printers.json
 | `SERVER_PORT` | `4844` | Server bind port |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `MAX_FILE_SIZE_MB` | `200` | Maximum upload file size in MB |
+| `ORCASLICER_API_URL` | | OrcaSlicer CLI API URL (e.g. `http://10.0.1.9:8070`) — required for slicing |
 
 Environment variables only seed the config on first run when no `printers.json`
 exists.
@@ -102,8 +106,16 @@ exists.
 | `GET` | `/api/health` | Health check |
 | `GET` | `/api/printers` | List printers with live status |
 | `GET` | `/api/printers/{id}` | Status for a single printer |
+| `GET` | `/api/ams` | AMS units, trays, and external spool info |
+| `POST` | `/api/filament-matches` | Match project filaments to AMS trays |
 | `POST` | `/api/print` | Upload 3MF to default printer |
-| `POST` | `/api/printers/{id}/print` | Upload 3MF to specific printer |
+| `POST` | `/api/print-stream` | Upload and print with SSE progress |
+| `POST` | `/api/print-preview` | Slice and preview without printing |
+| `POST` | `/api/parse-3mf` | Parse 3MF metadata without printing |
+| `GET` | `/api/slicer/machines` | List slicer machine profiles |
+| `GET` | `/api/slicer/processes` | List slicer process profiles |
+| `GET` | `/api/slicer/filaments` | List slicer filament profiles |
+| `GET` | `/api/slicer/plate-types` | List available plate types |
 | `GET` | `/api/settings/printers` | List configured printers |
 | `POST` | `/api/settings/printers` | Add a printer |
 | `PUT` | `/api/settings/printers/{serial}` | Update a printer |
