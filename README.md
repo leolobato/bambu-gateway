@@ -68,6 +68,12 @@ docker compose up --build
 
 The Docker image reads `.env` for printer configuration and persists data to a `./data` volume.
 
+A pre-built image is also available from GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/leolobato/bambu-gateway:latest
+```
+
 ## Configuration
 
 ### Printer config
