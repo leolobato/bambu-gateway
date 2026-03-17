@@ -184,10 +184,24 @@
 
     function stateClass(state) {
       if (state === 'printing') return 'badge printing';
+      if (state === 'preparing') return 'badge preparing';
       if (state === 'paused') return 'badge paused';
       if (state === 'error') return 'badge error';
       if (state === 'idle' || state === 'finished') return 'badge idle';
+      if (state === 'cancelled') return 'badge cancelled';
       return 'badge offline';
+    }
+
+    function stateLabel(p) {
+      if (p.stage_name && ['preparing', 'paused', 'error'].includes(p.state)) {
+        return p.stage_name;
+      }
+      return p.state;
+    }
+
+    function speedLabel(level) {
+      const labels = { 1: 'Silent', 2: 'Standard', 3: 'Sport', 4: 'Ludicrous' };
+      return labels[level] || '';
     }
 
     function formatMinutes(m) {
@@ -206,6 +220,7 @@
       printerList.innerHTML = printers.map(p => {
         let jobHtml = '';
         if (p.job && p.job.file_name) {
+          const speedInfo = p.speed_level ? ` &middot; ${speedLabel(p.speed_level)}` : '';
           jobHtml = `
             <div class="job">
               <div class="job-file">${p.job.file_name}</div>
@@ -215,10 +230,12 @@
               <div class="job-details">
                 ${p.job.progress}% &middot;
                 Layer ${p.job.current_layer}/${p.job.total_layers} &middot;
-                ${formatMinutes(p.job.remaining_minutes)} left
+                ${formatMinutes(p.job.remaining_minutes)} left${speedInfo}
               </div>
             </div>`;
         }
+
+        const label = stateLabel(p);
 
         const t = p.temperatures;
         return `
@@ -226,7 +243,7 @@
             <div class="printer-header">
               <strong>${p.name}</strong>
               ${p.machine_model ? `<span class="muted" style="font-size:0.8rem">${p.machine_model}</span>` : ''}
-              <span class="${stateClass(p.state)}">${p.state}</span>
+              <span class="${stateClass(p.state)}">${label}</span>
             </div>
             <div class="temps">
               Nozzle: ${t.nozzle_temp.toFixed(0)}/${t.nozzle_target.toFixed(0)}&deg;C &nbsp;

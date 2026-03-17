@@ -91,11 +91,13 @@ h2 {
   text-transform: uppercase;
 }
 
-.badge.idle     { background: #e0f5e0; color: #2e7d32; }
-.badge.printing { background: #e3f2fd; color: #1565c0; }
-.badge.paused   { background: #fff8e1; color: #f57f17; }
-.badge.error    { background: #fce4ec; color: #c62828; }
-.badge.offline  { background: #eee;    color: #888; }
+.badge.idle      { background: #e0f5e0; color: #2e7d32; }
+.badge.preparing { background: #fff3e0; color: #e65100; }
+.badge.printing  { background: #e3f2fd; color: #1565c0; }
+.badge.paused    { background: #fff8e1; color: #f57f17; }
+.badge.error     { background: #fce4ec; color: #c62828; }
+.badge.cancelled { background: #fce4ec; color: #c62828; }
+.badge.offline   { background: #eee;    color: #888; }
 
 .temps {
   font-size: 0.8rem;
