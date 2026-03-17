@@ -4,8 +4,7 @@ A self-hosted web application for managing Bambu Lab 3D printers over your local
 network. Provides a REST API and web dashboard for monitoring printer status and
 submitting print jobs.
 
-Works with any Bambu Lab printer in **developer/LAN mode** (A1 Mini, X1C, P1S,
-etc.).
+Works with any Bambu Lab printer in **developer/LAN mode**
 
 An iOS client is also available: **[BambuGateway iOS](https://github.com/leolobato/bambu-gateway-ios)** — print 3MF files from MakerWorld directly from your phone.
 
@@ -13,24 +12,24 @@ An iOS client is also available: **[BambuGateway iOS](https://github.com/leoloba
 
 - Real-time printer status (state, temperatures, print progress)
 - AMS unit info (humidity, temperature) and external spool holder support
-- Upload and print 3MF files from the browser
+- Upload, slice and print 3MF files from the browser
+- Supports custom filament profiles through [orcaslicer-cli](https://github.com/leolobato/orcaslicer-cli)
 - Multi-printer support
-- Add/remove/edit printers at runtime via settings page
 - REST API for automation and integration
-- No external dependencies — runs entirely on your local network
+- Runs entirely on your local network
 
 ## Quick Start
 
 ### Prerequisites
 
 - Python 3.12+
-- A Bambu Lab printer with **LAN Mode** enabled (find the access code and IP in
+- A Bambu Lab printer with **Developer Mode** enabled (find the access code and IP in
   the printer's network settings)
 
 ### Setup
 
 ```bash
-git clone https://github.com/your-user/bambu-gateway.git
+git clone https://github.com/leolobato/bambu-gateway.git
 cd bambu-gateway
 pip install -r requirements.txt
 cp .env.example .env
@@ -129,6 +128,31 @@ exists.
 
 Interactive API docs are available at `/docs` (Swagger UI).
 
+## OrcaSlicer CLI Integration
+
+Bambu Gateway integrates with [orcaslicer-cli](https://github.com/leolobato/orcaslicer-cli),
+a headless slicing server built on OrcaSlicer's engine. This enables:
+
+- **Custom filament profiles** — use your own filament settings (temperature,
+  flow, pressure advance, etc.) instead of being limited to built-in profiles
+- **Headless slicing** — slice 3MF files on the server without needing OrcaSlicer's
+  GUI, ideal for running on a Raspberry Pi or NAS
+- **Preview before printing** — slice a file and review the result before sending
+  it to the printer
+
+### Setup
+
+Run the orcaslicer-cli server (see the [orcaslicer-cli docs](https://github.com/leolobato/orcaslicer-cli)
+for full setup instructions), then point Bambu Gateway to it:
+
+```env
+ORCASLICER_API_URL=http://10.0.1.9:8070
+```
+
+When a slicer URL is configured, the web UI will show machine and filament profile
+selectors, and unsliced 3MF files will be sliced automatically before printing.
+Without it, only pre-sliced 3MF files can be printed.
+
 ## How It Works
 
 The app communicates with Bambu Lab printers using their LAN protocol:
@@ -141,4 +165,4 @@ MQTT command triggers the print. Status updates flow back continuously over MQTT
 
 ## License
 
-MIT
+Bambu Gateway is available under the MIT License. See [LICENSE](LICENSE) for details.
