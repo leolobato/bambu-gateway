@@ -765,13 +765,20 @@ async def print_file(
     filament_payload: list[str] | dict | None = None
 
     # For already-sliced files, resolve AMS tray mapping
+    logger.info(
+        "Print request: has_gcode=%s filament_profiles=%r filaments=%s",
+        info.has_gcode,
+        filament_profiles[:200] if filament_profiles else "",
+        [f.setting_id for f in info.filaments],
+    )
     if info.has_gcode:
         if filament_profiles:
             # Explicit filament_profiles from client (with tray_slot)
             try:
                 filament_payload = json.loads(filament_profiles)
+                logger.info("Parsed explicit filament_payload: %s", filament_payload)
             except json.JSONDecodeError:
-                pass
+                logger.warning("Failed to parse filament_profiles JSON")
 
         if filament_payload is None and info.filaments:
             # Auto-match project filaments to AMS trays
@@ -877,6 +884,10 @@ async def print_file(
     ams_mapping, use_ams = _build_ams_mapping(
         filament_payload,
         project_filament_count=len(info.filaments) or None,
+    )
+    logger.info(
+        "Print submission: filament_payload=%s ams_mapping=%s use_ams=%s filament_count=%s",
+        filament_payload, ams_mapping, use_ams, len(info.filaments),
     )
 
     try:
