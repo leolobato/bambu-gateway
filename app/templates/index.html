@@ -97,6 +97,12 @@
         </div>
         <p id="slice-status" class="muted" style="margin-top:0.25rem;font-size:0.8rem"></p>
       </div>
+      <div id="upload-progress" class="hidden" style="margin-top:0.5rem">
+        <div class="progress-bar">
+          <div id="upload-progress-fill" class="progress-fill" style="width:0%"></div>
+        </div>
+        <p id="upload-status" class="muted" style="margin-top:0.25rem;font-size:0.8rem"></p>
+      </div>
       <p id="submit-status" class="muted" style="margin-top:0.5rem"></p>
     </section>
   </main>
@@ -128,6 +134,9 @@
     const sliceProgress = document.getElementById('slice-progress');
     const sliceProgressFill = document.getElementById('slice-progress-fill');
     const sliceStatus = document.getElementById('slice-status');
+    const uploadProgress = document.getElementById('upload-progress');
+    const uploadProgressFill = document.getElementById('upload-progress-fill');
+    const uploadStatusEl = document.getElementById('upload-status');
     const submitStatus = document.getElementById('submit-status');
 
     let slicerFilaments = [];
@@ -922,19 +931,68 @@
       setButtonsDisabled(false);
     }
 
+    function formatBytes(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1048576) return (bytes / 1024).toFixed(0) + ' KB';
+      return (bytes / 1048576).toFixed(1) + ' MB';
+    }
+
+    function showUploadProgress(percent, bytesSent, totalBytes) {
+      uploadProgress.classList.remove('hidden');
+      uploadProgressFill.style.width = percent + '%';
+      uploadStatusEl.textContent = 'Uploading to printer... ' + percent + '%' +
+        (totalBytes ? ' (' + formatBytes(bytesSent) + ' / ' + formatBytes(totalBytes) + ')' : '');
+    }
+
+    function hideUploadProgress() {
+      uploadProgress.classList.add('hidden');
+      uploadProgressFill.style.width = '0%';
+      uploadStatusEl.textContent = '';
+    }
+
+    async function pollUploadProgress(uploadId) {
+      while (true) {
+        await new Promise(r => setTimeout(r, 300));
+        let data;
+        try {
+          const resp = await fetch('/api/uploads/' + uploadId);
+          if (!resp.ok) break;
+          data = await resp.json();
+        } catch (e) {
+          break;
+        }
+        showUploadProgress(data.progress, data.bytes_sent, data.total_bytes);
+        if (data.status === 'completed') {
+          return { ok: true };
+        }
+        if (data.status === 'failed') {
+          return { ok: false, error: data.error || 'Upload failed' };
+        }
+      }
+      return { ok: false, error: 'Lost connection to server' };
+    }
+
     function handleProgressEvent(event, data) {
       if (event === 'status') {
-        sliceStatus.textContent = data.message || data.phase;
+        if (data.phase === 'uploading') {
+          sliceProgress.classList.add('hidden');
+          showUploadProgress(0, 0, 0);
+        } else {
+          sliceStatus.textContent = data.message || data.phase;
+        }
       } else if (event === 'progress') {
         if (data.percent != null) {
           sliceProgressFill.style.width = data.percent + '%';
           sliceStatus.textContent = 'Slicing... ' + data.percent + '%';
         }
+      } else if (event === 'upload_progress') {
+        showUploadProgress(data.percent, data.bytes_sent, data.total_bytes);
       } else if (event === 'error') {
         submitStatus.textContent = data.error || 'Slicing failed';
         submitStatus.className = 'error-text';
       } else if (event === 'done') {
         endSliceUI();
+        hideUploadProgress();
       }
     }
 
@@ -948,17 +1006,32 @@
         try {
           const resp = await fetch('/api/print', { method: 'POST', body: buildFormData() });
           const data = await resp.json();
-          if (resp.ok) {
-            submitStatus.textContent = `Print started: ${data.file_name}`;
-            submitStatus.className = 'success';
-          } else {
+          if (!resp.ok) {
             submitStatus.textContent = data.detail || 'Print failed';
             submitStatus.className = 'error-text';
+            setButtonsDisabled(false);
+            return;
+          }
+          if (data.upload_id) {
+            showUploadProgress(0, 0, 0);
+            const result = await pollUploadProgress(data.upload_id);
+            hideUploadProgress();
+            if (result.ok) {
+              submitStatus.textContent = `Print started: ${data.file_name}`;
+              submitStatus.className = 'success';
+            } else {
+              submitStatus.textContent = result.error;
+              submitStatus.className = 'error-text';
+            }
+          } else {
+            submitStatus.textContent = `Print started: ${data.file_name}`;
+            submitStatus.className = 'success';
           }
         } catch (e) {
           submitStatus.textContent = 'Network error';
           submitStatus.className = 'error-text';
         }
+        hideUploadProgress();
         setButtonsDisabled(false);
         return;
       }
@@ -1050,19 +1123,36 @@
         fd.append('preview_id', currentPreviewId);
         const resp = await fetch('/api/print', { method: 'POST', body: fd });
         const data = await resp.json();
-        if (resp.ok) {
+        if (!resp.ok) {
+          submitStatus.textContent = data.detail || 'Print failed';
+          submitStatus.className = 'error-text';
+          setButtonsDisabled(false);
+          return;
+        }
+        if (data.upload_id) {
+          showUploadProgress(0, 0, 0);
+          const result = await pollUploadProgress(data.upload_id);
+          hideUploadProgress();
+          if (result.ok) {
+            submitStatus.textContent = `Print started: ${data.file_name}`;
+            submitStatus.className = 'success';
+            currentPreviewId = null;
+            btnConfirmPrint.classList.add('hidden');
+          } else {
+            submitStatus.textContent = result.error;
+            submitStatus.className = 'error-text';
+          }
+        } else {
           submitStatus.textContent = `Print started: ${data.file_name}`;
           submitStatus.className = 'success';
           currentPreviewId = null;
           btnConfirmPrint.classList.add('hidden');
-        } else {
-          submitStatus.textContent = data.detail || 'Print failed';
-          submitStatus.className = 'error-text';
         }
       } catch (e) {
         submitStatus.textContent = 'Network error';
         submitStatus.className = 'error-text';
       }
+      hideUploadProgress();
       setButtonsDisabled(false);
     });
 
