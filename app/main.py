@@ -764,12 +764,42 @@ async def print_file(
     slice_result: SliceResult | None = None
     filament_payload: list[str] | dict | None = None
 
-    # For already-sliced files, parse filament_profiles for AMS tray mapping
-    if info.has_gcode and filament_profiles:
-        try:
-            filament_payload = json.loads(filament_profiles)
-        except json.JSONDecodeError:
-            pass
+    # For already-sliced files, resolve AMS tray mapping
+    if info.has_gcode:
+        if filament_profiles:
+            # Explicit filament_profiles from client (with tray_slot)
+            try:
+                filament_payload = json.loads(filament_profiles)
+            except json.JSONDecodeError:
+                pass
+
+        if filament_payload is None and info.filaments:
+            # Auto-match project filaments to AMS trays
+            pid = printer_id or printer_service.default_printer_id()
+            if pid is not None:
+                ams_info = printer_service.get_ams_info(pid)
+                if ams_info is not None:
+                    raw_trays, _raw_units, raw_vt_tray = ams_info
+                    all_trays = list(raw_trays)
+                    if raw_vt_tray is not None:
+                        all_trays.append(raw_vt_tray)
+                    filtered_profiles, all_profiles, _ = await _get_slicer_filament_catalog(pid)
+                    matches = _build_project_filament_matches(
+                        info.filaments, all_trays, filtered_profiles, all_profiles,
+                    )
+                    auto_payload: dict = {}
+                    for m in matches:
+                        if m.preferred_tray_slot is not None and m.resolved_profile:
+                            auto_payload[str(m.index)] = {
+                                "profile_setting_id": m.resolved_profile.setting_id,
+                                "tray_slot": m.preferred_tray_slot,
+                            }
+                    if auto_payload:
+                        filament_payload = auto_payload
+                        logger.info(
+                            "Auto-matched filaments for pre-sliced 3MF: %s",
+                            auto_payload,
+                        )
 
     if not info.has_gcode:
         # Needs slicing

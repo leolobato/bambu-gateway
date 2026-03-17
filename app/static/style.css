@@ -105,6 +105,34 @@ h2 {
   margin-bottom: 0.4rem;
 }
 
+/* Printer controls */
+
+.printer-controls {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #f0f0f0;
+}
+
+.btn-control {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.btn-control:hover {
+  background: #bbdefb;
+}
+
+.speed-select {
+  margin-left: auto;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.75rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
 /* Print job */
 
 .job {

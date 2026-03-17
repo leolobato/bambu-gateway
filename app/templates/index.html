@@ -218,9 +218,11 @@
       }
 
       printerList.innerHTML = printers.map(p => {
+        const hasJob = p.job && p.job.file_name;
+        const isActive = ['printing', 'preparing', 'paused', 'error'].includes(p.state);
+
         let jobHtml = '';
-        if (p.job && p.job.file_name) {
-          const speedInfo = p.speed_level ? ` &middot; ${speedLabel(p.speed_level)}` : '';
+        if (hasJob) {
           jobHtml = `
             <div class="job">
               <div class="job-file">${p.job.file_name}</div>
@@ -230,8 +232,27 @@
               <div class="job-details">
                 ${p.job.progress}% &middot;
                 Layer ${p.job.current_layer}/${p.job.total_layers} &middot;
-                ${formatMinutes(p.job.remaining_minutes)} left${speedInfo}
+                ${formatMinutes(p.job.remaining_minutes)} left
               </div>
+            </div>`;
+        }
+
+        let controlsHtml = '';
+        if (isActive && p.online) {
+          const showPause = ['printing', 'preparing'].includes(p.state);
+          const showResume = p.state === 'paused';
+          controlsHtml = `
+            <div class="printer-controls">
+              ${showPause ? `<button class="btn-sm btn-control" onclick="printerCommand('${p.id}','pause')">Pause</button>` : ''}
+              ${showResume ? `<button class="btn-sm btn-control" onclick="printerCommand('${p.id}','resume')">Resume</button>` : ''}
+              <button class="btn-sm btn-danger" onclick="printerCommand('${p.id}','cancel')">Cancel</button>
+              <select class="speed-select" data-printer="${p.id}" onchange="setSpeed(this)">
+                <option value=""${!p.speed_level ? ' selected' : ''}>Speed</option>
+                <option value="1"${p.speed_level===1 ? ' selected' : ''}>Silent</option>
+                <option value="2"${p.speed_level===2 ? ' selected' : ''}>Standard</option>
+                <option value="3"${p.speed_level===3 ? ' selected' : ''}>Sport</option>
+                <option value="4"${p.speed_level===4 ? ' selected' : ''}>Ludicrous</option>
+              </select>
             </div>`;
         }
 
@@ -250,6 +271,7 @@
               Bed: ${t.bed_temp.toFixed(0)}/${t.bed_target.toFixed(0)}&deg;C
             </div>
             ${jobHtml}
+            ${controlsHtml}
           </div>`;
       }).join('');
     }
@@ -264,6 +286,39 @@
         printerSelect.appendChild(opt);
       });
       printerSelect.value = current;
+    }
+
+    async function printerCommand(printerId, command) {
+      try {
+        const resp = await fetch(`/api/printers/${printerId}/${command}`, { method: 'POST' });
+        if (!resp.ok) {
+          const data = await resp.json();
+          console.error(`${command} failed:`, data.detail);
+        }
+        refreshPrinters();
+      } catch (e) {
+        console.error(`${command} error:`, e);
+      }
+    }
+
+    async function setSpeed(selectEl) {
+      const printerId = selectEl.dataset.printer;
+      const level = parseInt(selectEl.value, 10);
+      if (!level) return;
+      try {
+        const resp = await fetch(`/api/printers/${printerId}/speed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ level }),
+        });
+        if (!resp.ok) {
+          const data = await resp.json();
+          console.error('Speed change failed:', data.detail);
+        }
+        refreshPrinters();
+      } catch (e) {
+        console.error('Speed error:', e);
+      }
     }
 
     const serverDownBanner = document.getElementById('server-down-banner');
