@@ -876,7 +876,7 @@ async def print_file(
         raise HTTPException(status_code=409, detail=tray_error)
     ams_mapping, use_ams = _build_ams_mapping(
         filament_payload,
-        project_filament_count=len(info.filaments),
+        project_filament_count=len(info.filaments) or None,
     )
 
     try:
