@@ -281,6 +281,7 @@ class PrintResponse(BaseModel):
     printer_id: str
     was_sliced: bool = False
     settings_transfer: SettingsTransferInfo | None = None
+    upload_id: str | None = None
 
 
 # --- Settings API models ---

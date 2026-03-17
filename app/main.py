@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -45,6 +46,7 @@ from app.models import (
 from app.parse_3mf import parse_3mf, sanitize_3mf
 from app.printer_service import PrinterService
 from app.slicer_client import SlicerClient, SliceResult, SlicingError
+from app.upload_tracker import tracker as upload_tracker
 
 logging.basicConfig(
     level=settings.log_level.upper(),
@@ -202,6 +204,14 @@ async def settings_page(request: Request):
 @app.get("/api/health", response_model=HealthResponse)
 async def health_check():
     return HealthResponse()
+
+
+@app.get("/api/uploads/{upload_id}")
+async def get_upload_progress(upload_id: str):
+    state = upload_tracker.get(upload_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    return state.to_dict()
 
 
 @app.get("/api/printers", response_model=PrinterListResponse)
@@ -688,6 +698,33 @@ async def parse_3mf_file(file: UploadFile):
     return info
 
 
+def _background_submit(
+    upload_state,
+    printer_id: str,
+    file_data: bytes,
+    filename: str,
+    *,
+    plate_id: int = 1,
+    ams_mapping: list[int] | None = None,
+    use_ams: bool = False,
+) -> None:
+    """Run submit_print in a background thread, updating upload_state."""
+    try:
+        printer_service.submit_print(
+            printer_id,
+            file_data,
+            filename,
+            plate_id=plate_id,
+            ams_mapping=ams_mapping,
+            use_ams=use_ams,
+            progress_callback=upload_state.advance,
+        )
+        upload_state.complete()
+    except Exception as e:
+        logger.error("Background upload failed: %s", e)
+        upload_state.fail(str(e))
+
+
 @app.post("/api/print")
 async def print_file(
     file: UploadFile = None,
@@ -718,27 +755,31 @@ async def print_file(
             preview.get("filament_profiles"),
             project_filament_count=preview.get("project_filament_count"),
         )
+        # Validate printer is reachable before starting background upload
+        client = printer_service.get_client(pid)
+        if client is None:
+            raise HTTPException(status_code=404, detail=f"Printer {pid} not found")
         try:
-            printer_service.submit_print(
-                pid,
-                preview["file_data"],
-                preview["filename"],
-                plate_id=pplate,
-                ams_mapping=ams_mapping,
-                use_ams=use_ams,
-            )
-        except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e))
+            client.ensure_connected()
+            if not client.get_status().online:
+                raise ConnectionError(f"Printer {pid} is offline")
         except ConnectionError as e:
             raise HTTPException(status_code=409, detail=str(e))
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Print failed: {e}")
+
+        file_data_preview = preview["file_data"]
+        fname_preview = preview["filename"]
+        state = upload_tracker.create(fname_preview, pid, len(file_data_preview))
+        asyncio.get_running_loop().run_in_executor(None, lambda: _background_submit(
+            state, pid, file_data_preview, fname_preview,
+            plate_id=pplate, ams_mapping=ams_mapping, use_ams=use_ams,
+        ))
 
         return PrintResponse(
-            status="accepted",
+            status="uploading",
             file_name=preview["filename"],
             printer_id=pid,
             was_sliced=True,
+            upload_id=state.upload_id,
         )
 
     # --- Normal path ---
@@ -891,28 +932,32 @@ async def print_file(
         filament_payload, ams_mapping, use_ams, len(info.filaments),
     )
 
+    # Validate printer is reachable before starting background upload
+    client = printer_service.get_client(pid)
+    if client is None:
+        raise HTTPException(status_code=404, detail=f"Printer {pid} not found")
     try:
-        printer_service.submit_print(
-            pid,
-            file_data,
-            file.filename,
-            plate_id=plate_id or 1,
-            ams_mapping=ams_mapping,
-            use_ams=use_ams,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        client.ensure_connected()
+        if not client.get_status().online:
+            raise ConnectionError(f"Printer {pid} is offline")
     except ConnectionError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Print failed: {e}")
+
+    fname = file.filename
+    p_id = plate_id or 1
+    state = upload_tracker.create(fname, pid, len(file_data))
+    asyncio.get_running_loop().run_in_executor(None, lambda: _background_submit(
+        state, pid, file_data, fname,
+        plate_id=p_id, ams_mapping=ams_mapping, use_ams=use_ams,
+    ))
 
     return PrintResponse(
-        status="accepted",
-        file_name=file.filename,
+        status="uploading",
+        file_name=fname,
         printer_id=pid,
         was_sliced=was_sliced,
         settings_transfer=settings_transfer,
+        upload_id=state.upload_id,
     )
 
 
@@ -1111,19 +1156,39 @@ async def print_file_stream(
                                 filament_payload,
                                 project_filament_count=len(info.filaments),
                             )
-                            printer_service.submit_print(
-                                pid,
-                                result_bytes,
-                                filename,
-                                plate_id=plate_id or 1,
-                                ams_mapping=ams_mapping,
-                                use_ams=use_ams,
+                            upload_state = upload_tracker.create(
+                                filename, pid, len(result_bytes),
                             )
-                            yield _sse_event("print_started", {
-                                "printer_id": pid,
-                                "file_name": filename,
-                                "settings_transfer": settings_transfer_data,
-                            })
+                            upload_future = asyncio.get_running_loop().run_in_executor(
+                                None,
+                                lambda: _background_submit(
+                                    upload_state, pid, result_bytes, filename,
+                                    plate_id=plate_id or 1,
+                                    ams_mapping=ams_mapping,
+                                    use_ams=use_ams,
+                                ),
+                            )
+                            # Stream upload progress until done
+                            while not upload_future.done():
+                                await asyncio.sleep(0.3)
+                                info_dict = upload_state.to_dict()
+                                yield _sse_event("upload_progress", {
+                                    "percent": info_dict["progress"],
+                                    "bytes_sent": info_dict["bytes_sent"],
+                                    "total_bytes": info_dict["total_bytes"],
+                                })
+                            # Check final result
+                            await upload_future
+                            if upload_state.status == "failed":
+                                yield _sse_event("error", {
+                                    "error": upload_state.error or "Upload failed",
+                                })
+                            else:
+                                yield _sse_event("print_started", {
+                                    "printer_id": pid,
+                                    "file_name": filename,
+                                    "settings_transfer": settings_transfer_data,
+                                })
                         except Exception as e:
                             yield _sse_event("error", {"error": str(e)})
                     yield _sse_event("done", {})
