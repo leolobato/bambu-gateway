@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from app.config import PrinterConfig
 from app.models import PrinterStatus
@@ -213,6 +214,7 @@ class PrinterService:
         plate_id: int = 1,
         ams_mapping: list[int] | None = None,
         use_ams: bool = False,
+        progress_callback: Callable[[int], None] | None = None,
     ) -> None:
         """Upload a 3MF file via FTPS and start printing via MQTT."""
         client = self._clients.get(printer_id)
@@ -225,7 +227,10 @@ class PrinterService:
             raise ConnectionError(f"Printer {printer_id} is offline")
 
         cfg = client._config
-        ftp_client.upload_file(cfg.ip, cfg.access_code, file_data, filename)
+        ftp_client.upload_file(
+            cfg.ip, cfg.access_code, file_data, filename,
+            progress_callback=progress_callback,
+        )
         client.send_print_command(
             filename,
             plate_id=plate_id,

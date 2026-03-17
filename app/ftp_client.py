@@ -6,6 +6,7 @@ import ftplib
 import logging
 import socket
 import ssl
+from collections.abc import Callable
 from io import BytesIO
 
 logger = logging.getLogger(__name__)
@@ -73,15 +74,22 @@ def upload_file(
     access_code: str,
     file_data: bytes,
     filename: str,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> str:
     """Upload a file to the printer via implicit FTPS.
 
+    Args:
+        progress_callback: Called with the number of bytes in each chunk sent.
     Returns the remote path of the uploaded file.
     """
     remote_path = f"/cache/{filename}"
 
     logger.info("Uploading %s (%d bytes) to %s:%d",
                 filename, len(file_data), ip, FTPS_PORT)
+
+    def _on_chunk(buf: bytes) -> None:
+        if progress_callback is not None:
+            progress_callback(len(buf))
 
     ftp = ImplicitFTPS()
     try:
@@ -95,7 +103,10 @@ def upload_file(
             ftp.mkd("/cache")
             ftp.cwd("/cache")
 
-        ftp.storbinary(f"STOR {filename}", BytesIO(file_data))
+        ftp.storbinary(
+            f"STOR {filename}", BytesIO(file_data),
+            blocksize=65536, callback=_on_chunk,
+        )
         logger.info("Upload complete: %s", remote_path)
     finally:
         try:
