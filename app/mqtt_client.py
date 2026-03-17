@@ -42,6 +42,7 @@ class BambuMQTTClient:
         self._ams_trays: list[dict] = []
         self._ams_units: list[dict] = []
         self._vt_tray: dict | None = None
+        self._ams_module_types: dict[int, AMSType] = {}  # ams_id -> AMSType from get_version
         self._lock = threading.Lock()
         self._disconnect_timer: threading.Timer | None = None
 
@@ -164,6 +165,15 @@ class BambuMQTTClient:
             "pushing": {
                 "sequence_id": "0",
                 "command": "pushall",
+            }
+        })
+
+    def request_version(self) -> None:
+        """Send a get_version command to discover module hardware types."""
+        self.publish({
+            "info": {
+                "sequence_id": "0",
+                "command": "get_version",
             }
         })
 
@@ -305,6 +315,7 @@ class BambuMQTTClient:
                     self._status.state = PrinterState.idle
                 self._schedule_disconnect_locked()
 
+            self.request_version()
             self.request_pushall()
         else:
             logger.error("Connection refused by printer %s (rc=%d)",
@@ -327,11 +338,47 @@ class BambuMQTTClient:
             logger.debug("Ignoring non-JSON message on %s", msg.topic)
             return
 
+        # Handle get_version response — detect AMS module types
+        info = payload.get("info", {})
+        if info and info.get("command") == "get_version":
+            self._parse_version_modules(info)
+
         print_info = payload.get("print", {})
         if not print_info:
             return
 
         self._update_status(print_info)
+
+    def _parse_version_modules(self, info: dict) -> None:
+        """Extract AMS module types from a get_version response.
+
+        Module names like ``ams/0``, ``ams_f1/0``, ``n3f/0``, ``n3s/0``
+        identify the AMS hardware type for each unit index.
+        """
+        modules = info.get("module", [])
+        if not modules:
+            return
+
+        # Map module name prefixes to AMSType
+        prefix_map = {
+            "ams/": AMSType.standard,
+            "ams_f1/": AMSType.lite,
+            "n3f/": AMSType.pro,
+            "n3s/": AMSType.ht,
+        }
+
+        with self._lock:
+            for mod in modules:
+                name = mod.get("name", "")
+                for prefix, ams_type in prefix_map.items():
+                    if name.startswith(prefix):
+                        try:
+                            ams_id = int(name[len(prefix):])
+                        except (ValueError, TypeError):
+                            continue
+                        self._ams_module_types[ams_id] = ams_type
+                        logger.debug("AMS %d detected as %s (module=%s, hw_ver=%s)",
+                                     ams_id, ams_type.value, name, mod.get("hw_ver", ""))
 
     def _parse_vt_tray(self, data: dict) -> None:
         """Parse the external spool holder (vt_tray) from an MQTT payload dict.
@@ -466,7 +513,10 @@ class BambuMQTTClient:
                         pass
                     # Hardware version and AMS type
                     hw_version = str(unit.get("hw_ver", ""))
-                    ams_type = AMSType.from_hw_version(hw_version) if hw_version else None
+                    # Prefer module type from get_version, fall back to hw_ver
+                    ams_type = self._ams_module_types.get(ams_id)
+                    if ams_type is None and hw_version:
+                        ams_type = AMSType.from_hw_version(hw_version)
                     # Drying state
                     dry_time = 0
                     try:

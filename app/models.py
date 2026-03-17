@@ -36,21 +36,28 @@ class SpeedLevel(int, Enum):
 class AMSType(str, Enum):
     """AMS hardware type, detected from ``hw_ver`` in MQTT data."""
 
-    standard = "standard"  # AMS08 — original AMS / AMS Lite
+    standard = "standard"  # AMS08 — original AMS
+    lite = "lite"  # AMS_F1 — AMS Lite (no humidity sensor)
     pro = "pro"  # N3F05 — AMS 2 Pro
     ht = "ht"  # N3S05 — AMS HT (high temperature)
 
     @classmethod
     def from_hw_version(cls, hw_version: str) -> "AMSType":
-        if hw_version.startswith("N3F05"):
+        if hw_version.startswith("AMS_F1"):
+            return cls.lite
+        if hw_version.startswith("N3F"):
             return cls.pro
-        if hw_version.startswith("N3S05"):
+        if hw_version.startswith("N3S"):
             return cls.ht
         return cls.standard
 
     @property
     def supports_drying(self) -> bool:
-        return self != AMSType.standard
+        return self not in (AMSType.standard, AMSType.lite)
+
+    @property
+    def has_humidity_sensor(self) -> bool:
+        return self not in (AMSType.lite,)
 
     @property
     def max_drying_temp(self) -> int:
@@ -62,6 +69,8 @@ class AMSType(str, Enum):
 
     @property
     def display_name(self) -> str:
+        if self == AMSType.lite:
+            return "AMS Lite"
         if self == AMSType.pro:
             return "AMS 2 Pro"
         if self == AMSType.ht:

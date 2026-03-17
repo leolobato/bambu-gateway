@@ -381,8 +381,10 @@ input[type="text"], input[type="password"] {
 
 .ams-unit-info {
   font-weight: 400;
-  color: #888;
-  font-size: 0.75rem;
+  color: #999;
+  font-size: 0.7rem;
+  margin-top: 0.25rem;
+  padding-left: 0.25rem;
 }
 
 .btn-secondary {

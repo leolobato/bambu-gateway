@@ -375,7 +375,7 @@
     }
 
     function amsTypeName(amsType) {
-      const names = { standard: 'AMS', pro: 'AMS 2 Pro', ht: 'AMS HT' };
+      const names = { standard: 'AMS', lite: 'AMS Lite', pro: 'AMS 2 Pro', ht: 'AMS HT' };
       return names[amsType] || 'AMS';
     }
 
@@ -657,18 +657,19 @@
             const unitLabel = multiUnit ? `${typeName} ${unit.id + 1}` : typeName;
 
             let infoItems = [];
-            if (unit.humidity >= 0) infoItems.push(`Humidity: ${unit.humidity}`);
+            if (unit.ams_type !== 'lite' && unit.humidity >= 1 && unit.humidity <= 5) {
+              const humidityLabels = {1: 'Dry', 2: 'Low', 3: 'Medium', 4: 'High', 5: 'Wet'};
+              infoItems.push(`💧 ${humidityLabels[unit.humidity]}`);
+            }
             if (unit.temperature > 0) infoItems.push(`${unit.temperature.toFixed(1)}\u00b0C`);
             if (unit.dry_time_remaining > 0) infoItems.push(`Drying: ${unit.dry_time_remaining}min`);
 
             html += `<div class="ams-unit">`;
-            html += `<div class="ams-unit-header">`;
-            html += `<span>${unitLabel}</span>`;
-            if (infoItems.length) {
-              html += `<span class="ams-unit-info">${infoItems.join(' \u00b7 ')}</span>`;
-            }
-            html += `</div>`;
+            html += `<div class="ams-unit-header"><span>${unitLabel}</span></div>`;
             html += unitTrays.map(renderTrayRow).join('');
+            if (infoItems.length) {
+              html += `<div class="ams-unit-info">${infoItems.join(' · ')}</div>`;
+            }
             html += `</div>`;
           }
 
