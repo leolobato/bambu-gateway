@@ -50,6 +50,9 @@ and **FTPS** (port 990, implicit TLS) for file uploads.
   configurable via `python -m app -c /path/to/printers.json`.
 - `app/ftp_client.py` — Uploads 3MF files to printer via implicit FTPS.
 - `app/models.py` — All Pydantic models for printer state and API responses.
+- `app/preparation_stages.py` — Preparation stage definitions (67+ stages) and
+  state derivation logic. Determines granular printer state from `gcode_state`,
+  `stg_cur`, and `layer_num` MQTT fields.
 - `app/parse_3mf.py` — Extracts metadata (plates, filaments, profiles, thumbnails)
   from 3MF ZIP archives. Also contains `sanitize_3mf()` which clamps out-of-range
   parameter values that OrcaSlicer rejects (common in MakerWorld downloads).
@@ -100,11 +103,25 @@ header.
 
 Previews are stored in `/tmp/bambu-gateway-previews/` and cleaned up on restart.
 
+### Printer control
+
+- `POST /api/printers/{id}/pause` — pause current print
+- `POST /api/printers/{id}/resume` — resume paused print
+- `POST /api/printers/{id}/cancel` — cancel current print
+- `POST /api/printers/{id}/speed` — set print speed (`{"level": 1-4}`:
+  silent/standard/sport/ludicrous)
+- `POST /api/printers/{id}/ams/{ams_id}/start-drying` — start AMS filament drying
+  (`{"temperature": 55, "duration_minutes": 480}`)
+- `POST /api/printers/{id}/ams/{ams_id}/stop-drying` — stop AMS drying
+
 ### Other endpoints
 
-- `GET /api/printers` — list all printers with status
+- `GET /api/printers` — list all printers with status (includes `stg_cur`,
+  `stage_name`, `stage_category`, `speed_level`, `active_tray`)
 - `GET /api/printers/{id}` — single printer detail
-- `GET /api/ams` — AMS tray info with filament matching
+- `GET /api/ams` — AMS tray info with filament matching (units include
+  `hw_version`, `ams_type`, `supports_drying`, `max_drying_temp`,
+  `dry_time_remaining`)
 - `POST /api/parse-3mf` — parse 3MF metadata without printing
 - `POST /api/filament-matches` — match project filaments to AMS trays
 - `GET /api/slicer/{machines,processes,filaments,plate-types}` — proxy slicer profiles

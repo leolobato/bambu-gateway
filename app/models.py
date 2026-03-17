@@ -8,31 +8,65 @@ from pydantic import BaseModel
 
 
 class PrinterState(str, Enum):
-    """High-level printer state derived from the MQTT ``gcode_state`` field.
+    """High-level printer state derived from MQTT fields.
 
-    Mapping from raw values:
-        IDLE     -> idle
-        RUNNING  -> printing
-        PAUSE    -> paused
-        FINISH   -> finished
-        (other)  -> error
-        (no MQTT)-> offline
+    Uses ``gcode_state``, ``stg_cur``, and ``layer_num`` for granular
+    state derivation (see :func:`preparation_stages.determine_state`).
     """
 
     offline = "offline"
     idle = "idle"
+    preparing = "preparing"
     printing = "printing"
     paused = "paused"
     finished = "finished"
+    cancelled = "cancelled"
     error = "error"
 
 
-GCODE_STATE_MAP: dict[str, PrinterState] = {
-    "IDLE": PrinterState.idle,
-    "RUNNING": PrinterState.printing,
-    "PAUSE": PrinterState.paused,
-    "FINISH": PrinterState.finished,
-}
+class SpeedLevel(int, Enum):
+    """Print speed levels supported by Bambu Lab printers."""
+
+    silent = 1
+    standard = 2
+    sport = 3
+    ludicrous = 4
+
+
+class AMSType(str, Enum):
+    """AMS hardware type, detected from ``hw_ver`` in MQTT data."""
+
+    standard = "standard"  # AMS08 — original AMS / AMS Lite
+    pro = "pro"  # N3F05 — AMS 2 Pro
+    ht = "ht"  # N3S05 — AMS HT (high temperature)
+
+    @classmethod
+    def from_hw_version(cls, hw_version: str) -> "AMSType":
+        if hw_version.startswith("N3F05"):
+            return cls.pro
+        if hw_version.startswith("N3S05"):
+            return cls.ht
+        return cls.standard
+
+    @property
+    def supports_drying(self) -> bool:
+        return self != AMSType.standard
+
+    @property
+    def max_drying_temp(self) -> int:
+        if self == AMSType.pro:
+            return 65
+        if self == AMSType.ht:
+            return 85
+        return 55
+
+    @property
+    def display_name(self) -> str:
+        if self == AMSType.pro:
+            return "AMS 2 Pro"
+        if self == AMSType.ht:
+            return "AMS HT"
+        return "AMS"
 
 
 class TemperatureInfo(BaseModel):
@@ -62,6 +96,11 @@ class PrinterStatus(BaseModel):
     machine_model: str = ""
     online: bool = False
     state: PrinterState = PrinterState.offline
+    stg_cur: int = -1
+    stage_name: str | None = None
+    stage_category: str | None = None
+    speed_level: int = 0
+    active_tray: int | None = None
     temperatures: TemperatureInfo = TemperatureInfo()
     job: PrintJob | None = None
 
@@ -129,6 +168,11 @@ class AMSUnit(BaseModel):
     humidity: int = -1
     temperature: float = 0.0
     tray_count: int = 0
+    hw_version: str = ""
+    ams_type: AMSType | None = None
+    supports_drying: bool = False
+    max_drying_temp: int = 55
+    dry_time_remaining: int = 0
 
 
 class AMSResponse(BaseModel):
@@ -256,3 +300,19 @@ class PrinterConfigListResponse(BaseModel):
     """List of printer configs."""
 
     printers: list[PrinterConfigResponse]
+
+
+# --- Command request models ---
+
+
+class SpeedRequest(BaseModel):
+    """Request body for setting print speed."""
+
+    level: SpeedLevel
+
+
+class StartDryingRequest(BaseModel):
+    """Request body for starting AMS filament drying."""
+
+    temperature: int = 55
+    duration_minutes: int = 480

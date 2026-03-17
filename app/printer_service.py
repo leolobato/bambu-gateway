@@ -159,6 +159,51 @@ class PrinterService:
         client.send_stop()
         logger.info("Cancel sent to printer %s", printer_id)
 
+    def set_print_speed(self, printer_id: str, level: int) -> None:
+        """Set print speed on the given printer."""
+        client = self._clients.get(printer_id)
+        if client is None:
+            raise ValueError(f"Printer {printer_id} not found")
+        client.ensure_connected()
+        status = client.get_status()
+        if not status.online:
+            raise ConnectionError(f"Printer {printer_id} is offline")
+        client.send_print_speed(level)
+        logger.info("Print speed set to %d on printer %s", level, printer_id)
+
+    def start_drying(
+        self,
+        printer_id: str,
+        ams_id: int,
+        temperature: int = 55,
+        duration_minutes: int = 480,
+    ) -> None:
+        """Start filament drying on an AMS unit."""
+        client = self._clients.get(printer_id)
+        if client is None:
+            raise ValueError(f"Printer {printer_id} not found")
+        client.ensure_connected()
+        status = client.get_status()
+        if not status.online:
+            raise ConnectionError(f"Printer {printer_id} is offline")
+        client.send_start_drying(ams_id, temperature, duration_minutes)
+        logger.info(
+            "Drying started on printer %s AMS %d: %d°C for %d min",
+            printer_id, ams_id, temperature, duration_minutes,
+        )
+
+    def stop_drying(self, printer_id: str, ams_id: int) -> None:
+        """Stop filament drying on an AMS unit."""
+        client = self._clients.get(printer_id)
+        if client is None:
+            raise ValueError(f"Printer {printer_id} not found")
+        client.ensure_connected()
+        status = client.get_status()
+        if not status.online:
+            raise ConnectionError(f"Printer {printer_id} is offline")
+        client.send_stop_drying(ams_id)
+        logger.info("Drying stopped on printer %s AMS %d", printer_id, ams_id)
+
     def submit_print(
         self,
         printer_id: str,

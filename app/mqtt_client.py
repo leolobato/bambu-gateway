@@ -12,12 +12,13 @@ import paho.mqtt.client as mqtt
 
 from app.config import PrinterConfig
 from app.models import (
-    GCODE_STATE_MAP,
+    AMSType,
     PrinterState,
     PrinterStatus,
     PrintJob,
     TemperatureInfo,
 )
+from app.preparation_stages import determine_state
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class BambuMQTTClient:
             name=config.name or f"Printer {config.serial[-4:]}",
             machine_model=config.machine_model,
         )
+        self._gcode_state: str = "IDLE"
         self._ams_trays: list[dict] = []
         self._ams_units: list[dict] = []
         self._vt_tray: dict | None = None
@@ -192,6 +194,53 @@ class BambuMQTTClient:
             }
         })
 
+    def send_print_speed(self, level: int) -> None:
+        """Send an MQTT command to change the print speed level."""
+        self.publish({
+            "print": {
+                "sequence_id": "0",
+                "command": "print_speed",
+                "param": str(level),
+            }
+        })
+
+    def send_start_drying(
+        self,
+        ams_id: int,
+        temperature: int = 55,
+        duration_minutes: int = 480,
+    ) -> None:
+        """Send an MQTT command to start AMS filament drying."""
+        self.publish({
+            "print": {
+                "sequence_id": "0",
+                "command": "ams_filament_drying",
+                "ams_id": ams_id,
+                "temp": temperature,
+                "cooling_temp": 45,
+                "duration": duration_minutes // 60,
+                "humidity": 0,
+                "mode": 1,
+                "rotate_tray": False,
+            }
+        })
+
+    def send_stop_drying(self, ams_id: int) -> None:
+        """Send an MQTT command to stop AMS filament drying."""
+        self.publish({
+            "print": {
+                "sequence_id": "0",
+                "command": "ams_filament_drying",
+                "ams_id": ams_id,
+                "temp": 0,
+                "cooling_temp": 45,
+                "duration": 0,
+                "humidity": 0,
+                "mode": 0,
+                "rotate_tray": False,
+            }
+        })
+
     def send_print_command(
         self,
         filename: str,
@@ -312,12 +361,23 @@ class BambuMQTTClient:
     def _update_status(self, print_info: dict) -> None:
         """Apply fields from an MQTT print report to the in-memory status."""
         with self._lock:
-            # Printer state
+            # Track raw fields for state derivation
             gcode_state = print_info.get("gcode_state")
             if gcode_state is not None:
-                self._status.state = GCODE_STATE_MAP.get(
-                    gcode_state, PrinterState.error
-                )
+                self._gcode_state = gcode_state
+
+            if "stg_cur" in print_info:
+                try:
+                    self._status.stg_cur = int(print_info["stg_cur"])
+                except (ValueError, TypeError):
+                    pass
+
+            # Speed level
+            if "spd_lvl" in print_info:
+                try:
+                    self._status.speed_level = int(print_info["spd_lvl"])
+                except (ValueError, TypeError):
+                    pass
 
             # Temperatures
             temps = self._status.temperatures
@@ -352,8 +412,22 @@ class BambuMQTTClient:
                 if "total_layer_num" in print_info:
                     job.total_layers = int(print_info["total_layer_num"])
 
-            # Clear job when idle/finished with 0 progress
-            if self._status.state in (PrinterState.idle, PrinterState.finished):
+            # Derive state using gcode_state + stg_cur + layer_num
+            if gcode_state is not None or "stg_cur" in print_info:
+                layer_num = self._status.job.current_layer if self._status.job else 0
+                state, category, s_name = determine_state(
+                    self._gcode_state,
+                    self._status.stg_cur,
+                    layer_num,
+                )
+                self._status.state = state
+                self._status.stage_category = category
+                self._status.stage_name = s_name
+
+            # Clear job when idle/finished/cancelled with 0 progress
+            if self._status.state in (
+                PrinterState.idle, PrinterState.finished, PrinterState.cancelled,
+            ):
                 if self._status.job and self._status.job.progress == 0:
                     self._status.job = None
 
@@ -362,6 +436,20 @@ class BambuMQTTClient:
             if ams_data is not None:
                 trays = []
                 units = []
+
+                # Active tray
+                tray_now = ams_data.get("tray_now")
+                if tray_now is not None:
+                    try:
+                        tray_now_int = int(tray_now)
+                        # 255 = none, 254 = external spool
+                        if tray_now_int == 255:
+                            self._status.active_tray = None
+                        else:
+                            self._status.active_tray = tray_now_int
+                    except (ValueError, TypeError):
+                        pass
+
                 for unit in ams_data.get("ams", []):
                     ams_id = int(unit.get("id", 0))
                     unit_trays = unit.get("tray", [])
@@ -376,11 +464,25 @@ class BambuMQTTClient:
                         temperature = float(unit.get("temp", 0.0))
                     except (ValueError, TypeError):
                         pass
+                    # Hardware version and AMS type
+                    hw_version = str(unit.get("hw_ver", ""))
+                    ams_type = AMSType.from_hw_version(hw_version) if hw_version else None
+                    # Drying state
+                    dry_time = 0
+                    try:
+                        dry_time = int(unit.get("dry_time", 0))
+                    except (ValueError, TypeError):
+                        pass
                     units.append({
                         "id": ams_id,
                         "humidity": humidity,
                         "temperature": temperature,
                         "tray_count": len(unit_trays),
+                        "hw_version": hw_version,
+                        "ams_type": ams_type.value if ams_type else None,
+                        "supports_drying": ams_type.supports_drying if ams_type else False,
+                        "max_drying_temp": ams_type.max_drying_temp if ams_type else 55,
+                        "dry_time_remaining": dry_time,
                     })
                     for tray in unit_trays:
                         tray_id = int(tray.get("id", 0))
