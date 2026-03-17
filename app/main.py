@@ -38,6 +38,8 @@ from app.models import (
     PrintResponse,
     SettingsTransferInfo,
     SlicerFilament,
+    SpeedRequest,
+    StartDryingRequest,
     TransferredSetting,
 )
 from app.parse_3mf import parse_3mf, sanitize_3mf
@@ -253,6 +255,54 @@ async def resume_print(printer_id: str):
 @app.post("/api/printers/{printer_id}/cancel", response_model=CommandResponse)
 async def cancel_print(printer_id: str):
     return _run_printer_command(printer_id, "cancel", printer_service.cancel_print)
+
+
+@app.post("/api/printers/{printer_id}/speed", response_model=CommandResponse)
+async def set_print_speed(printer_id: str, body: SpeedRequest):
+    pid = _resolve_printer_id(printer_id)
+    try:
+        printer_service.set_print_speed(pid, body.level.value)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ConnectionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return CommandResponse(printer_id=pid, command=f"speed:{body.level.name}")
+
+
+@app.post(
+    "/api/printers/{printer_id}/ams/{ams_id}/start-drying",
+    response_model=CommandResponse,
+)
+async def start_drying(
+    printer_id: str,
+    ams_id: int,
+    body: StartDryingRequest | None = None,
+):
+    pid = _resolve_printer_id(printer_id)
+    temp = body.temperature if body else 55
+    duration = body.duration_minutes if body else 480
+    try:
+        printer_service.start_drying(pid, ams_id, temp, duration)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ConnectionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return CommandResponse(printer_id=pid, command=f"start_drying:ams{ams_id}")
+
+
+@app.post(
+    "/api/printers/{printer_id}/ams/{ams_id}/stop-drying",
+    response_model=CommandResponse,
+)
+async def stop_drying(printer_id: str, ams_id: int):
+    pid = _resolve_printer_id(printer_id)
+    try:
+        printer_service.stop_drying(pid, ams_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ConnectionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return CommandResponse(printer_id=pid, command=f"stop_drying:ams{ams_id}")
 
 
 def _normalize_filament_id(value: str) -> str:
@@ -713,6 +763,13 @@ async def print_file(
     was_sliced = False
     slice_result: SliceResult | None = None
     filament_payload: list[str] | dict | None = None
+
+    # For already-sliced files, parse filament_profiles for AMS tray mapping
+    if info.has_gcode and filament_profiles:
+        try:
+            filament_payload = json.loads(filament_profiles)
+        except json.JSONDecodeError:
+            pass
 
     if not info.has_gcode:
         # Needs slicing
