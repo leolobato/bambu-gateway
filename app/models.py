@@ -73,6 +73,14 @@ class HealthResponse(BaseModel):
     status: str = "ok"
 
 
+class CommandResponse(BaseModel):
+    """Generic response for printer control commands."""
+
+    status: str = "ok"
+    printer_id: str
+    command: str
+
+
 class PrinterListResponse(BaseModel):
     printers: list[PrinterStatus]
 

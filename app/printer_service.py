@@ -123,6 +123,42 @@ class PrinterService:
             return None
         return client.get_ams_info()
 
+    def pause_print(self, printer_id: str) -> None:
+        """Pause the current print on the given printer."""
+        client = self._clients.get(printer_id)
+        if client is None:
+            raise ValueError(f"Printer {printer_id} not found")
+        client.ensure_connected()
+        status = client.get_status()
+        if not status.online:
+            raise ConnectionError(f"Printer {printer_id} is offline")
+        client.send_pause()
+        logger.info("Pause sent to printer %s", printer_id)
+
+    def resume_print(self, printer_id: str) -> None:
+        """Resume a paused print on the given printer."""
+        client = self._clients.get(printer_id)
+        if client is None:
+            raise ValueError(f"Printer {printer_id} not found")
+        client.ensure_connected()
+        status = client.get_status()
+        if not status.online:
+            raise ConnectionError(f"Printer {printer_id} is offline")
+        client.send_resume()
+        logger.info("Resume sent to printer %s", printer_id)
+
+    def cancel_print(self, printer_id: str) -> None:
+        """Cancel the current print on the given printer."""
+        client = self._clients.get(printer_id)
+        if client is None:
+            raise ValueError(f"Printer {printer_id} not found")
+        client.ensure_connected()
+        status = client.get_status()
+        if not status.online:
+            raise ConnectionError(f"Printer {printer_id} is offline")
+        client.send_stop()
+        logger.info("Cancel sent to printer %s", printer_id)
+
     def submit_print(
         self,
         printer_id: str,

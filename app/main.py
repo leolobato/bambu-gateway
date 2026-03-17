@@ -23,6 +23,7 @@ from app.models import (
     AMSResponse,
     AMSTray,
     AMSUnit,
+    CommandResponse,
     FilamentMatchRequest,
     FilamentMatchResponse,
     FilamentMatchReason,
@@ -211,6 +212,47 @@ async def get_printer(printer_id: str):
     if status is None:
         raise HTTPException(status_code=404, detail="Printer not found")
     return PrinterDetailResponse(printer=status)
+
+
+def _resolve_printer_id(printer_id: str) -> str:
+    """Resolve a printer_id, falling back to the default printer."""
+    pid = printer_id or printer_service.default_printer_id()
+    if pid is None:
+        raise HTTPException(status_code=404, detail="No printers configured")
+    if printer_service.get_client(pid) is None:
+        raise HTTPException(status_code=404, detail="Printer not found")
+    return pid
+
+
+def _run_printer_command(
+    printer_id: str,
+    command: str,
+    action,
+) -> CommandResponse:
+    """Execute a printer control command with standard error handling."""
+    pid = _resolve_printer_id(printer_id)
+    try:
+        action(pid)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ConnectionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return CommandResponse(printer_id=pid, command=command)
+
+
+@app.post("/api/printers/{printer_id}/pause", response_model=CommandResponse)
+async def pause_print(printer_id: str):
+    return _run_printer_command(printer_id, "pause", printer_service.pause_print)
+
+
+@app.post("/api/printers/{printer_id}/resume", response_model=CommandResponse)
+async def resume_print(printer_id: str):
+    return _run_printer_command(printer_id, "resume", printer_service.resume_print)
+
+
+@app.post("/api/printers/{printer_id}/cancel", response_model=CommandResponse)
+async def cancel_print(printer_id: str):
+    return _run_printer_command(printer_id, "cancel", printer_service.cancel_print)
 
 
 def _normalize_filament_id(value: str) -> str:

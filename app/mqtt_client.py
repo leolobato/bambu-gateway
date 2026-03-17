@@ -165,6 +165,33 @@ class BambuMQTTClient:
             }
         })
 
+    def send_pause(self) -> None:
+        """Send an MQTT command to pause the current print."""
+        self.publish({
+            "print": {
+                "sequence_id": "0",
+                "command": "pause",
+            }
+        })
+
+    def send_resume(self) -> None:
+        """Send an MQTT command to resume a paused print."""
+        self.publish({
+            "print": {
+                "sequence_id": "0",
+                "command": "resume",
+            }
+        })
+
+    def send_stop(self) -> None:
+        """Send an MQTT command to cancel/stop the current print."""
+        self.publish({
+            "print": {
+                "sequence_id": "0",
+                "command": "stop",
+            }
+        })
+
     def send_print_command(
         self,
         filename: str,
