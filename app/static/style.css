@@ -360,6 +360,31 @@ input[type="text"], input[type="password"] {
   width: 100%;
 }
 
+.ams-unit {
+  margin-bottom: 0.75rem;
+}
+
+.ams-unit:last-child {
+  margin-bottom: 0;
+}
+
+.ams-unit-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 0.15rem;
+  padding-bottom: 0.15rem;
+  color: #555;
+}
+
+.ams-unit-info {
+  font-weight: 400;
+  color: #888;
+  font-size: 0.75rem;
+}
+
 .btn-secondary {
   background: #e3f2fd;
   color: #1565c0;

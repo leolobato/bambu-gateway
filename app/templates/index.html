@@ -29,7 +29,7 @@
       </select>
 
       <div id="ams-section" class="hidden">
-        <label>AMS Trays</label>
+        <label>Filament</label>
         <div id="ams-trays"></div>
       </div>
 
@@ -145,7 +145,9 @@
     let allSlicerMachines = []; // unfiltered, for name lookups
     let allSlicerProcesses = []; // unfiltered, for name lookups
     let allSlicerFilaments = []; // unfiltered, for file profile lookups
-    let amsTraysData = [];     // cached AMS tray objects from API
+    let amsTraysData = [];     // cached AMS tray objects from API (includes vt_tray)
+    let amsUnitsData = [];     // cached AMS unit objects from API
+    let amsVtTrayData = null;  // cached external spool tray from API
     let printersData = [];     // cached printer status objects from API
     let parsedInfo = null;
     let filamentMatchesByIndex = {};
@@ -363,6 +365,20 @@
       return '#' + hex;
     }
 
+    function trayLabel(tray) {
+      if (tray.slot === 254) return 'Ext';
+      const localId = tray.tray_id + 1;
+      if (amsUnitsData.length > 1) {
+        return `${tray.ams_id + 1}-A${localId}`;
+      }
+      return `A${localId}`;
+    }
+
+    function amsTypeName(amsType) {
+      const names = { standard: 'AMS', pro: 'AMS 2 Pro', ht: 'AMS HT' };
+      return names[amsType] || 'AMS';
+    }
+
     function filamentOptionsHtml(selectedName, selectedId) {
       let html = '<option value="">Keep default</option>';
       for (const f of slicerFilaments) {
@@ -427,7 +443,7 @@
         const matched = trayProfile.name || (t.matched_filament ? t.matched_filament.name : t.tray_type);
         const sel = selectedSlot !== null && Number(t.slot) === selectedSlot ? ' selected' : '';
         const settingId = trayProfile.settingId;
-        html += `<option value="${t.slot}" data-setting-id="${settingId}"${sel}>#${t.slot} ${matched} (${t.tray_type})</option>`;
+        html += `<option value="${t.slot}" data-setting-id="${settingId}"${sel}>${trayLabel(t)} ${matched} (${t.tray_type})</option>`;
       }
       return html;
     }
@@ -594,13 +610,33 @@
       // AMS
       if (amsRes.status === 'fulfilled' && amsRes.value.ok) {
         const data = await amsRes.value.json();
-        if (data.trays && data.trays.length > 0) {
-          amsTraysData = data.trays;
+        amsUnitsData = data.units || [];
+        amsVtTrayData = data.vt_tray || null;
+        amsTraysData = data.trays || [];
+        if (amsVtTrayData) {
+          amsTraysData = [...amsTraysData, amsVtTrayData];
+        }
+
+        const hasTrays = data.trays && data.trays.length > 0;
+        const hasVt = !!amsVtTrayData;
+
+        if (hasTrays || hasVt) {
           amsSection.classList.remove('hidden');
-          amsTrays.innerHTML = data.trays.map(t => {
+
+          // Group trays by ams_id
+          const traysByUnit = {};
+          for (const t of (data.trays || [])) {
+            if (!traysByUnit[t.ams_id]) traysByUnit[t.ams_id] = [];
+            traysByUnit[t.ams_id].push(t);
+          }
+
+          const multiUnit = amsUnitsData.length > 1;
+          let html = '';
+
+          function renderTrayRow(t) {
             return `
               <div class="tray-row">
-                <span class="tray-slot">#${t.slot}</span>
+                <span class="tray-slot">${trayLabel(t)}</span>
                 <span class="color-swatch" style="background:${colorHex(t.tray_color)}"></span>
                 <span class="tray-type">${t.tray_type || '\u2014'}</span>
                 <span class="muted" style="min-width:5rem;font-size:0.75rem">${t.filament_id || ''}</span>
@@ -613,7 +649,38 @@
                   </select>
                 </span>
               </div>`;
-          }).join('');
+          }
+
+          for (const unit of amsUnitsData) {
+            const unitTrays = traysByUnit[unit.id] || [];
+            const typeName = unit.ams_type ? amsTypeName(unit.ams_type) : 'AMS';
+            const unitLabel = multiUnit ? `${typeName} ${unit.id + 1}` : typeName;
+
+            let infoItems = [];
+            if (unit.humidity >= 0) infoItems.push(`Humidity: ${unit.humidity}`);
+            if (unit.temperature > 0) infoItems.push(`${unit.temperature.toFixed(1)}\u00b0C`);
+            if (unit.dry_time_remaining > 0) infoItems.push(`Drying: ${unit.dry_time_remaining}min`);
+
+            html += `<div class="ams-unit">`;
+            html += `<div class="ams-unit-header">`;
+            html += `<span>${unitLabel}</span>`;
+            if (infoItems.length) {
+              html += `<span class="ams-unit-info">${infoItems.join(' \u00b7 ')}</span>`;
+            }
+            html += `</div>`;
+            html += unitTrays.map(renderTrayRow).join('');
+            html += `</div>`;
+          }
+
+          // External spool (vt_tray)
+          if (hasVt) {
+            html += `<div class="ams-unit">`;
+            html += `<div class="ams-unit-header"><span>External Spool</span></div>`;
+            html += renderTrayRow(amsVtTrayData);
+            html += `</div>`;
+          }
+
+          amsTrays.innerHTML = html;
         }
       }
 
