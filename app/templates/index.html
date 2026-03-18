@@ -257,13 +257,15 @@
               ${showPause ? `<button class="btn-sm btn-control" onclick="printerCommand('${p.id}','pause')">Pause</button>` : ''}
               ${showResume ? `<button class="btn-sm btn-control" onclick="printerCommand('${p.id}','resume')">Resume</button>` : ''}
               <button class="btn-sm btn-danger" onclick="printerCommand('${p.id}','cancel')">Cancel</button>
-              <select class="speed-select" data-printer="${p.id}" onchange="setSpeed(this)">
-                <option value=""${!p.speed_level ? ' selected' : ''}>Speed</option>
-                <option value="1"${p.speed_level===1 ? ' selected' : ''}>Silent</option>
-                <option value="2"${p.speed_level===2 ? ' selected' : ''}>Standard</option>
-                <option value="3"${p.speed_level===3 ? ' selected' : ''}>Sport</option>
-                <option value="4"${p.speed_level===4 ? ' selected' : ''}>Ludicrous</option>
-              </select>
+              <span class="speed-control">
+                <span>Speed</span>
+                <select class="speed-select" data-printer="${p.id}" onchange="setSpeed(this)">
+                  <option value="1"${p.speed_level===1 ? ' selected' : ''}>Silent</option>
+                  <option value="2"${(p.speed_level===2||!p.speed_level) ? ' selected' : ''}>Standard</option>
+                  <option value="3"${p.speed_level===3 ? ' selected' : ''}>Sport</option>
+                  <option value="4"${p.speed_level===4 ? ' selected' : ''}>Ludicrous</option>
+                </select>
+              </span>
             </div>`;
         }
 

@@ -125,8 +125,15 @@ h2 {
   background: #bbdefb;
 }
 
-.speed-select {
+.speed-control {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+}
+
+.speed-select {
   padding: 0.2rem 0.4rem;
   font-size: 0.75rem;
   border: 1px solid #ccc;
@@ -325,7 +332,7 @@ input[type="text"], input[type="password"] {
   display: flex;
   gap: 0.5rem;
   align-items: center;
-  padding: 0.35rem 0;
+  padding: 0.2rem 0;
   border-bottom: 1px solid #f0f0f0;
   font-size: 0.85rem;
 }
@@ -361,7 +368,7 @@ input[type="text"], input[type="password"] {
 }
 
 .ams-unit {
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.5rem;
 }
 
 .ams-unit:last-child {
@@ -372,11 +379,11 @@ input[type="text"], input[type="password"] {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   font-weight: 600;
-  margin-bottom: 0.15rem;
-  padding-bottom: 0.15rem;
-  color: #555;
+  margin-bottom: 0.1rem;
+  padding-bottom: 0.1rem;
+  color: #888;
 }
 
 .ams-unit-info {
