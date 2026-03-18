@@ -10,9 +10,12 @@ An iOS client is also available: **[BambuGateway iOS](https://github.com/leoloba
 
 ## Features
 
-- Real-time printer status (state, temperatures, print progress)
+- Real-time printer status (state, temperatures, print progress, preparation stages)
+- Pause, resume, cancel, and adjust speed of active prints
 - AMS unit info (humidity, temperature) and external spool holder support
-- Upload, slice and print 3MF files from the browser
+- AMS filament drying control (AMS 2 Pro and AMS HT)
+- Upload, slice and print 3MF files from the browser with upload progress
+- Automatic AMS tray matching for project filaments
 - Supports custom filament profiles through [orcaslicer-cli](https://github.com/leolobato/orcaslicer-cli)
 - Multi-printer support
 - REST API for automation and integration
@@ -111,7 +114,13 @@ exists.
 | `GET` | `/api/health` | Health check |
 | `GET` | `/api/printers` | List printers with live status |
 | `GET` | `/api/printers/{id}` | Status for a single printer |
+| `POST` | `/api/printers/{id}/pause` | Pause current print |
+| `POST` | `/api/printers/{id}/resume` | Resume paused print |
+| `POST` | `/api/printers/{id}/cancel` | Cancel current print |
+| `POST` | `/api/printers/{id}/speed` | Set print speed (1–4: silent/standard/sport/ludicrous) |
 | `GET` | `/api/ams` | AMS units, trays, and external spool info |
+| `POST` | `/api/printers/{id}/ams/{ams_id}/start-drying` | Start AMS filament drying |
+| `POST` | `/api/printers/{id}/ams/{ams_id}/stop-drying` | Stop AMS filament drying |
 | `POST` | `/api/filament-matches` | Match project filaments to AMS trays |
 | `POST` | `/api/print` | Upload 3MF to default printer |
 | `POST` | `/api/print-stream` | Upload and print with SSE progress |
@@ -125,6 +134,7 @@ exists.
 | `POST` | `/api/settings/printers` | Add a printer |
 | `PUT` | `/api/settings/printers/{serial}` | Update a printer |
 | `DELETE` | `/api/settings/printers/{serial}` | Remove a printer |
+| `GET` | `/api/uploads/{id}` | Poll FTP upload progress |
 
 Interactive API docs are available at `/docs` (Swagger UI).
 
