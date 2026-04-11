@@ -7,12 +7,16 @@ import time
 import uuid
 
 
+class UploadCancelledError(Exception):
+    """Raised when an upload is cancelled by the user."""
+
+
 class UploadState:
     """Mutable state for a single upload."""
 
     __slots__ = (
         "upload_id", "filename", "printer_id", "total_bytes",
-        "bytes_sent", "status", "error", "_lock",
+        "bytes_sent", "status", "error", "cancelled", "_lock",
     )
 
     def __init__(
@@ -27,8 +31,9 @@ class UploadState:
         self.printer_id = printer_id
         self.total_bytes = total_bytes
         self.bytes_sent = 0
-        self.status = "uploading"  # uploading | printing | completed | failed
+        self.status = "uploading"  # uploading | printing | completed | failed | cancelled
         self.error: str | None = None
+        self.cancelled = False
         self._lock = threading.Lock()
 
     @property
@@ -40,12 +45,19 @@ class UploadState:
 
     def advance(self, chunk_size: int) -> None:
         with self._lock:
+            if self.cancelled:
+                raise UploadCancelledError("Upload cancelled by user")
             self.bytes_sent += chunk_size
 
     def complete(self) -> None:
         with self._lock:
             self.bytes_sent = self.total_bytes
             self.status = "completed"
+
+    def cancel(self) -> None:
+        with self._lock:
+            self.cancelled = True
+            self.status = "cancelled"
 
     def fail(self, error: str) -> None:
         with self._lock:
@@ -108,7 +120,7 @@ class UploadTracker:
         now = time.monotonic()
         expired = [
             uid for uid, (state, ts) in self._uploads.items()
-            if state.status in ("completed", "failed")
+            if state.status in ("completed", "failed", "cancelled")
             and now - ts > self.EXPIRY_SECONDS
         ]
         for uid in expired:

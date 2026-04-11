@@ -95,13 +95,19 @@
         <div class="progress-bar">
           <div id="slice-progress-fill" class="progress-fill" style="width:0%"></div>
         </div>
-        <p id="slice-status" class="muted" style="margin-top:0.25rem;font-size:0.8rem"></p>
+        <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.25rem">
+          <p id="slice-status" class="muted" style="font-size:0.8rem;margin:0"></p>
+          <button id="btn-cancel-slice" type="button" class="btn-cancel">Cancel</button>
+        </div>
       </div>
       <div id="upload-progress" class="hidden" style="margin-top:0.5rem">
         <div class="progress-bar">
           <div id="upload-progress-fill" class="progress-fill" style="width:0%"></div>
         </div>
-        <p id="upload-status" class="muted" style="margin-top:0.25rem;font-size:0.8rem"></p>
+        <div style="display:flex;align-items:center;gap:0.5rem;margin-top:0.25rem">
+          <p id="upload-status" class="muted" style="font-size:0.8rem;margin:0"></p>
+          <button id="btn-cancel-upload" type="button" class="btn-cancel">Cancel</button>
+        </div>
       </div>
       <p id="submit-status" class="muted" style="margin-top:0.5rem"></p>
     </section>
@@ -134,10 +140,16 @@
     const sliceProgress = document.getElementById('slice-progress');
     const sliceProgressFill = document.getElementById('slice-progress-fill');
     const sliceStatus = document.getElementById('slice-status');
+    const btnCancelSlice = document.getElementById('btn-cancel-slice');
     const uploadProgress = document.getElementById('upload-progress');
     const uploadProgressFill = document.getElementById('upload-progress-fill');
     const uploadStatusEl = document.getElementById('upload-status');
+    const btnCancelUpload = document.getElementById('btn-cancel-upload');
     const submitStatus = document.getElementById('submit-status');
+
+    let activeUploadId = null;       // upload_id for in-progress FTP transfer
+    let activeAbortController = null; // AbortController for SSE fetch
+    let uploadCancelled = false;
 
     let slicerFilaments = [];
     let slicerMachines = [];   // cached {name, setting_id} filtered for current printer
@@ -882,8 +894,8 @@
       return { status, transferred };
     }
 
-    async function streamSlice(formData, onEvent) {
-      const resp = await fetch('/api/print-stream', { method: 'POST', body: formData });
+    async function streamSlice(formData, onEvent, signal) {
+      const resp = await fetch('/api/print-stream', { method: 'POST', body: formData, signal });
       if (!resp.ok) {
         const data = await resp.json();
         throw new Error(data.detail || 'Request failed');
@@ -953,8 +965,12 @@
     }
 
     async function pollUploadProgress(uploadId) {
+      activeUploadId = uploadId;
       while (true) {
         await new Promise(r => setTimeout(r, 300));
+        if (uploadCancelled) {
+          return { ok: false, error: 'Upload cancelled' };
+        }
         let data;
         try {
           const resp = await fetch('/api/uploads/' + uploadId);
@@ -970,6 +986,9 @@
         if (data.status === 'failed') {
           return { ok: false, error: data.error || 'Upload failed' };
         }
+        if (data.status === 'cancelled') {
+          return { ok: false, error: 'Upload cancelled' };
+        }
       }
       return { ok: false, error: 'Lost connection to server' };
     }
@@ -978,6 +997,7 @@
       if (event === 'status') {
         if (data.phase === 'uploading') {
           sliceProgress.classList.add('hidden');
+          if (data.upload_id) activeUploadId = data.upload_id;
           showUploadProgress(0, 0, 0);
         } else {
           sliceStatus.textContent = data.message || data.phase;
@@ -998,11 +1018,30 @@
       }
     }
 
+    async function cancelActiveUpload() {
+      uploadCancelled = true;
+      // Cancel the SSE stream if active
+      if (activeAbortController) {
+        activeAbortController.abort();
+      }
+      // Cancel the FTP upload on the server
+      if (activeUploadId) {
+        try {
+          await fetch('/api/uploads/' + activeUploadId + '/cancel', { method: 'POST' });
+        } catch (e) { /* ignore */ }
+      }
+    }
+
+    btnCancelUpload.addEventListener('click', () => cancelActiveUpload());
+    btnCancelSlice.addEventListener('click', () => cancelActiveUpload());
+
     btnPrint.addEventListener('click', async () => {
       if (!selectedFile) return;
 
       if (parsedInfo.has_gcode) {
         setButtonsDisabled(true);
+        uploadCancelled = false;
+        activeUploadId = null;
         submitStatus.textContent = 'Submitting...';
         submitStatus.className = 'muted';
         try {
@@ -1038,6 +1077,9 @@
         return;
       }
 
+      uploadCancelled = false;
+      activeUploadId = null;
+      activeAbortController = new AbortController();
       beginSliceUI();
       try {
         await streamSlice(buildFormData(), (event, data) => {
@@ -1050,17 +1092,26 @@
           } else {
             handleProgressEvent(event, data);
           }
-        });
+        }, activeAbortController.signal);
       } catch (e) {
-        submitStatus.textContent = e.message || 'Network error';
-        submitStatus.className = 'error-text';
+        if (e.name === 'AbortError') {
+          submitStatus.textContent = 'Cancelled';
+          submitStatus.className = 'muted';
+        } else {
+          submitStatus.textContent = e.message || 'Network error';
+          submitStatus.className = 'error-text';
+        }
         endSliceUI();
       }
+      activeAbortController = null;
     });
 
     btnPreview.addEventListener('click', async () => {
       if (!selectedFile) return;
       resetPreviewState();
+      uploadCancelled = false;
+      activeUploadId = null;
+      activeAbortController = new AbortController();
       beginSliceUI();
       try {
         await streamSlice(buildFormData({ preview: true }), (event, data) => {
@@ -1097,12 +1148,18 @@
           } else {
             handleProgressEvent(event, data);
           }
-        });
+        }, activeAbortController.signal);
       } catch (e) {
-        submitStatus.textContent = e.message || 'Network error';
-        submitStatus.className = 'error-text';
+        if (e.name === 'AbortError') {
+          submitStatus.textContent = 'Cancelled';
+          submitStatus.className = 'muted';
+        } else {
+          submitStatus.textContent = e.message || 'Network error';
+          submitStatus.className = 'error-text';
+        }
         endSliceUI();
       }
+      activeAbortController = null;
     });
 
     btnDownloadPreview.addEventListener('click', () => {
@@ -1118,6 +1175,8 @@
     btnConfirmPrint.addEventListener('click', async () => {
       if (!currentPreviewId) return;
       setButtonsDisabled(true);
+      uploadCancelled = false;
+      activeUploadId = null;
       submitStatus.textContent = 'Sending to printer...';
       submitStatus.className = 'muted';
       try {

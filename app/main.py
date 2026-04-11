@@ -46,7 +46,7 @@ from app.models import (
 from app.parse_3mf import parse_3mf, sanitize_3mf
 from app.printer_service import PrinterService
 from app.slicer_client import SlicerClient, SliceResult, SlicingError
-from app.upload_tracker import tracker as upload_tracker
+from app.upload_tracker import UploadCancelledError, tracker as upload_tracker
 
 logging.basicConfig(
     level=settings.log_level.upper(),
@@ -212,6 +212,15 @@ async def get_upload_progress(upload_id: str):
     if state is None:
         raise HTTPException(status_code=404, detail="Upload not found")
     return state.to_dict()
+
+
+@app.post("/api/uploads/{upload_id}/cancel")
+async def cancel_upload(upload_id: str):
+    state = upload_tracker.get(upload_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    state.cancel()
+    return {"status": "cancelled"}
 
 
 @app.get("/api/printers", response_model=PrinterListResponse)
@@ -720,6 +729,8 @@ def _background_submit(
             progress_callback=upload_state.advance,
         )
         upload_state.complete()
+    except UploadCancelledError:
+        logger.info("Upload cancelled by user: %s", filename)
     except Exception as e:
         logger.error("Background upload failed: %s", e)
         upload_state.fail(str(e))
@@ -1146,10 +1157,8 @@ async def print_file_stream(
                     elif slice_only:
                         yield _sse_event("result", edata)
                     else:
-                        yield _sse_event("status", {
-                            "phase": "uploading",
-                            "message": "Sending to printer...",
-                        })
+                        # upload_id sent so the frontend can cancel
+                        pass  # upload_id added after upload_state is created below
                 elif etype == "done":
                     if not slice_only and not preview and result_bytes is not None:
                         try:
@@ -1165,6 +1174,11 @@ async def print_file_stream(
                             upload_state = upload_tracker.create(
                                 filename, pid, len(result_bytes),
                             )
+                            yield _sse_event("status", {
+                                "phase": "uploading",
+                                "message": "Sending to printer...",
+                                "upload_id": upload_state.upload_id,
+                            })
                             # Sliced files are always single-plate (plate
                             # extracted before slicing), so gcode is at plate_1.
                             upload_future = asyncio.get_running_loop().run_in_executor(
@@ -1187,7 +1201,11 @@ async def print_file_stream(
                                 })
                             # Check final result
                             await upload_future
-                            if upload_state.status == "failed":
+                            if upload_state.status == "cancelled":
+                                yield _sse_event("error", {
+                                    "error": "Upload cancelled",
+                                })
+                            elif upload_state.status == "failed":
                                 yield _sse_event("error", {
                                     "error": upload_state.error or "Upload failed",
                                 })
