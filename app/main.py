@@ -881,6 +881,7 @@ async def print_file(
                 process_profile,
                 filament_payload,
                 plate_type=plate_type.strip(),
+                plate=plate_id or 1,
             )
         except SlicingError as e:
             raise HTTPException(status_code=502, detail=f"Slicing failed: {e}")
@@ -1016,6 +1017,7 @@ async def print_preview(
             process_profile,
             filament_payload,
             plate_type=plate_type.strip(),
+            plate=plate_id or 1,
         )
     except SlicingError as e:
         raise HTTPException(status_code=502, detail=f"Slicing failed: {e}")
@@ -1118,6 +1120,7 @@ async def print_file_stream(
                 process_profile,
                 filament_payload,
                 plate_type=plate_type.strip(),
+                plate=plate_id or 1,
             ):
                 etype = event["event"]
                 edata = event["data"]

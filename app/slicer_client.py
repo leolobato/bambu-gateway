@@ -41,6 +41,7 @@ class SlicerClient:
         process_profile: str,
         filament_profiles: list[str] | dict[str, Any],
         plate_type: str = "",
+        plate: int = 1,
     ) -> SliceResult:
         """Send a 3MF file to the slicer and return the sliced result."""
         url = f"{self._base_url}/slice"
@@ -52,6 +53,8 @@ class SlicerClient:
         }
         if plate_type:
             data["plate_type"] = plate_type
+        if plate > 1:
+            data["plate"] = str(plate)
 
         logger.info("Sending %s to slicer at %s", filename, url)
         try:
@@ -100,6 +103,7 @@ class SlicerClient:
         process_profile: str,
         filament_profiles: list[str] | dict[str, Any],
         plate_type: str = "",
+        plate: int = 1,
     ):
         """Stream SSE events for a slice operation.
 
@@ -110,19 +114,19 @@ class SlicerClient:
         if await self._check_stream_support():
             async for event in self._slice_stream_real(
                 file_data, filename, machine_profile, process_profile, filament_profiles,
-                plate_type,
+                plate_type, plate,
             ):
                 yield event
         else:
             async for event in self._slice_stream_fallback(
                 file_data, filename, machine_profile, process_profile, filament_profiles,
-                plate_type,
+                plate_type, plate,
             ):
                 yield event
 
     async def _slice_stream_real(
         self, file_data, filename, machine_profile, process_profile, filament_profiles,
-        plate_type,
+        plate_type, plate=1,
     ):
         url = f"{self._base_url}/slice-stream"
         files = {"file": (filename, file_data, "application/octet-stream")}
@@ -133,6 +137,8 @@ class SlicerClient:
         }
         if plate_type:
             form_data["plate_type"] = plate_type
+        if plate > 1:
+            form_data["plate"] = str(plate)
 
         logger.info("Streaming slice of %s via %s", filename, url)
         timeout = httpx.Timeout(connect=10, read=300, write=60, pool=10)
@@ -163,14 +169,14 @@ class SlicerClient:
 
     async def _slice_stream_fallback(
         self, file_data, filename, machine_profile, process_profile, filament_profiles,
-        plate_type,
+        plate_type, plate=1,
     ):
         """Use the non-streaming /slice endpoint and emit synthetic SSE events."""
         yield {"event": "status", "data": {"phase": "slicing", "message": "Slicing..."}}
 
         result = await self.slice(
             file_data, filename, machine_profile, process_profile, filament_profiles,
-            plate_type,
+            plate_type, plate,
         )
 
         transfer_info = {}
