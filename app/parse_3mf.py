@@ -236,14 +236,12 @@ def _flatten_3mf(data: bytes) -> bytes:
 
         new_model = "\n".join(lines)
 
-        # Rebuild the ZIP without external model files, rels, and
-        # model_settings.config (which contains assembly/plate data for the
-        # original machine and causes OrcaSlicer to crash on exclude triangles).
+        # Rebuild the ZIP without external model files and rels.
+        # model_settings.config is preserved so the slicer can extract
+        # individual plates from multi-plate files.
         external_files = {p.lstrip("/") for (p, _) in external_meshes}
         skip_files = external_files | {
             "3D/_rels/3dmodel.model.rels",
-            "Metadata/model_settings.config",
-            "Metadata/_rels/model_settings.config.rels",
         }
 
         buf = io.BytesIO()
