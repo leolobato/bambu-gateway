@@ -747,7 +747,8 @@ async def print_file(
         if pid is None:
             raise HTTPException(status_code=404, detail="No printers configured")
 
-        pplate = preview["plate_id"] or 1
+        # Sliced files are always single-plate (plate extracted before slicing).
+        pplate = 1
         tray_error = await _validate_selected_trays(preview.get("filament_profiles"), pid)
         if tray_error is not None:
             raise HTTPException(status_code=409, detail=tray_error)
@@ -945,7 +946,9 @@ async def print_file(
         raise HTTPException(status_code=409, detail=str(e))
 
     fname = file.filename
-    p_id = plate_id or 1
+    # Sliced files are always single-plate (plate extracted before slicing),
+    # so the gcode is at plate_1 regardless of the original plate_id.
+    p_id = 1 if was_sliced else (plate_id or 1)
     state = upload_tracker.create(fname, pid, len(file_data))
     asyncio.get_running_loop().run_in_executor(None, lambda: _background_submit(
         state, pid, file_data, fname,
@@ -1162,11 +1165,13 @@ async def print_file_stream(
                             upload_state = upload_tracker.create(
                                 filename, pid, len(result_bytes),
                             )
+                            # Sliced files are always single-plate (plate
+                            # extracted before slicing), so gcode is at plate_1.
                             upload_future = asyncio.get_running_loop().run_in_executor(
                                 None,
                                 lambda: _background_submit(
                                     upload_state, pid, result_bytes, filename,
-                                    plate_id=plate_id or 1,
+                                    plate_id=1,
                                     ams_mapping=ams_mapping,
                                     use_ams=use_ams,
                                 ),
