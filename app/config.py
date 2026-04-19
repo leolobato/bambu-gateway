@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     # Upload limits
     max_file_size_mb: int = 200
 
+    # APNs (optional — missing any field disables push)
+    apns_key_path: str = ""
+    apns_key_id: str = ""
+    apns_team_id: str = ""
+    apns_bundle_id: str = ""
+    apns_environment: str = "production"  # or "sandbox"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     def get_printers(self) -> list[PrinterConfig]:
@@ -65,6 +72,20 @@ class Settings(BaseSettings):
             PrinterConfig(ip=ip, access_code=code, serial=serial)
             for ip, code, serial in zip(ips, codes, serials)
         ]
+
+    @property
+    def push_enabled(self) -> bool:
+        """True iff every APNs credential is present and the key file exists."""
+        import os
+        required = (
+            self.apns_key_path,
+            self.apns_key_id,
+            self.apns_team_id,
+            self.apns_bundle_id,
+        )
+        if not all(required):
+            return False
+        return os.path.isfile(self.apns_key_path)
 
 
 settings = Settings()
