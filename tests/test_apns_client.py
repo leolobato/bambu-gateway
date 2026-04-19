@@ -116,3 +116,67 @@ async def test_500_error_not_token_invalid():
     )
     assert result.ok is False
     assert result.token_invalid is False
+
+
+async def test_live_activity_start_shape_and_priority():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["headers"] = dict(request.headers)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200)
+
+    attributes = {"printer_id": "P01", "printer_name": "X1C"}
+    content_state = {"progress": 0.0, "state": "starting", "layer": 0}
+
+    client = _make_client(handler)
+    result = await client.send_live_activity_start(
+        start_token="start-tok-xyz",
+        attributes_type="PrintActivityAttributes",
+        attributes=attributes,
+        content_state=content_state,
+        stale_after_seconds=3600,
+    )
+
+    assert result.ok is True
+    assert captured["url"].endswith("/3/device/start-tok-xyz")
+    assert captured["headers"]["apns-push-type"] == "liveactivity"
+    assert captured["headers"]["apns-topic"] == "org.example.app.push-type.liveactivity"
+    assert captured["headers"]["apns-priority"] == "10"
+
+    aps = captured["body"]["aps"]
+    assert aps["event"] == "start"
+    assert aps["attributes-type"] == "PrintActivityAttributes"
+    assert aps["attributes"] == attributes
+    assert aps["content-state"] == content_state
+    assert aps["stale-date"] > aps["timestamp"]
+
+
+async def test_live_activity_end_shape_and_dismissal():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["headers"] = dict(request.headers)
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200)
+
+    content_state = {"progress": 1.0, "state": "finished", "layer": 250}
+
+    client = _make_client(handler)
+    result = await client.send_live_activity_end(
+        activity_token="act-tok-end",
+        content_state=content_state,
+        dismissal_seconds_from_now=3600,
+    )
+
+    assert result.ok is True
+    assert captured["url"].endswith("/3/device/act-tok-end")
+    assert captured["headers"]["apns-push-type"] == "liveactivity"
+    assert captured["headers"]["apns-priority"] == "10"
+
+    aps = captured["body"]["aps"]
+    assert aps["event"] == "end"
+    assert aps["content-state"] == content_state
+    assert aps["dismissal-date"] - aps["timestamp"] == 3600
