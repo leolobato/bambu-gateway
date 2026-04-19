@@ -871,27 +871,47 @@
       return fd;
     }
 
+    function hasDiscardedFilamentCustomizations(transfer) {
+      if (!transfer || !Array.isArray(transfer.filaments)) return false;
+      return transfer.filaments.some(f => f.status === 'filament_changed' && f.discarded && f.discarded.length);
+    }
+
     function settingsTransferMessage(transfer) {
-      if (!transfer || !transfer.status) return '';
-      if (transfer.status === 'applied') {
+      if (!transfer) return '';
+      const parts = [];
+      if (transfer.status === 'applied' && transfer.transferred && transfer.transferred.length) {
         const keys = transfer.transferred.map(s => s.key).join(', ');
-        return `Transferred ${transfer.transferred.length} custom setting(s): ${keys}`;
+        parts.push(`Transferred ${transfer.transferred.length} process setting(s): ${keys}`);
       }
-      if (transfer.status === 'no_original_profile') {
-        return 'Warning: Could not identify the original profile. All embedded settings were applied as-is.';
+      const filaments = Array.isArray(transfer.filaments) ? transfer.filaments : [];
+      for (const f of filaments) {
+        if (f.status === 'applied' && f.transferred && f.transferred.length) {
+          const keys = f.transferred.map(s => s.key).join(', ');
+          parts.push(`Filament slot ${f.slot}: applied ${f.transferred.length} customization(s) (${keys}).`);
+        } else if (f.status === 'filament_changed' && f.discarded && f.discarded.length) {
+          parts.push(
+            `Filament slot ${f.slot}: discarded ${f.discarded.length} customization(s) ` +
+            `(${f.discarded.join(', ')}) — replaced ${f.original_filament || '(unknown)'} with ${f.selected_filament || '(unknown)'}.`
+          );
+        }
       }
-      return '';
+      return parts.join(' ');
     }
 
     function settingsTransferFromHeaders(resp) {
       const status = resp.headers.get('X-Settings-Transfer-Status') || '';
-      if (!status) return null;
       let transferred = [];
       const raw = resp.headers.get('X-Settings-Transferred');
       if (raw) {
         try { transferred = JSON.parse(raw); } catch (e) {}
       }
-      return { status, transferred };
+      let filaments = [];
+      const rawFil = resp.headers.get('X-Filament-Settings-Transferred');
+      if (rawFil) {
+        try { filaments = JSON.parse(rawFil); } catch (e) {}
+      }
+      if (!status && !filaments.length) return null;
+      return { status, transferred, filaments };
     }
 
     async function streamSlice(formData, onEvent, signal) {
@@ -1087,7 +1107,7 @@
             const transferMsg = settingsTransferMessage(data.settings_transfer);
             submitStatus.textContent = 'Print started: ' + data.file_name +
               (transferMsg ? '\n' + transferMsg : '');
-            submitStatus.className = data.settings_transfer?.status === 'no_original_profile'
+            submitStatus.className = hasDiscardedFilamentCustomizations(data.settings_transfer)
               ? 'warning-text' : 'success';
           } else {
             handleProgressEvent(event, data);
@@ -1142,7 +1162,7 @@
             const transferMsg = settingsTransferMessage(transfer);
             submitStatus.textContent = 'Preview ready.' +
               (transferMsg ? '\n' + transferMsg : '');
-            submitStatus.className = transfer?.status === 'no_original_profile'
+            submitStatus.className = hasDiscardedFilamentCustomizations(transfer)
               ? 'warning-text' : 'success';
             btnConfirmPrint.classList.remove('hidden');
           } else {

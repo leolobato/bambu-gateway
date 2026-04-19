@@ -24,6 +24,7 @@ class SliceResult:
     content: bytes
     settings_transfer_status: str = ""
     settings_transferred: list[dict] = field(default_factory=list)
+    filament_transfers: list[dict] = field(default_factory=list)
 
 
 class SlicerClient:
@@ -76,10 +77,19 @@ class SlicerClient:
             except json.JSONDecodeError:
                 logger.warning("Failed to parse X-Settings-Transferred header")
 
+        filament_transfers = []
+        raw_filaments = resp.headers.get("x-filament-settings-transferred", "")
+        if raw_filaments:
+            try:
+                filament_transfers = json.loads(raw_filaments)
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse X-Filament-Settings-Transferred header")
+
         return SliceResult(
             content=resp.content,
             settings_transfer_status=status,
             settings_transferred=transferred,
+            filament_transfers=filament_transfers,
         )
 
     async def _check_stream_support(self) -> bool:
@@ -184,6 +194,8 @@ class SlicerClient:
             transfer_info["status"] = result.settings_transfer_status
             if result.settings_transferred:
                 transfer_info["transferred"] = result.settings_transferred
+        if result.filament_transfers:
+            transfer_info["filaments"] = result.filament_transfers
 
         yield {"event": "result", "data": {
             "file_base64": base64.b64encode(result.content).decode(),

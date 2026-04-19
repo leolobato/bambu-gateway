@@ -32,6 +32,7 @@ from app.models import (
     FilamentInfo,
     ProjectFilamentMatch,
     PrinterConfigInput,
+    FilamentTransferEntry,
     PrinterConfigListResponse,
     PrinterConfigResponse,
     PrinterDetailResponse,
@@ -903,11 +904,14 @@ async def print_file(
 
     # Build settings transfer info if available
     settings_transfer = None
-    if slice_result and slice_result.settings_transfer_status:
+    if slice_result and (slice_result.settings_transfer_status or slice_result.filament_transfers):
         settings_transfer = SettingsTransferInfo(
             status=slice_result.settings_transfer_status,
             transferred=[
                 TransferredSetting(**s) for s in slice_result.settings_transferred
+            ],
+            filaments=[
+                FilamentTransferEntry(**f) for f in slice_result.filament_transfers
             ],
         )
 
@@ -921,6 +925,10 @@ async def print_file(
             if settings_transfer.transferred:
                 headers["X-Settings-Transferred"] = json.dumps(
                     [s.model_dump() for s in settings_transfer.transferred]
+                )
+            if settings_transfer.filaments:
+                headers["X-Filament-Settings-Transferred"] = json.dumps(
+                    [f.model_dump() for f in settings_transfer.filaments]
                 )
         return Response(
             content=file_data,
@@ -1055,6 +1063,10 @@ async def print_preview(
             headers["X-Settings-Transferred"] = json.dumps(
                 slice_result.settings_transferred
             )
+    if slice_result.filament_transfers:
+        headers["X-Filament-Settings-Transferred"] = json.dumps(
+            slice_result.filament_transfers
+        )
 
     return Response(
         content=slice_result.content,

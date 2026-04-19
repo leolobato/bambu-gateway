@@ -270,9 +270,19 @@ class TransferredSetting(BaseModel):
     original: str | None = None
 
 
+class FilamentTransferEntry(BaseModel):
+    slot: int
+    original_filament: str
+    selected_filament: str
+    status: str  # "applied", "filament_changed", "no_customizations"
+    transferred: list[TransferredSetting] = []
+    discarded: list[str] = []
+
+
 class SettingsTransferInfo(BaseModel):
     status: str
     transferred: list[TransferredSetting] = []
+    filaments: list[FilamentTransferEntry] = []
 
 
 class PrintResponse(BaseModel):
