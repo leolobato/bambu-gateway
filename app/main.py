@@ -21,14 +21,19 @@ from app.apns_client import ApnsClient
 from app.apns_jwt import ApnsJwtSigner
 from app.config import PrinterConfig, settings
 from app import config_store
-from app.device_store import DeviceStore
+from app.device_store import ActiveActivity, DeviceRecord, DeviceStore
 from app.filament_selection import build_slicer_filament_payload
 from app.notification_hub import NotificationHub
 from app.models import (
+    ActivityRegisterRequest,
+    ActivityRegisterResponse,
     AMSResponse,
     AMSTray,
     AMSUnit,
+    CapabilitiesResponse,
     CommandResponse,
+    DeviceRegisterRequest,
+    DeviceRegisterResponse,
     FilamentMatchRequest,
     FilamentMatchResponse,
     FilamentMatchReason,
@@ -62,7 +67,8 @@ logger = logging.getLogger(__name__)
 
 printer_service: PrinterService
 slicer_client: SlicerClient | None = None
-templates = Jinja2Templates(directory="app/templates")
+_APP_DIR = Path(__file__).resolve().parent
+templates = Jinja2Templates(directory=str(_APP_DIR / "templates"))
 
 MAX_FILE_BYTES = settings.max_file_size_mb * 1024 * 1024
 DEFAULT_PLATE_TYPES = [
@@ -224,7 +230,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Bambu Gateway", version="0.1.0", lifespan=lifespan)
 
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
+app.mount("/static", StaticFiles(directory=str(_APP_DIR / "static")), name="static")
 
 
 # --- Web UI ---
@@ -246,6 +252,57 @@ async def settings_page(request: Request):
 @app.get("/api/health", response_model=HealthResponse)
 async def health_check():
     return HealthResponse()
+
+
+@app.get("/api/capabilities", response_model=CapabilitiesResponse)
+async def get_capabilities():
+    return CapabilitiesResponse(
+        push=settings.push_enabled,
+        live_activities=settings.push_enabled,
+    )
+
+
+@app.post("/api/devices/register", response_model=DeviceRegisterResponse)
+async def register_device(body: DeviceRegisterRequest):
+    store: DeviceStore = app.state.device_store
+    store.upsert_device(DeviceRecord(
+        id=body.id,
+        name=body.name,
+        device_token=body.device_token,
+        live_activity_start_token=body.live_activity_start_token,
+        subscribed_printers=body.subscribed_printers or ["*"],
+    ))
+    return DeviceRegisterResponse()
+
+
+@app.delete("/api/devices/{device_id}")
+async def unregister_device(device_id: str):
+    store: DeviceStore = app.state.device_store
+    store.remove_device(device_id)
+    return {"status": "ok"}
+
+
+@app.post(
+    "/api/devices/{device_id}/activities",
+    response_model=ActivityRegisterResponse,
+)
+async def register_activity(device_id: str, body: ActivityRegisterRequest):
+    store: DeviceStore = app.state.device_store
+    if store.get_device(device_id) is None:
+        raise HTTPException(status_code=404, detail="device not found")
+    store.add_activity(ActiveActivity(
+        device_id=device_id,
+        printer_id=body.printer_id,
+        activity_update_token=body.activity_update_token,
+    ))
+    return ActivityRegisterResponse()
+
+
+@app.delete("/api/devices/{device_id}/activities/{printer_id}")
+async def unregister_activity(device_id: str, printer_id: str):
+    store: DeviceStore = app.state.device_store
+    store.remove_activity(device_id, printer_id)
+    return {"status": "ok"}
 
 
 @app.get("/api/uploads/{upload_id}")

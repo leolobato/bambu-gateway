@@ -343,3 +343,32 @@ class StartDryingRequest(BaseModel):
 
     temperature: int = 55
     duration_minutes: int = 480
+
+
+# --- Push / Live Activity models ---
+
+
+class CapabilitiesResponse(BaseModel):
+    push: bool
+    live_activities: bool
+
+
+class DeviceRegisterRequest(BaseModel):
+    id: str
+    name: str = ""
+    device_token: str
+    live_activity_start_token: str | None = None
+    subscribed_printers: list[str] = ["*"]
+
+
+class DeviceRegisterResponse(BaseModel):
+    status: str = "ok"
+
+
+class ActivityRegisterRequest(BaseModel):
+    printer_id: str
+    activity_update_token: str
+
+
+class ActivityRegisterResponse(BaseModel):
+    status: str = "ok"
