@@ -231,7 +231,7 @@ async def lifespan(app: FastAPI):
         await apns_client.aclose()
 
 
-app = FastAPI(title="Bambu Gateway", version="0.2.1", lifespan=lifespan)
+app = FastAPI(title="Bambu Gateway", version="1.3.0", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory=str(_APP_DIR / "static")), name="static")
 
