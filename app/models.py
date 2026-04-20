@@ -97,6 +97,12 @@ class PrintJob(BaseModel):
     total_layers: int = 0
 
 
+class HMSCode(BaseModel):
+    """A Bambu Health Monitoring System error code."""
+    attr: str  # hex, e.g. "0300_2000_0001_0001"
+    code: str  # severity/category hex
+
+
 class PrinterStatus(BaseModel):
     """Full status snapshot for a single printer."""
 
@@ -112,6 +118,7 @@ class PrinterStatus(BaseModel):
     active_tray: int | None = None
     temperatures: TemperatureInfo = TemperatureInfo()
     job: PrintJob | None = None
+    hms_codes: list[HMSCode] = []
 
 
 # --- API response models ---

@@ -13,6 +13,7 @@ import paho.mqtt.client as mqtt
 from app.config import PrinterConfig
 from app.models import (
     AMSType,
+    HMSCode,
     PrinterState,
     PrinterStatus,
     PrintJob,
@@ -458,6 +459,20 @@ class BambuMQTTClient:
                     job.current_layer = int(print_info["layer_num"])
                 if "total_layer_num" in print_info:
                     job.total_layers = int(print_info["total_layer_num"])
+
+            # HMS codes
+            if "hms" in print_info:
+                raw = print_info["hms"]
+                parsed: list[HMSCode] = []
+                if isinstance(raw, list):
+                    for entry in raw:
+                        if not isinstance(entry, dict):
+                            continue
+                        attr = entry.get("attr")
+                        code = entry.get("code")
+                        if isinstance(attr, str) and isinstance(code, str):
+                            parsed.append(HMSCode(attr=attr, code=code))
+                self._status.hms_codes = parsed
 
             # Derive state using gcode_state + stg_cur + layer_num
             if gcode_state is not None or "stg_cur" in print_info:
