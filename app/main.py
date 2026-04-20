@@ -17,9 +17,13 @@ from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from app.apns_client import ApnsClient
+from app.apns_jwt import ApnsJwtSigner
 from app.config import PrinterConfig, settings
 from app import config_store
+from app.device_store import DeviceStore
 from app.filament_selection import build_slicer_filament_payload
+from app.notification_hub import NotificationHub
 from app.models import (
     AMSResponse,
     AMSTray,
@@ -173,12 +177,49 @@ def _build_ams_mapping(
 async def lifespan(app: FastAPI):
     global printer_service, slicer_client
     configs = config_store.load()
-    printer_service = PrinterService(configs)
+
+    # Device registry + APNs
+    device_store_path = config_store._config_path.parent / "devices.json"
+    device_store = DeviceStore(device_store_path)
+
+    apns_client: ApnsClient | None = None
+    notification_hub: NotificationHub | None = None
+    status_change_callback = None
+    if settings.push_enabled:
+        signer = ApnsJwtSigner(
+            key_path=settings.apns_key_path,
+            key_id=settings.apns_key_id,
+            team_id=settings.apns_team_id,
+        )
+        apns_client = ApnsClient(
+            signer=signer,
+            bundle_id=settings.apns_bundle_id,
+            environment=settings.apns_environment,
+        )
+        notification_hub = NotificationHub(apns=apns_client, device_store=device_store)
+        notification_hub.start()
+        status_change_callback = notification_hub.on_status_change
+        logger.info("APNs push enabled")
+    else:
+        logger.info("APNs push disabled — set APNS_KEY_PATH and related vars to enable")
+
+    printer_service = PrinterService(
+        configs, status_change_callback=status_change_callback,
+    )
     printer_service.start()
     if settings.orcaslicer_api_url:
         slicer_client = SlicerClient(settings.orcaslicer_api_url)
+
+    app.state.device_store = device_store
+    app.state.notification_hub = notification_hub
+    app.state.apns_client = apns_client
+
     yield
     printer_service.stop()
+    if notification_hub is not None:
+        notification_hub.stop()
+    if apns_client is not None:
+        await apns_client.aclose()
 
 
 app = FastAPI(title="Bambu Gateway", version="0.1.0", lifespan=lifespan)

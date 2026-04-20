@@ -16,12 +16,20 @@ logger = logging.getLogger(__name__)
 class PrinterService:
     """Manages MQTT connections for all configured printers."""
 
-    def __init__(self, printer_configs: list[PrinterConfig]) -> None:
+    def __init__(
+        self,
+        printer_configs: list[PrinterConfig],
+        status_change_callback=None,
+    ) -> None:
         self._configs: dict[str, PrinterConfig] = {}
         self._clients: dict[str, BambuMQTTClient] = {}
+        self._status_change_callback = status_change_callback
         for cfg in printer_configs:
             self._configs[cfg.serial] = cfg
-            self._clients[cfg.serial] = BambuMQTTClient(cfg)
+            client = BambuMQTTClient(cfg)
+            if status_change_callback is not None:
+                client.set_status_change_callback(status_change_callback)
+            self._clients[cfg.serial] = client
 
     def start(self) -> None:
         """Initialize printer service without opening MQTT connections."""
@@ -69,7 +77,10 @@ class PrinterService:
                 logger.info("Resetting printer %s client (config changed)", serial)
                 self._clients[serial].stop()
                 self._configs[serial] = new
-                self._clients[serial] = BambuMQTTClient(new)
+                new_client = BambuMQTTClient(new)
+                if self._status_change_callback is not None:
+                    new_client.set_status_change_callback(self._status_change_callback)
+                self._clients[serial] = new_client
             else:
                 # Non-connection fields changed (name, machine_model, etc.)
                 self._configs[serial] = new
@@ -83,7 +94,10 @@ class PrinterService:
             cfg = new_by_serial[serial]
             logger.info("Adding printer %s", serial)
             self._configs[serial] = cfg
-            self._clients[serial] = BambuMQTTClient(cfg)
+            client = BambuMQTTClient(cfg)
+            if self._status_change_callback is not None:
+                client.set_status_change_callback(self._status_change_callback)
+            self._clients[serial] = client
 
     def get_all_statuses(self) -> list[PrinterStatus]:
         """Return status for every configured printer."""
