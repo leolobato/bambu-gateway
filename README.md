@@ -76,6 +76,28 @@ A pre-built image is also available from GitHub Container Registry:
 docker pull ghcr.io/leolobato/bambu-gateway:latest
 ```
 
+### iOS push notifications (optional)
+
+The gateway can send push notifications and Live Activity updates to the
+companion iOS app when prints change state. This requires a paid Apple
+Developer account.
+
+1. Create an APNs Auth Key (`.p8`) in the Apple Developer portal.
+2. Note the **Key ID** and **Team ID**.
+3. Set these env vars in `.env`:
+
+````
+APNS_KEY_PATH=/path/to/AuthKey_KEYID.p8
+APNS_KEY_ID=KEYID
+APNS_TEAM_ID=TEAMID
+APNS_BUNDLE_ID=org.yourname.BambuGateway
+APNS_ENVIRONMENT=production   # or "sandbox" for debug builds
+````
+
+Leaving `APNS_KEY_PATH` empty disables push. The iOS app degrades gracefully
+in that case — Live Activities still run while the app is in the foreground,
+but no remote updates or notifications are delivered.
+
 ## Configuration
 
 ### Printer config
