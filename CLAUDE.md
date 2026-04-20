@@ -54,8 +54,9 @@ and **FTPS** (port 990, implicit TLS) for file uploads.
   state derivation logic. Determines granular printer state from `gcode_state`,
   `stg_cur`, and `layer_num` MQTT fields.
 - `app/parse_3mf.py` — Extracts metadata (plates, filaments, profiles, thumbnails)
-  from 3MF ZIP archives. Also contains `sanitize_3mf()` which clamps out-of-range
-  parameter values that OrcaSlicer rejects (common in MakerWorld downloads).
+  from 3MF ZIP archives. The gateway does not mutate 3MFs before forwarding;
+  `orcaslicer-cli` owns all input normalization (clamps, printer-identity
+  rebrand, filament-slot trim).
 - `app/filament_selection.py` — Validates and normalizes filament profile selections
   before passing them to the slicer API.
 - `app/slicer_client.py` — HTTP client for the OrcaSlicer CLI API. Supports both

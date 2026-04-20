@@ -56,7 +56,7 @@ from app.models import (
     StartDryingRequest,
     TransferredSetting,
 )
-from app.parse_3mf import parse_3mf, sanitize_3mf
+from app.parse_3mf import parse_3mf
 from app.printer_service import PrinterService
 from app.slicer_client import SlicerClient, SliceResult, SlicingError
 from app.upload_tracker import UploadCancelledError, tracker as upload_tracker
@@ -231,7 +231,7 @@ async def lifespan(app: FastAPI):
         await apns_client.aclose()
 
 
-app = FastAPI(title="Bambu Gateway", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Bambu Gateway", version="0.2.1", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory=str(_APP_DIR / "static")), name="static")
 
@@ -1048,8 +1048,6 @@ async def print_file(
         if filament_error is not None or filament_payload is None:
             raise HTTPException(status_code=400, detail=filament_error)
 
-        file_data = sanitize_3mf(file_data)
-
         try:
             slice_result = await slicer_client.slice(
                 file_data,
@@ -1193,8 +1191,6 @@ async def print_preview(
     if filament_error is not None or filament_payload is None:
         raise HTTPException(status_code=400, detail=filament_error)
 
-    file_data = sanitize_3mf(file_data)
-
     try:
         slice_result = await slicer_client.slice(
             file_data,
@@ -1291,7 +1287,6 @@ async def print_file_stream(
     if filament_error is not None or filament_payload is None:
         raise HTTPException(status_code=400, detail=filament_error)
 
-    file_data = sanitize_3mf(file_data)
     filename = file.filename
 
     pid = printer_id or printer_service.default_printer_id()
