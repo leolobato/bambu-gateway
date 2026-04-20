@@ -7,6 +7,7 @@ import logging
 import ssl
 import threading
 import time
+from collections.abc import Callable
 
 import paho.mqtt.client as mqtt
 
@@ -46,6 +47,13 @@ class BambuMQTTClient:
         self._ams_module_types: dict[int, AMSType] = {}  # ams_id -> AMSType from get_version
         self._lock = threading.Lock()
         self._disconnect_timer: threading.Timer | None = None
+        self._status_change_callback: Callable[[PrinterStatus, PrinterStatus], None] | None = None
+
+    def set_status_change_callback(
+        self, callback: Callable[[PrinterStatus, PrinterStatus], None] | None,
+    ) -> None:
+        """Register a callback invoked on every status update with (prev, new) snapshots."""
+        self._status_change_callback = callback
 
     @property
     def serial(self) -> str:
@@ -409,6 +417,7 @@ class BambuMQTTClient:
     def _update_status(self, print_info: dict) -> None:
         """Apply fields from an MQTT print report to the in-memory status."""
         with self._lock:
+            prev_snapshot = self._status.model_copy(deep=True)
             # Track raw fields for state derivation
             gcode_state = print_info.get("gcode_state")
             if gcode_state is not None:
@@ -577,3 +586,12 @@ class BambuMQTTClient:
             if "vt_tray" in print_info:
                 self._parse_vt_tray(print_info)
             self._schedule_disconnect_locked()
+
+        callback = self._status_change_callback
+        if callback is not None:
+            try:
+                with self._lock:
+                    new_snapshot = self._status.model_copy(deep=True)
+                callback(prev_snapshot, new_snapshot)
+            except Exception:
+                logger.exception("Status change callback raised")
