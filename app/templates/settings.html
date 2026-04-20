@@ -14,65 +14,76 @@
 
   <main>
     <section>
-      <h2>Printers</h2>
+      <div class="section-header">
+        <h2>Printers</h2>
+        <button type="button" class="btn-sm" onclick="openAddPrinter()">Add Printer</button>
+      </div>
       <div id="printer-list"><p class="muted">Loading...</p></div>
-    </section>
-
-    <section id="add-section">
-      <h2 id="form-title">Add Printer</h2>
-      <form id="printer-form">
-        <input type="hidden" id="edit-serial">
-        <div class="form-row">
-          <div class="form-group">
-            <label for="input-name">Name</label>
-            <input type="text" id="input-name" placeholder="My Printer">
-          </div>
-          <div class="form-group">
-            <label for="input-serial">Serial</label>
-            <input type="text" id="input-serial" required>
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label for="input-ip">IP Address</label>
-            <input type="text" id="input-ip" required>
-          </div>
-          <div class="form-group">
-            <label for="input-code">Access Code</label>
-            <input type="password" id="input-code">
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label for="input-machine">Machine Model</label>
-            <select id="input-machine">
-              <option value="">None (no filament filtering)</option>
-            </select>
-          </div>
-        </div>
-        <div class="form-actions">
-          <button type="submit" id="btn-submit">Add Printer</button>
-          <button type="button" id="btn-cancel" class="btn-cancel hidden"
-                  onclick="cancelEdit()">Cancel</button>
-        </div>
-      </form>
       <p id="form-status" class="muted"></p>
     </section>
+
+    <section id="push-section">
+      <h2>Push Notifications</h2>
+      <p id="push-status" class="muted">Loading...</p>
+      <div id="device-list"></div>
+      <p id="push-message" class="muted"></p>
+    </section>
   </main>
+
+  <dialog id="printer-dialog" class="modal">
+    <form id="printer-form" method="dialog">
+      <h2 id="form-title">Add Printer</h2>
+      <input type="hidden" id="edit-serial">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="input-name">Name</label>
+          <input type="text" id="input-name" placeholder="My Printer">
+        </div>
+        <div class="form-group">
+          <label for="input-serial">Serial</label>
+          <input type="text" id="input-serial" required>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="input-ip">IP Address</label>
+          <input type="text" id="input-ip" required>
+        </div>
+        <div class="form-group">
+          <label for="input-code">Access Code</label>
+          <input type="password" id="input-code">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="input-machine">Machine Model</label>
+          <select id="input-machine">
+            <option value="">None (no filament filtering)</option>
+          </select>
+        </div>
+      </div>
+      <p id="dialog-status" class="muted"></p>
+      <div class="form-actions">
+        <button type="button" class="btn-cancel" onclick="closePrinterDialog()">Cancel</button>
+        <button type="submit" id="btn-submit">Add Printer</button>
+      </div>
+    </form>
+  </dialog>
 
   <script>
     const printerList = document.getElementById('printer-list');
     const form = document.getElementById('printer-form');
     const formTitle = document.getElementById('form-title');
     const formStatus = document.getElementById('form-status');
+    const dialogStatus = document.getElementById('dialog-status');
     const btnSubmit = document.getElementById('btn-submit');
-    const btnCancel = document.getElementById('btn-cancel');
     const editSerial = document.getElementById('edit-serial');
     const inputName = document.getElementById('input-name');
     const inputSerial = document.getElementById('input-serial');
     const inputIp = document.getElementById('input-ip');
     const inputCode = document.getElementById('input-code');
     const inputMachine = document.getElementById('input-machine');
+    const printerDialog = document.getElementById('printer-dialog');
 
     let editing = false;
     let machinesLoaded = false;
@@ -130,6 +141,22 @@
       return (str || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
     }
 
+    async function openAddPrinter() {
+      await loadMachines();
+      editing = false;
+      editSerial.value = '';
+      form.reset();
+      inputSerial.readOnly = false;
+      inputCode.placeholder = '';
+      inputMachine.value = '';
+      formTitle.textContent = 'Add Printer';
+      btnSubmit.textContent = 'Add Printer';
+      dialogStatus.textContent = '';
+      dialogStatus.className = 'muted';
+      printerDialog.showModal();
+      inputName.focus();
+    }
+
     async function startEdit(serial, name, ip, machineModel) {
       await loadMachines();
       editing = true;
@@ -143,22 +170,20 @@
       inputMachine.value = machineModel || '';
       formTitle.textContent = 'Edit Printer';
       btnSubmit.textContent = 'Save Changes';
-      btnCancel.classList.remove('hidden');
-      formStatus.textContent = '';
+      dialogStatus.textContent = '';
+      dialogStatus.className = 'muted';
+      printerDialog.showModal();
       inputName.focus();
     }
 
-    function cancelEdit() {
+    function closePrinterDialog() {
+      printerDialog.close();
       editing = false;
       editSerial.value = '';
       form.reset();
       inputSerial.readOnly = false;
       inputCode.placeholder = '';
       inputMachine.value = '';
-      formTitle.textContent = 'Add Printer';
-      btnSubmit.textContent = 'Add Printer';
-      btnCancel.classList.add('hidden');
-      formStatus.textContent = '';
     }
 
     async function deletePrinter(serial) {
@@ -212,20 +237,133 @@
         if (resp.ok) {
           formStatus.textContent = editing ? 'Printer updated.' : 'Printer added.';
           formStatus.className = 'success';
-          cancelEdit();
+          closePrinterDialog();
           refresh();
         } else {
-          formStatus.textContent = data.detail || 'Save failed';
-          formStatus.className = 'error-text';
+          dialogStatus.textContent = data.detail || 'Save failed';
+          dialogStatus.className = 'error-text';
         }
       } catch (e) {
-        formStatus.textContent = 'Network error';
-        formStatus.className = 'error-text';
+        dialogStatus.textContent = 'Network error';
+        dialogStatus.className = 'error-text';
       }
     });
 
+    const pushStatus = document.getElementById('push-status');
+    const deviceList = document.getElementById('device-list');
+    const pushMessage = document.getElementById('push-message');
+
+    function formatDateTime(iso) {
+      if (!iso) return '—';
+      try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return iso;
+        return d.toLocaleString();
+      } catch {
+        return iso;
+      }
+    }
+
+    async function refreshPush() {
+      try {
+        const capsResp = await fetch('/api/capabilities');
+        const caps = await capsResp.json();
+        if (!caps.push) {
+          pushStatus.innerHTML = 'Push is <strong>disabled</strong>. Configure APNs credentials to enable — see <a href="https://github.com/leolobato/bambu-gateway/blob/main/docs/APNS.md" target="_blank">docs/APNS.md</a>.';
+          deviceList.innerHTML = '';
+          return;
+        }
+        pushStatus.innerHTML = 'Push is <strong>enabled</strong>. Devices register automatically when the iOS app launches and notifications are allowed.';
+
+        const devResp = await fetch('/api/devices');
+        const data = await devResp.json();
+        renderDevices(data.devices || []);
+      } catch (e) {
+        pushStatus.textContent = 'Could not load push status.';
+        deviceList.innerHTML = '';
+      }
+    }
+
+    function renderDevices(devices) {
+      if (!devices.length) {
+        deviceList.innerHTML = '<p class="muted">No devices registered yet.</p>';
+        return;
+      }
+
+      deviceList.innerHTML = devices.map(d => {
+        const tokenBits = [];
+        if (d.has_device_token) tokenBits.push('alert token');
+        if (d.has_live_activity_start_token) tokenBits.push('push-to-start token');
+        if (d.active_activity_count > 0) tokenBits.push(`${d.active_activity_count} active activity${d.active_activity_count === 1 ? '' : 's'}`);
+        const tokens = tokenBits.length ? tokenBits.join(' · ') : 'no tokens';
+        const subs = d.subscribed_printers.includes('*')
+          ? 'all printers'
+          : d.subscribed_printers.join(', ') || 'no printers';
+
+        return `
+          <div class="settings-card">
+            <div class="settings-card-header">
+              <strong>${esc(d.name) || d.id}</strong>
+              <div class="settings-card-actions">
+                <button class="btn-sm" onclick="testPush('${esc(d.id)}', '${esc(d.name)}')"
+                        ${d.has_device_token ? '' : 'disabled'}>Test</button>
+                <button class="btn-sm btn-danger" onclick="deleteDevice('${esc(d.id)}')">Delete</button>
+              </div>
+            </div>
+            <div class="settings-card-detail">
+              ${tokens} &middot; ${subs} &middot; last seen ${formatDateTime(d.last_seen_at)}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function testPush(deviceId, name) {
+      pushMessage.textContent = `Sending test push to ${name || deviceId}…`;
+      pushMessage.className = 'muted';
+      try {
+        const resp = await fetch(`/api/devices/${encodeURIComponent(deviceId)}/test`, {
+          method: 'POST',
+        });
+        const data = await resp.json();
+        if (resp.ok && data.status === 'ok') {
+          pushMessage.textContent = `Test push sent to ${name || deviceId}.`;
+          pushMessage.className = 'success';
+        } else {
+          pushMessage.textContent = data.detail || 'Test push failed.';
+          pushMessage.className = 'error-text';
+        }
+        refreshPush();
+      } catch (e) {
+        pushMessage.textContent = 'Network error.';
+        pushMessage.className = 'error-text';
+      }
+    }
+
+    async function deleteDevice(deviceId) {
+      if (!confirm('Remove this device from the push registry?')) return;
+      try {
+        const resp = await fetch(`/api/devices/${encodeURIComponent(deviceId)}`, {
+          method: 'DELETE',
+        });
+        if (resp.ok) {
+          pushMessage.textContent = 'Device removed.';
+          pushMessage.className = 'success';
+          refreshPush();
+        } else {
+          const data = await resp.json();
+          pushMessage.textContent = data.detail || 'Delete failed.';
+          pushMessage.className = 'error-text';
+        }
+      } catch (e) {
+        pushMessage.textContent = 'Network error.';
+        pushMessage.className = 'error-text';
+      }
+    }
+
     refresh();
     loadMachines();
+    refreshPush();
   </script>
 </body>
 </html>

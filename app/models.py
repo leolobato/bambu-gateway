@@ -372,3 +372,25 @@ class ActivityRegisterRequest(BaseModel):
 
 class ActivityRegisterResponse(BaseModel):
     status: str = "ok"
+
+
+class DeviceInfo(BaseModel):
+    """Sanitized device record for the web UI — never includes raw tokens."""
+
+    id: str
+    name: str
+    has_device_token: bool
+    has_live_activity_start_token: bool
+    active_activity_count: int
+    subscribed_printers: list[str]
+    registered_at: str
+    last_seen_at: str
+
+
+class DeviceListResponse(BaseModel):
+    devices: list[DeviceInfo]
+
+
+class TestPushResponse(BaseModel):
+    status: str  # "ok" | "failed"
+    detail: str = ""

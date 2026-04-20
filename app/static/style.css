@@ -326,6 +326,40 @@ input[type="text"], input[type="password"] {
   display: none !important;
 }
 
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.section-header h2 {
+  margin: 0;
+}
+
+.modal {
+  border: none;
+  border-radius: 8px;
+  padding: 1.5rem;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+  max-width: 540px;
+  width: calc(100vw - 2rem);
+}
+
+.modal::backdrop {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.modal h2 {
+  margin: 0 0 1rem 0;
+}
+
+.modal .form-actions {
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
 /* Print page */
 
 .tray-row, .filament-row {

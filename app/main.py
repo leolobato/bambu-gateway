@@ -32,8 +32,11 @@ from app.models import (
     AMSUnit,
     CapabilitiesResponse,
     CommandResponse,
+    DeviceInfo,
+    DeviceListResponse,
     DeviceRegisterRequest,
     DeviceRegisterResponse,
+    TestPushResponse,
     FilamentMatchRequest,
     FilamentMatchResponse,
     FilamentMatchReason,
@@ -303,6 +306,69 @@ async def unregister_activity(device_id: str, printer_id: str):
     store: DeviceStore = app.state.device_store
     store.remove_activity(device_id, printer_id)
     return {"status": "ok"}
+
+
+@app.get("/api/devices", response_model=DeviceListResponse)
+async def list_devices():
+    """Sanitized list of registered push devices — never exposes raw tokens."""
+    store: DeviceStore = app.state.device_store
+    printer_ids = _all_printer_ids()
+    devices = []
+    for dev in store.list_devices():
+        activity_count = sum(
+            1 for printer_id in printer_ids
+            for a in store.list_activities_for_printer(printer_id)
+            if a.device_id == dev.id
+        )
+        devices.append(DeviceInfo(
+            id=dev.id,
+            name=dev.name,
+            has_device_token=bool(dev.device_token),
+            has_live_activity_start_token=bool(dev.live_activity_start_token),
+            active_activity_count=activity_count,
+            subscribed_printers=list(dev.subscribed_printers),
+            registered_at=dev.registered_at,
+            last_seen_at=dev.last_seen_at,
+        ))
+    return DeviceListResponse(devices=devices)
+
+
+def _all_printer_ids() -> list[str]:
+    return [cfg.serial for cfg in printer_service.get_configs()]
+
+
+@app.post(
+    "/api/devices/{device_id}/test",
+    response_model=TestPushResponse,
+)
+async def send_test_push(device_id: str):
+    """Send a test alert notification to a specific registered device."""
+    if not settings.push_enabled:
+        raise HTTPException(status_code=503, detail="push is not enabled on this gateway")
+    apns_client = app.state.apns_client
+    if apns_client is None:
+        raise HTTPException(status_code=503, detail="APNs client not initialized")
+    store: DeviceStore = app.state.device_store
+    dev = store.get_device(device_id)
+    if dev is None:
+        raise HTTPException(status_code=404, detail="device not found")
+    if not dev.device_token:
+        raise HTTPException(status_code=400, detail="device has no APNs token")
+    result = await apns_client.send_alert(
+        device_token=dev.device_token,
+        title="Test notification",
+        body=f"Hello from Bambu Gateway — this is a test push to {dev.name}.",
+        event_type="test",
+        printer_id="",
+    )
+    if result.ok:
+        return TestPushResponse(status="ok")
+    if result.token_invalid:
+        store.invalidate_token(dev.device_token)
+    return TestPushResponse(
+        status="failed",
+        detail=f"APNs returned {result.status_code} {result.reason}".strip(),
+    )
 
 
 @app.get("/api/uploads/{upload_id}")
