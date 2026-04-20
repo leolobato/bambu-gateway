@@ -587,11 +587,11 @@ class BambuMQTTClient:
                 self._parse_vt_tray(print_info)
             self._schedule_disconnect_locked()
 
+            new_snapshot = self._status.model_copy(deep=True)
+
         callback = self._status_change_callback
         if callback is not None:
             try:
-                with self._lock:
-                    new_snapshot = self._status.model_copy(deep=True)
                 callback(prev_snapshot, new_snapshot)
             except Exception:
                 logger.exception("Status change callback raised")
