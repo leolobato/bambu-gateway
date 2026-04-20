@@ -18,6 +18,7 @@ An iOS client is also available: **[BambuGateway iOS](https://github.com/leoloba
 - Automatic AMS tray matching for project filaments
 - Supports custom filament profiles through [orcaslicer-cli](https://github.com/leolobato/orcaslicer-cli)
 - Multi-printer support
+- Optional iOS Live Activities and push notifications via APNs
 - REST API for automation and integration
 - Runs entirely on your local network
 
@@ -79,24 +80,30 @@ docker pull ghcr.io/leolobato/bambu-gateway:latest
 ### iOS push notifications (optional)
 
 The gateway can send push notifications and Live Activity updates to the
-companion iOS app when prints change state. This requires a paid Apple
-Developer account.
+companion iOS app when a print changes state — paused, failed, completed,
+cancelled, offline, or flagged by the printer's health-monitoring system.
+When enabled, the iPhone shows a Live Activity on the Lock Screen and
+Dynamic Island with progress, remaining time, and current layer, updated
+in real time even when the app is closed.
 
-1. Create an APNs Auth Key (`.p8`) in the Apple Developer portal.
-2. Note the **Key ID** and **Team ID**.
-3. Set these env vars in `.env`:
+Enabling this requires a **paid Apple Developer account** so you can mint
+an APNs Auth Key. The four required env vars are:
 
-````
+```env
 APNS_KEY_PATH=/path/to/AuthKey_KEYID.p8
 APNS_KEY_ID=KEYID
 APNS_TEAM_ID=TEAMID
 APNS_BUNDLE_ID=org.yourname.BambuGateway
-APNS_ENVIRONMENT=production   # or "sandbox" for debug builds
-````
+APNS_ENVIRONMENT=sandbox   # or "production" for TestFlight / App Store builds
+```
 
-Leaving `APNS_KEY_PATH` empty disables push. The iOS app degrades gracefully
-in that case — Live Activities still run while the app is in the foreground,
-but no remote updates or notifications are delivered.
+Leaving any of them empty disables push entirely. The iOS app degrades
+gracefully in that case — Live Activities still run locally while the app is
+foregrounded, but remote updates and notifications aren't delivered.
+
+See **[docs/APNS.md](docs/APNS.md)** for the full walkthrough: creating the
+`.p8` key, choosing sandbox vs. production, installing the key for Docker
+deployments, rotating keys, and troubleshooting.
 
 ## Configuration
 
@@ -125,6 +132,11 @@ python -m app -c /data/printers.json
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `MAX_FILE_SIZE_MB` | `200` | Maximum upload file size in MB |
 | `ORCASLICER_API_URL` | | OrcaSlicer CLI API URL (e.g. `http://10.0.1.9:8070`) — required for slicing |
+| `APNS_KEY_PATH` | | Path to APNs Auth Key `.p8` — see [docs/APNS.md](docs/APNS.md). All four APNS_* vars must be set to enable push |
+| `APNS_KEY_ID` | | 10-character Key ID from the Apple Developer portal |
+| `APNS_TEAM_ID` | | 10-character Team ID from the Apple Developer portal |
+| `APNS_BUNDLE_ID` | | Bundle ID of the iOS app receiving push |
+| `APNS_ENVIRONMENT` | `production` | `sandbox` for dev builds, `production` for TestFlight / App Store |
 
 Environment variables only seed the config on first run when no `printers.json`
 exists.
