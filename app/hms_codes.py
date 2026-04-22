@@ -46,6 +46,33 @@ def describe_print_error(code: int) -> str | None:
     return PRINT_ERROR_DESCRIPTIONS.get(code)
 
 
+def current_error_description(
+    hms_codes: list[HMSCode],
+    print_error: int,
+) -> str | None:
+    """Return a human-readable description of the currently-present error,
+    or None if no error signal is active.
+
+    Unlike :func:`pause_reason`, this reads the current snapshot without
+    needing a previous one — suited for rendering "the printer is stuck
+    because X" in the UI.
+    """
+    if hms_codes:
+        first = hms_codes[0]
+        description = describe_hms_code(first.attr)
+        if description:
+            return description
+        return f"unknown error (code {first.attr})"
+
+    if print_error != 0:
+        description = describe_print_error(print_error)
+        if description:
+            return description
+        return f"unknown error (code 0x{print_error:08X})"
+
+    return None
+
+
 def pause_reason(
     prev_hms: list[HMSCode],
     new_hms: list[HMSCode],

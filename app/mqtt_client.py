@@ -12,6 +12,7 @@ from collections.abc import Callable
 import paho.mqtt.client as mqtt
 
 from app.config import PrinterConfig
+from app.hms_codes import current_error_description
 from app.models import (
     AMSType,
     HMSCode,
@@ -522,6 +523,15 @@ class BambuMQTTClient:
                 self._status.state = state
                 self._status.stage_category = category
                 self._status.stage_name = s_name
+
+            # Populate error_message while paused/stopped at an error. Cleared
+            # automatically on resume (state leaves paused/error).
+            if self._status.state in (PrinterState.paused, PrinterState.error):
+                self._status.error_message = current_error_description(
+                    self._status.hms_codes, self._status.print_error,
+                )
+            else:
+                self._status.error_message = None
 
             # Clear job when idle/finished/cancelled with 0 progress
             if self._status.state in (

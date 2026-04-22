@@ -120,6 +120,7 @@ class PrinterStatus(BaseModel):
     job: PrintJob | None = None
     hms_codes: list[HMSCode] = []
     print_error: int = 0  # non-zero when the printer auto-paused/stopped on an error
+    error_message: str | None = None  # human-readable reason when paused/stopped at an error
 
 
 # --- API response models ---

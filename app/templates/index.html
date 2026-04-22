@@ -295,6 +295,7 @@
               Nozzle: ${t.nozzle_temp.toFixed(0)}/${t.nozzle_target.toFixed(0)}&deg;C &nbsp;
               Bed: ${t.bed_temp.toFixed(0)}/${t.bed_target.toFixed(0)}&deg;C
             </div>
+            ${p.error_message ? `<div class="error-message">&#9888; ${p.error_message}</div>` : ''}
             ${jobHtml}
             ${controlsHtml}
           </div>`;
