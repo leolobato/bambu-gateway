@@ -122,7 +122,7 @@ class _ApnsProtocol(Protocol):
 
 
 _ALERT_COPY: dict[EventType, tuple[str, str]] = {
-    EventType.print_paused: ("Print paused", "{printer} paused on layer {layer}"),
+    EventType.print_paused: ("Print paused", "{printer} paused at {progress}%"),
     EventType.print_failed: ("Print failed", "{printer} stopped with an error"),
     EventType.print_cancelled: ("Print cancelled", "{printer} cancelled"),
     EventType.print_finished: ("Print complete", "{printer} finished {file}"),
@@ -266,11 +266,12 @@ class NotificationHub:
         title_tpl, body_tpl = _ALERT_COPY[event.event_type]
         subscribers = self._store.subscribers_for_printer(event.printer_id)
         layer = event.snapshot.job.current_layer if event.snapshot.job else 0
+        progress = event.snapshot.job.progress if event.snapshot.job else 0
         file_name = event.snapshot.job.file_name if event.snapshot.job else ""
         title = title_tpl.format(printer=event.snapshot.name)
         body = body_tpl.format(
             printer=event.snapshot.name,
-            layer=layer, file=file_name, code=event.hms_code,
+            layer=layer, progress=progress, file=file_name, code=event.hms_code,
         )
         if event.event_type == EventType.print_paused and event.prev_snapshot is not None:
             reason = pause_reason(
