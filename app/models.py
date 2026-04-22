@@ -119,6 +119,7 @@ class PrinterStatus(BaseModel):
     temperatures: TemperatureInfo = TemperatureInfo()
     job: PrintJob | None = None
     hms_codes: list[HMSCode] = []
+    print_error: int = 0  # non-zero when the printer auto-paused/stopped on an error
 
 
 # --- API response models ---

@@ -481,7 +481,35 @@ class BambuMQTTClient:
                         code = entry.get("code")
                         if isinstance(attr, str) and isinstance(code, str):
                             parsed.append(HMSCode(attr=attr, code=code))
+                prev_attrs = {c.attr for c in self._status.hms_codes}
+                new_attrs = {c.attr for c in parsed}
+                if prev_attrs != new_attrs:
+                    logger.info(
+                        "Printer %s HMS codes changed: %s -> %s",
+                        self._config.serial,
+                        sorted(prev_attrs) or "none",
+                        sorted(new_attrs) or "none",
+                    )
                 self._status.hms_codes = parsed
+
+            # print_error: non-zero means the printer auto-paused/stopped on an
+            # error. User-initiated pauses keep this at 0.
+            err_raw = print_info.get("print_error")
+            if err_raw is None:
+                err_raw = print_info.get("mc_print_error_code")
+            if err_raw is not None:
+                try:
+                    err_val = int(err_raw)
+                except (ValueError, TypeError):
+                    err_val = 0
+                if err_val != self._status.print_error:
+                    logger.info(
+                        "Printer %s print_error changed: %d -> %d",
+                        self._config.serial,
+                        self._status.print_error,
+                        err_val,
+                    )
+                    self._status.print_error = err_val
 
             # Derive state using gcode_state + stg_cur + layer_num
             if gcode_state is not None or "stg_cur" in print_info:

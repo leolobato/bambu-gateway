@@ -26,3 +26,4 @@ class NotificationEvent:
     printer_id: str
     snapshot: PrinterStatus
     hms_code: str = ""  # populated for hms_warning
+    prev_snapshot: PrinterStatus | None = None  # populated for print_paused

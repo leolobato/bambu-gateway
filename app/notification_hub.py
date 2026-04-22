@@ -11,6 +11,7 @@ from typing import Protocol
 
 from app.apns_client import ApnsResult
 from app.device_store import DeviceStore
+from app.hms_codes import pause_reason
 from app.models import PrinterState, PrinterStatus
 from app.notification_events import EventType, NotificationEvent
 
@@ -34,6 +35,7 @@ def detect_events(
                 event_type=transition_event,
                 printer_id=new.id,
                 snapshot=new,
+                prev_snapshot=prev if transition_event == EventType.print_paused else None,
             ))
 
     # Offline-while-active
@@ -270,6 +272,15 @@ class NotificationHub:
             printer=event.snapshot.name,
             layer=layer, file=file_name, code=event.hms_code,
         )
+        if event.event_type == EventType.print_paused and event.prev_snapshot is not None:
+            reason = pause_reason(
+                prev_hms=event.prev_snapshot.hms_codes,
+                new_hms=event.snapshot.hms_codes,
+                prev_print_error=event.prev_snapshot.print_error,
+                new_print_error=event.snapshot.print_error,
+            )
+            if reason:
+                body = f"{body}: {reason}"
         for dev in subscribers:
             if not dev.device_token:
                 continue
