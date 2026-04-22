@@ -231,7 +231,7 @@ async def lifespan(app: FastAPI):
         await apns_client.aclose()
 
 
-app = FastAPI(title="Bambu Gateway", version="1.3.0", lifespan=lifespan)
+app = FastAPI(title="Bambu Gateway", version="1.4.0", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory=str(_APP_DIR / "static")), name="static")
 
@@ -737,7 +737,9 @@ async def get_ams():
     if pid is None:
         raise HTTPException(status_code=404, detail="No printers configured")
 
-    ams_info = printer_service.get_ams_info(pid)
+    # Wait briefly for the first MQTT pushall on cold-start so clients don't
+    # see a transient empty AMS snapshot.
+    ams_info = await printer_service.get_ams_info_async(pid)
     if ams_info is None:
         raise HTTPException(status_code=404, detail="Printer not found")
 

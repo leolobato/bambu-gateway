@@ -138,6 +138,18 @@ class PrinterService:
             return None
         return client.get_ams_info()
 
+    async def get_ams_info_async(
+        self, printer_id: str, wait_timeout: float = 2.5,
+    ) -> tuple[list[dict], list[dict], dict | None] | None:
+        """Async AMS fetch that waits up to `wait_timeout` for the first
+        MQTT report on cold-start, avoiding the empty-cache race without
+        needing client-side retries.
+        """
+        client = self._clients.get(printer_id)
+        if client is None:
+            return None
+        return await client.get_ams_info_async(wait_timeout=wait_timeout)
+
     def pause_print(self, printer_id: str) -> None:
         """Pause the current print on the given printer."""
         client = self._clients.get(printer_id)

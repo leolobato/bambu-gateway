@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import ssl
@@ -49,6 +50,10 @@ class BambuMQTTClient:
         self._lock = threading.Lock()
         self._disconnect_timer: threading.Timer | None = None
         self._status_change_callback: Callable[[PrinterStatus, PrinterStatus], None] | None = None
+        # Set by _update_status on the first MQTT report that parses. Lets
+        # async consumers wait briefly on cold-start / lazy-connect for the
+        # printer's first pushall to land in the cache before returning.
+        self._data_ready_event = threading.Event()
 
     def set_status_change_callback(
         self, callback: Callable[[PrinterStatus, PrinterStatus], None] | None,
@@ -75,6 +80,25 @@ class BambuMQTTClient:
         """Return (trays, units, vt_tray) for this printer."""
         self.ensure_connected()
         self.request_pushall()
+        with self._lock:
+            return list(self._ams_trays), list(self._ams_units), (dict(self._vt_tray) if self._vt_tray else None)
+
+    async def get_ams_info_async(
+        self, wait_timeout: float = 2.5,
+    ) -> tuple[list[dict], list[dict], dict | None]:
+        """Async variant that waits briefly for the first MQTT report on
+        cold-start / lazy-connect before reading the cache. Once the
+        `_data_ready_event` is set (lifetime of the client instance),
+        subsequent calls return immediately.
+        """
+        def _prime() -> None:
+            self.ensure_connected()
+            self.request_pushall()
+
+        await asyncio.to_thread(_prime)
+        if wait_timeout > 0 and not self._data_ready_event.is_set():
+            await asyncio.to_thread(self._data_ready_event.wait, wait_timeout)
+
         with self._lock:
             return list(self._ams_trays), list(self._ams_units), (dict(self._vt_tray) if self._vt_tray else None)
 
@@ -626,6 +650,9 @@ class BambuMQTTClient:
             self._schedule_disconnect_locked()
 
             new_snapshot = self._status.model_copy(deep=True)
+
+        # Outside the lock: release anyone awaiting the first parsed report.
+        self._data_ready_event.set()
 
         callback = self._status_change_callback
         if callback is not None:

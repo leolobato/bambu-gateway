@@ -576,6 +576,81 @@
 
     // --- Load setup data (AMS + slicer profiles, cached for later) ---
 
+    function renderAMS(data) {
+      amsUnitsData = data.units || [];
+      amsVtTrayData = data.vt_tray || null;
+      amsTraysData = data.trays || [];
+      if (amsVtTrayData) {
+        amsTraysData = [...amsTraysData, amsVtTrayData];
+      }
+
+      const hasTrays = data.trays && data.trays.length > 0;
+      const hasVt = !!amsVtTrayData;
+      if (!hasTrays && !hasVt) return false;
+
+      amsSection.classList.remove('hidden');
+
+      // Group trays by ams_id
+      const traysByUnit = {};
+      for (const t of (data.trays || [])) {
+        if (!traysByUnit[t.ams_id]) traysByUnit[t.ams_id] = [];
+        traysByUnit[t.ams_id].push(t);
+      }
+
+      const multiUnit = amsUnitsData.length > 1;
+      let html = '';
+
+      function renderTrayRow(t) {
+        return `
+          <div class="tray-row">
+            <span class="tray-slot">${trayLabel(t)}</span>
+            <span class="color-swatch" style="background:${colorHex(t.tray_color)}"></span>
+            <span class="tray-type">${t.tray_type || '—'}</span>
+            <span class="muted" style="min-width:5rem;font-size:0.75rem">${t.filament_id || ''}</span>
+            <span class="tray-filament">
+              <select data-slot="${t.slot}">
+                ${filamentOptionsHtml(
+                  t.matched_filament ? t.matched_filament.name : '',
+                  t.matched_filament ? t.matched_filament.setting_id : ''
+                )}
+              </select>
+            </span>
+          </div>`;
+      }
+
+      for (const unit of amsUnitsData) {
+        const unitTrays = traysByUnit[unit.id] || [];
+        const typeName = unit.ams_type ? amsTypeName(unit.ams_type) : 'AMS';
+        const unitLabel = multiUnit ? `${typeName} ${unit.id + 1}` : typeName;
+
+        let infoItems = [];
+        if (unit.ams_type !== 'lite' && unit.humidity >= 1 && unit.humidity <= 5) {
+          const humidityLabels = {1: 'Dry', 2: 'Low', 3: 'Medium', 4: 'High', 5: 'Wet'};
+          infoItems.push(`💧 ${humidityLabels[unit.humidity]}`);
+        }
+        if (unit.temperature > 0) infoItems.push(`${unit.temperature.toFixed(1)}°C`);
+        if (unit.dry_time_remaining > 0) infoItems.push(`Drying: ${unit.dry_time_remaining}min`);
+
+        html += `<div class="ams-unit">`;
+        html += `<div class="ams-unit-header"><span>${unitLabel}</span></div>`;
+        html += unitTrays.map(renderTrayRow).join('');
+        if (infoItems.length) {
+          html += `<div class="ams-unit-info">${infoItems.join(' · ')}</div>`;
+        }
+        html += `</div>`;
+      }
+
+      if (hasVt) {
+        html += `<div class="ams-unit">`;
+        html += `<div class="ams-unit-header"><span>External Spool</span></div>`;
+        html += renderTrayRow(amsVtTrayData);
+        html += `</div>`;
+      }
+
+      amsTrays.innerHTML = html;
+      return true;
+    }
+
     async function loadSetupData() {
       // Load machines first (needed to determine machine filter)
       const [amsRes, machinesRes] =
@@ -631,82 +706,11 @@
         allSlicerFilaments = slicerFilaments;
       }
 
-      // AMS
+      // AMS — the gateway waits internally for the first MQTT pushall on
+      // cold-start, so a single fetch is enough.
       if (amsRes.status === 'fulfilled' && amsRes.value.ok) {
         const data = await amsRes.value.json();
-        amsUnitsData = data.units || [];
-        amsVtTrayData = data.vt_tray || null;
-        amsTraysData = data.trays || [];
-        if (amsVtTrayData) {
-          amsTraysData = [...amsTraysData, amsVtTrayData];
-        }
-
-        const hasTrays = data.trays && data.trays.length > 0;
-        const hasVt = !!amsVtTrayData;
-
-        if (hasTrays || hasVt) {
-          amsSection.classList.remove('hidden');
-
-          // Group trays by ams_id
-          const traysByUnit = {};
-          for (const t of (data.trays || [])) {
-            if (!traysByUnit[t.ams_id]) traysByUnit[t.ams_id] = [];
-            traysByUnit[t.ams_id].push(t);
-          }
-
-          const multiUnit = amsUnitsData.length > 1;
-          let html = '';
-
-          function renderTrayRow(t) {
-            return `
-              <div class="tray-row">
-                <span class="tray-slot">${trayLabel(t)}</span>
-                <span class="color-swatch" style="background:${colorHex(t.tray_color)}"></span>
-                <span class="tray-type">${t.tray_type || '\u2014'}</span>
-                <span class="muted" style="min-width:5rem;font-size:0.75rem">${t.filament_id || ''}</span>
-                <span class="tray-filament">
-                  <select data-slot="${t.slot}">
-                    ${filamentOptionsHtml(
-                      t.matched_filament ? t.matched_filament.name : '',
-                      t.matched_filament ? t.matched_filament.setting_id : ''
-                    )}
-                  </select>
-                </span>
-              </div>`;
-          }
-
-          for (const unit of amsUnitsData) {
-            const unitTrays = traysByUnit[unit.id] || [];
-            const typeName = unit.ams_type ? amsTypeName(unit.ams_type) : 'AMS';
-            const unitLabel = multiUnit ? `${typeName} ${unit.id + 1}` : typeName;
-
-            let infoItems = [];
-            if (unit.ams_type !== 'lite' && unit.humidity >= 1 && unit.humidity <= 5) {
-              const humidityLabels = {1: 'Dry', 2: 'Low', 3: 'Medium', 4: 'High', 5: 'Wet'};
-              infoItems.push(`💧 ${humidityLabels[unit.humidity]}`);
-            }
-            if (unit.temperature > 0) infoItems.push(`${unit.temperature.toFixed(1)}\u00b0C`);
-            if (unit.dry_time_remaining > 0) infoItems.push(`Drying: ${unit.dry_time_remaining}min`);
-
-            html += `<div class="ams-unit">`;
-            html += `<div class="ams-unit-header"><span>${unitLabel}</span></div>`;
-            html += unitTrays.map(renderTrayRow).join('');
-            if (infoItems.length) {
-              html += `<div class="ams-unit-info">${infoItems.join(' · ')}</div>`;
-            }
-            html += `</div>`;
-          }
-
-          // External spool (vt_tray)
-          if (hasVt) {
-            html += `<div class="ams-unit">`;
-            html += `<div class="ams-unit-header"><span>External Spool</span></div>`;
-            html += renderTrayRow(amsVtTrayData);
-            html += `</div>`;
-          }
-
-          amsTrays.innerHTML = html;
-        }
+        renderAMS(data);
       }
 
       // Cache processes
