@@ -1,31 +1,40 @@
-import { Button } from '@/components/ui/button';
+import { createBrowserRouter, RouterProvider } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { AppShell } from '@/components/app-shell';
+import DashboardRoute from '@/routes/dashboard';
+import PrintRoute from '@/routes/print';
+import SettingsRoute from '@/routes/settings';
 import { Toaster } from '@/components/ui/sonner';
-import { toast } from 'sonner';
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 4_000,
+      refetchOnWindowFocus: true,
+    },
+  },
+});
+
+const router = createBrowserRouter(
+  [
+    {
+      path: '/',
+      element: <AppShell />,
+      children: [
+        { index: true, element: <DashboardRoute /> },
+        { path: 'print', element: <PrintRoute /> },
+        { path: 'settings', element: <SettingsRoute /> },
+      ],
+    },
+  ],
+  { basename: '/beta' },
+);
 
 export default function App() {
   return (
-    <div className="min-h-dvh bg-bg-0 text-text-0 p-8 font-sans">
-      <h1 className="text-[28px] font-extrabold tracking-tight text-white">
-        Bambu Gateway
-      </h1>
-      <p className="text-text-1 text-sm mt-2">
-        Foundation ready · <span className="text-accent">/beta</span>
-      </p>
-
-      <div className="mt-6 flex gap-3">
-        <Button onClick={() => toast.success('Primary action fired')}>
-          Primary
-        </Button>
-        <Button variant="secondary" onClick={() => toast('Secondary action')}>
-          Secondary
-        </Button>
-        <Button variant="destructive" onClick={() => toast.error('Destructive action')}>
-          Destructive
-        </Button>
-        <Button variant="ghost">Ghost</Button>
-      </div>
-
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
       <Toaster />
-    </div>
+    </QueryClientProvider>
   );
 }
