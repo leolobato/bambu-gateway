@@ -63,6 +63,31 @@ python -m app
 
 Open [http://localhost:4844](http://localhost:4844) in your browser.
 
+### Frontend (new UI, staged at /beta)
+
+The new React UI is in `web/` (Vite + React + TypeScript + Tailwind + shadcn/ui). During the rollout it's served at `/beta` alongside the existing Jinja UI at `/`; the two coexist until the Phase 6 cutover.
+
+**Dev:**
+
+```bash
+cd web
+npm install
+npm run dev       # http://localhost:5173/beta/ with HMR; /api proxied to :4844
+```
+
+Run the Python backend in a separate terminal (`python -m app` or `uvicorn app.main:app --reload`).
+
+**Production build:**
+
+```bash
+cd web
+npm run build     # writes app/static/dist/{index.html, assets/*}
+```
+
+FastAPI picks up the build output automatically — restart `python -m app` and visit `http://localhost:4844/beta/`.
+
+**Docker:** the Dockerfile runs the Node build stage automatically; no extra steps needed for `docker compose up -d` or the usual `deploy-docker.sh` flow.
+
 ### Docker
 
 ```bash
