@@ -70,8 +70,9 @@ export default {
         mono: ['"JetBrains Mono Variable"', '"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
       },
       borderRadius: {
-        lg: '12px',
-        xl: '16px',
+        md: '4px',
+        lg: '8px',
+        xl: '12px',
         '2xl': '16px',
       },
       transitionDuration: {
