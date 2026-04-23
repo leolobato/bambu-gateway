@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.requests import Request
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -71,6 +71,7 @@ logger = logging.getLogger(__name__)
 printer_service: PrinterService
 slicer_client: SlicerClient | None = None
 _APP_DIR = Path(__file__).resolve().parent
+_DIST_DIR = _APP_DIR / "static" / "dist"
 templates = Jinja2Templates(directory=str(_APP_DIR / "templates"))
 
 MAX_FILE_BYTES = settings.max_file_size_mb * 1024 * 1024
@@ -234,6 +235,33 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Bambu Gateway", version="1.4.0", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory=str(_APP_DIR / "static")), name="static")
+
+
+# --- New React UI (staged at /beta during Phase 1-5; becomes / at cutover) ---
+
+if _DIST_DIR.exists():
+    app.mount(
+        "/beta/assets",
+        StaticFiles(directory=str(_DIST_DIR / "assets")),
+        name="beta-assets",
+    )
+
+
+@app.get("/beta", response_class=HTMLResponse)
+@app.get("/beta/{path:path}", response_class=HTMLResponse)
+async def beta_spa(path: str = ""):
+    """Serve the React SPA shell for any /beta or /beta/<route> request.
+
+    Hashed assets under /beta/assets/* are served by StaticFiles above.
+    Everything else returns index.html so client-side routing works.
+    """
+    index_path = _DIST_DIR / "index.html"
+    if not index_path.exists():
+        raise HTTPException(
+            status_code=503,
+            detail="React bundle not built. Run 'cd web && npm run build'.",
+        )
+    return FileResponse(index_path, media_type="text/html")
 
 
 # --- Web UI ---
