@@ -239,6 +239,8 @@ app.mount("/static", StaticFiles(directory=str(_APP_DIR / "static")), name="stat
 
 # --- New React UI (staged at /beta during Phase 1-5; becomes / at cutover) ---
 
+# Mount is guarded so the app boots without a built React bundle (fresh clone).
+# If the bundle appears later, a process restart is required to pick up the mount.
 if _DIST_DIR.exists():
     app.mount(
         "/beta/assets",
@@ -247,8 +249,8 @@ if _DIST_DIR.exists():
     )
 
 
-@app.get("/beta", response_class=HTMLResponse)
-@app.get("/beta/{path:path}", response_class=HTMLResponse)
+@app.get("/beta")
+@app.get("/beta/{path:path}")
 async def beta_spa(path: str = ""):
     """Serve the React SPA shell for any /beta or /beta/<route> request.
 
