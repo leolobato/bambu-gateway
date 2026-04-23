@@ -10,3 +10,4 @@ data/
 printers.json
 .DS_Store
 .claude/
+.superpowers/
