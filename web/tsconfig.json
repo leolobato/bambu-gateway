@@ -5,6 +5,9 @@
     { "path": "./tsconfig.node.json" }
   ],
   "compilerOptions": {
+    // @/* is also declared in tsconfig.app.json. The shadcn/ui CLI reads
+    // the root tsconfig only (not project references), so the alias must
+    // live here too. Keep these two in sync.
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
