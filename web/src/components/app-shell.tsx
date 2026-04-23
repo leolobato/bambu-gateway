@@ -14,11 +14,12 @@ export function AppShell() {
           Bambu Gateway
         </div>
 
-        {/* Tabs */}
+        {/* Tabs — dimmed on /settings so the Settings pill looks active. Tabs stay
+            clickable/keyboard-reachable so users can navigate back without a second click. */}
         <nav
           className={cn(
-            'flex gap-1 bg-bg-1 border border-border rounded-full p-[3px]',
-            onSettings && 'opacity-50 pointer-events-none',
+            'flex gap-1 bg-bg-1 border border-border rounded-full p-[3px] transition-opacity duration-fast',
+            onSettings && 'opacity-50',
           )}
         >
           <TabLink to="/">Dashboard</TabLink>
@@ -48,6 +49,8 @@ export function AppShell() {
 }
 
 function TabLink({ to, children }: { to: string; children: React.ReactNode }) {
+  // `end` on the Dashboard tab (to === '/') so NavLink only marks it active at
+  // exactly '/', not on every subroute (/, /print, /settings all start with '/').
   return (
     <NavLink
       to={to}
