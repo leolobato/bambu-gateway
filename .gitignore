@@ -11,3 +11,8 @@ printers.json
 .DS_Store
 .claude/
 .superpowers/
+
+# Frontend (web/)
+web/node_modules/
+web/dist/
+app/static/dist/
