@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* shadcn/ui dark theme variables — HSL triplets (no hsl() wrapper) */
+    --background: 225 35% 7%;          /* #0B0D17 */
+    --foreground: 220 13% 91%;         /* #E5E7EB */
+    --card: 225 29% 10%;               /* #11151F */
+    --card-foreground: 220 13% 91%;
+    --popover: 223 25% 15%;            /* #1A2030 */
+    --popover-foreground: 220 13% 91%;
+    --primary: 217 91% 60%;            /* #3B82F6 */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 223 24% 23%;          /* #2D3650 */
+    --secondary-foreground: 0 0% 100%;
+    --muted: 225 14% 22%;              /* surface-2-ish */
+    --muted-foreground: 220 9% 55%;    /* #6B7280 */
+    --accent: 213 94% 68%;             /* #60A5FA */
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;          /* #EF4444 */
+    --destructive-foreground: 0 0% 100%;
+    --border: 215 20% 17%;             /* #1F2937 */
+    --input: 215 20% 17%;
+    --ring: 213 94% 68%;               /* accent blue for focus */
+    --radius: 12px;
+  }
+
+  html {
+    color-scheme: dark;
+    background-color: #0B0D17;
+  }
+
+  body {
+    @apply bg-bg-0 text-text-0 font-sans antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11'; /* Inter stylistic sets */
+  }
+
+  /* Tabular numerals for any element opting in via font-mono or font-variant-numeric */
+  .font-mono,
+  [data-tabular] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      transition-duration: 0ms !important;
+      animation-duration: 0ms !important;
+    }
+    /* Progress bars intentionally keep animating (convey state) */
+    [role='progressbar'] > * {
+      transition-duration: revert !important;
+    }
+  }
+}
