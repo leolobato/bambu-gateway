@@ -257,14 +257,16 @@ Single centered column at every breakpoint. **No side-by-side layouts on desktop
 
 ## Incremental ship plan (each step merges to `main`)
 
-1. **Foundation.** Add `web/` Vite project, Tailwind config with tokens, shadcn scaffold, FastAPI `dist/` wiring, Dockerfile multi-stage build. Ship a "hello" React page served from `/`. Old Jinja pages still exist at `/old`, `/old/settings` for rollback.
-2. **Dashboard (read-only).** `<AppShell/>` + `<PrinterPicker/>` + hero + stat chips + AMS section. Read data from existing `/api/printers` and `/api/ams`. No controls yet.
-3. **Dashboard controls.** Pause/Resume/Cancel + Speed select, wired to existing endpoints. AMS tray sheet with drying.
-4. **Print flow.** Drop zone, plate card, slicing-settings group, filaments group, preview-then-confirm, slicing/upload progress via SSE.
-5. **Settings.** Ported to the new shell using the inherited design system.
-6. **Cleanup.** Delete `app/templates/index.html`, `app/templates/settings.html`, `app/static/style.css`, and the `/old` routes.
+During this migration the old Jinja UI stays mounted at `/` and the new React app is served from `/beta`. The final cutover is step 6.
 
-Each step is independently shippable and the user-visible UI never regresses because old pages remain reachable at `/old` until step 6.
+1. **Foundation.** Add `web/` Vite project, Tailwind config with tokens, shadcn scaffold, FastAPI wiring that serves `app/static/dist/index.html` for `/beta` and `/beta/*`, Dockerfile multi-stage build. Ship a minimal React shell (header + empty Dashboard route) visible at `/beta`. The existing Jinja routes at `/` and `/settings` are untouched.
+2. **Dashboard (read-only).** `<AppShell/>` + `<PrinterPicker/>` + hero + stat chips + AMS section at `/beta`. Read data from existing `/api/printers` and `/api/ams`. No controls yet.
+3. **Dashboard controls.** Pause/Resume/Cancel + Speed select, wired to existing endpoints. AMS tray sheet with drying.
+4. **Print flow.** Drop zone, plate card, slicing-settings group, filaments group, preview-then-confirm, slicing/upload progress via SSE. Route at `/beta/print`.
+5. **Settings.** `/beta/settings` ported to the new shell using the inherited design system.
+6. **Cutover.** React app moves from `/beta/*` to `/*`; the catch-all route returns `app/static/dist/index.html` for any non-`/api/*`, non-`/static/*` path. Delete `app/templates/index.html`, `app/templates/settings.html`, `app/static/style.css`, and the Jinja template mounting in `app/main.py`.
+
+Each step is independently shippable. Users see no regression because the old Jinja UI remains the default at `/` until the cutover in step 6, and can preview the new UI at `/beta` at any point.
 
 ## Open implementation questions
 
