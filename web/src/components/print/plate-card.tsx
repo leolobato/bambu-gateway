@@ -56,7 +56,7 @@ function PlateThumb({ plate }: { plate: PlateInfo | undefined }) {
     >
       {hasThumb ? (
         <img
-          src={`data:image/png;base64,${plate!.thumbnail}`}
+          src={plate!.thumbnail}
           alt={`Plate ${plate!.id} preview`}
           className="w-full h-full object-contain"
           draggable={false}

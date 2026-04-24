@@ -21,8 +21,8 @@ import {
 import { getAms } from '@/lib/api/ams';
 import { listPrinters } from '@/lib/api/printers';
 import { getFilamentMatches } from '@/lib/api/filament-matches';
-import { cancelUpload } from '@/lib/api/uploads';
-import { printFromPreview } from '@/lib/api/print';
+import { cancelUpload, getUploadState } from '@/lib/api/uploads';
+import { printFromPreview, printGcodeFile } from '@/lib/api/print';
 import { usePrintStream } from '@/lib/use-print-stream';
 import { useDropZone } from '@/lib/use-drop-zone';
 import { usePrinterContext } from '@/lib/printer-context';
@@ -162,7 +162,7 @@ export default function PrintRoute() {
         ? {
             variant: 'warn',
             title: 'This 3MF already contains G-code.',
-            message: 'AMS tray selections and project filament overrides are ignored.',
+            message: 'Slicing is skipped. Pick AMS trays below if you want to override the file\'s defaults.',
           }
         : { variant: 'info', title: 'File parsed — slicing required.' };
       setState({ kind: 'imported', file, info, banner });
@@ -184,7 +184,6 @@ export default function PrintRoute() {
     info: ThreeMFInfo,
   ): Record<string, { profile_setting_id: string; tray_slot: number }> {
     const out: Record<string, { profile_setting_id: string; tray_slot: number }> = {};
-    if (info.has_gcode) return out;
     for (const filament of info.filaments) {
       const slot = filamentMapping[filament.index];
       if (slot == null || slot < 0) continue;
@@ -317,6 +316,73 @@ export default function PrintRoute() {
     }
   }
 
+  /**
+   * Direct-print path for 3MFs that already contain G-code: skip slicing,
+   * POST the file to /api/print, then poll /api/uploads/{id} for FTP progress.
+   */
+  async function startGcodePrint(file: File, info: ThreeMFInfo) {
+    try {
+      const resp = await printGcodeFile(
+        file,
+        activePrinterId ?? undefined,
+        buildFilamentProfilesPayload(info),
+        selectedPlateId,
+      );
+      if (!resp.upload_id) {
+        // Synchronous success (no upload tracker created — rare).
+        toast.success(`Print started on ${activePrinterName ?? resp.printer_id}`);
+        setState({ kind: 'sent' });
+        navigate('/');
+        return;
+      }
+      const uploadId = resp.upload_id;
+      setState({ kind: 'uploading', file, info, uploadId, percent: 0 });
+
+      // Poll until terminal.
+      while (true) {
+        await new Promise((r) => setTimeout(r, 500));
+        let progress;
+        try {
+          progress = await getUploadState(uploadId);
+        } catch (err) {
+          setState({
+            kind: 'imported',
+            file,
+            info,
+            banner: { variant: 'error', title: 'Upload tracking failed', details: (err as Error).message },
+          });
+          return;
+        }
+        setState((cur) =>
+          cur.kind === 'uploading' && cur.uploadId === uploadId
+            ? { ...cur, percent: progress.progress }
+            : cur,
+        );
+        if (progress.status === 'completed') {
+          toast.success(`Print started on ${activePrinterName ?? resp.printer_id}`);
+          setState({ kind: 'sent' });
+          navigate('/');
+          return;
+        }
+        if (progress.status === 'cancelled') {
+          setState({ kind: 'imported', file, info, banner: undefined });
+          return;
+        }
+        if (progress.status === 'failed') {
+          setState({
+            kind: 'imported',
+            file,
+            info,
+            banner: { variant: 'error', title: 'Upload failed', details: progress.error ?? 'Unknown error' },
+          });
+          return;
+        }
+      }
+    } catch (err) {
+      toast.error(`Print failed: ${(err as Error).message}`);
+    }
+  }
+
   async function downloadPreview() {
     if (state.kind !== 'previewReady') return;
     try {
@@ -413,20 +479,22 @@ export default function PrintRoute() {
             selectedPlateId={selectedPlateId}
             onClear={clearImport}
           />
-          <SlicingSettingsGroup
-            settings={settings}
-            onChange={setSettings}
-            machineOptions={machineOptions}
-            processOptions={processOptions}
-            plateTypeOptions={plateTypeOptions}
-            disabled={state.kind === 'previewReady'}
-          />
+          {!state.info.has_gcode && (
+            <SlicingSettingsGroup
+              settings={settings}
+              onChange={setSettings}
+              machineOptions={machineOptions}
+              processOptions={processOptions}
+              plateTypeOptions={plateTypeOptions}
+              disabled={state.kind === 'previewReady'}
+            />
+          )}
           <FilamentsGroup
             projectFilaments={state.info.filaments}
             trays={trays}
             mapping={filamentMapping}
             onChange={setFilamentMapping}
-            disabled={state.info.has_gcode || state.kind === 'previewReady'}
+            disabled={state.kind === 'previewReady'}
           />
           {state.kind === 'imported' && state.banner && (
             <InfoBanner
@@ -448,8 +516,13 @@ export default function PrintRoute() {
           )}
           <ActionButtons
             kind={state.kind}
+            hasGcode={state.info.has_gcode}
             onPreview={() => startSlicing(state.file, state.info, true)}
-            onPrint={() => startSlicing(state.file, state.info, false)}
+            onPrint={() =>
+              state.kind === 'imported' && state.info.has_gcode
+                ? startGcodePrint(state.file, state.info)
+                : startSlicing(state.file, state.info, false)
+            }
             onReslice={() => startSlicing(state.file, state.info, true)}
             onConfirmPrint={confirmPrint}
             onDownload={downloadPreview}
@@ -462,6 +535,7 @@ export default function PrintRoute() {
 
 function ActionButtons({
   kind,
+  hasGcode,
   onPreview,
   onPrint,
   onReslice,
@@ -469,6 +543,7 @@ function ActionButtons({
   onDownload,
 }: {
   kind: 'imported' | 'previewReady';
+  hasGcode: boolean;
   onPreview: () => void;
   onPrint: () => void;
   onReslice: () => void;
@@ -476,6 +551,18 @@ function ActionButtons({
   onDownload: () => void;
 }) {
   if (kind === 'imported') {
+    if (hasGcode) {
+      // No slicing — only the Print action.
+      return (
+        <Button
+          type="button"
+          onClick={onPrint}
+          className="w-full rounded-full bg-gradient-to-r from-accent-strong to-accent text-white border-0 h-11 text-[14px] font-semibold"
+        >
+          ⎙ Print
+        </Button>
+      );
+    }
     return (
       <div className="grid grid-cols-2 gap-2.5">
         <Button
