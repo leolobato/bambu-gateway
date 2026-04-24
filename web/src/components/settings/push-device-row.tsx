@@ -48,7 +48,7 @@ export function PushDeviceRow({ device }: { device: DeviceInfo }) {
   if (device.has_live_activity_start_token) tokens.push('live activity');
   if (device.active_activity_count > 0) {
     tokens.push(
-      `${device.active_activity_count} activity${device.active_activity_count === 1 ? '' : 'ies'}`,
+      `${device.active_activity_count} ${device.active_activity_count === 1 ? 'activity' : 'activities'}`,
     );
   }
   const subtitle = device.id;
