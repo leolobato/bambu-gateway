@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Check, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
 import {
   Dialog,
   DialogContent,
@@ -9,22 +18,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import {
   createPrinterConfig,
   updatePrinterConfig,
 } from '@/lib/api/printer-configs';
 import { getSlicerMachines } from '@/lib/api/slicer-profiles';
 import type { PrinterConfigInput, PrinterConfigResponse } from '@/lib/api/types';
+import { cn } from '@/lib/utils';
 
 export type PrinterFormMode =
   | { kind: 'add' }
@@ -195,24 +199,11 @@ export function PrinterFormDialog({
             <Label htmlFor="machine_model" className="text-xs text-text-1">
               Machine Model
             </Label>
-            <Select
-              value={state.machine_model || '__none__'}
-              onValueChange={(v) =>
-                setState((s) => ({ ...s, machine_model: v === '__none__' ? '' : v }))
-              }
-            >
-              <SelectTrigger id="machine_model" className="bg-bg-0 border-border">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__none__">None (no filament filtering)</SelectItem>
-                {machineOptions.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <MachineModelCombobox
+              value={state.machine_model}
+              options={machineOptions}
+              onChange={(machine_model) => setState((s) => ({ ...s, machine_model }))}
+            />
           </div>
 
           <DialogFooter className="mt-2 gap-2">
@@ -275,5 +266,85 @@ function Field({
       />
       {error && <span className="text-[11px] text-danger">{error}</span>}
     </div>
+  );
+}
+
+const NONE_LABEL = 'None (no filament filtering)';
+
+/**
+ * Searchable combobox for the slicer's machine catalog. The catalog has
+ * hundreds of vendor entries — a plain `<Select>` requires the user to
+ * scroll for the right machine, so we use Popover + Command + CommandInput
+ * filter instead.
+ */
+function MachineModelCombobox({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (next: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const currentLabel = value
+    ? options.find((o) => o.value === value)?.label ?? value
+    : NONE_LABEL;
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          id="machine_model"
+          type="button"
+          className={cn(
+            'flex items-center justify-between gap-2 h-9 px-3 rounded-md',
+            'bg-bg-0 border border-border text-text-0 text-sm text-left',
+            'hover:bg-surface-2 transition-colors duration-fast',
+            'focus:outline-none focus:ring-2 focus:ring-ring',
+          )}
+        >
+          <span className="truncate">{currentLabel}</span>
+          <ChevronDown className="w-4 h-4 shrink-0 opacity-50" aria-hidden />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[--radix-popover-trigger-width] p-0 bg-bg-1 border-border">
+        <Command className="bg-transparent">
+          <CommandInput placeholder="Search machines…" />
+          <CommandList>
+            <CommandEmpty>No machines match.</CommandEmpty>
+            <CommandGroup>
+              <CommandItem
+                value={NONE_LABEL}
+                onSelect={() => {
+                  onChange('');
+                  setOpen(false);
+                }}
+                className="flex items-center gap-2"
+              >
+                <span className="flex-1 text-text-1">{NONE_LABEL}</span>
+                {!value && <Check className="w-4 h-4 text-accent shrink-0" aria-hidden />}
+              </CommandItem>
+              {options.map((opt) => (
+                <CommandItem
+                  key={opt.value}
+                  value={opt.label}
+                  onSelect={() => {
+                    onChange(opt.value);
+                    setOpen(false);
+                  }}
+                  className="flex items-center gap-2"
+                >
+                  <span className="flex-1 truncate">{opt.label}</span>
+                  {opt.value === value && (
+                    <Check className="w-4 h-4 text-accent shrink-0" aria-hidden />
+                  )}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
