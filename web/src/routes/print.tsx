@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { RotateCcw } from 'lucide-react';
@@ -128,6 +128,31 @@ export default function PrintRoute() {
 
   // SSE consumer.
   const stream = usePrintStream();
+
+  // The 3MF stores the slicer profile *name* in `printer_settings_id` /
+  // `print_settings_id` (e.g. "Bambu Lab A1 mini 0.4 nozzle"), but the
+  // slicer API and `<Select>` work on the catalog's `setting_id` (e.g.
+  // "GM020"). Translate name → id once the catalog loads so the picker
+  // doesn't flag a real match as "different printer".
+  useEffect(() => {
+    if (!machinesQuery.data || !settings.machine) return;
+    const matchById = machinesQuery.data.some((m) => m.setting_id === settings.machine);
+    if (matchById) return;
+    const byName = machinesQuery.data.find((m) => m.name === settings.machine);
+    if (byName?.setting_id) {
+      setSettings((prev) => ({ ...prev, machine: byName.setting_id }));
+    }
+  }, [machinesQuery.data, settings.machine]);
+
+  useEffect(() => {
+    if (!processesQuery.data || !settings.process) return;
+    const matchById = processesQuery.data.some((p) => p.setting_id === settings.process);
+    if (matchById) return;
+    const byName = processesQuery.data.find((p) => p.name === settings.process);
+    if (byName?.setting_id) {
+      setSettings((prev) => ({ ...prev, process: byName.setting_id }));
+    }
+  }, [processesQuery.data, settings.process]);
 
   // Drag-and-drop is active in every state EXCEPT slicing/uploading
   // (replacing the file mid-stream would be confusing).
@@ -430,7 +455,17 @@ export default function PrintRoute() {
     const base: SettingOption[] = (machinesQuery.data ?? [])
       .filter((m) => m.setting_id)
       .map((m) => ({ value: m.setting_id, label: m.name }));
-    if (fileMachineSettingId && !base.some((o) => o.value === fileMachineSettingId)) {
+    // Only add a "from file — different printer" row when the file's
+    // printer_settings_id (which carries the slicer profile *name*) doesn't
+    // match any catalog entry by setting_id OR by name. The translation
+    // useEffect above handles the name→setting_id swap once the catalog
+    // loads, so this branch is reserved for genuine cross-printer files.
+    const inCatalog =
+      !!fileMachineSettingId &&
+      (machinesQuery.data ?? []).some(
+        (m) => m.setting_id === fileMachineSettingId || m.name === fileMachineSettingId,
+      );
+    if (fileMachineSettingId && !inCatalog) {
       base.unshift({ value: fileMachineSettingId, label: fileMachineSettingId, fromFileMismatch: true });
     }
     return base;
