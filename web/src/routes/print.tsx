@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { RotateCcw } from 'lucide-react';
@@ -132,10 +132,8 @@ export default function PrintRoute() {
   // Drag-and-drop is active in every state EXCEPT slicing/uploading
   // (replacing the file mid-stream would be confusing).
   const ddEnabled = state.kind !== 'slicing' && state.kind !== 'uploading';
-  const onDropFile = (file: File) => void importFile(file);
-  const { dragging } = useDropZone({ accept: '.3mf', onFile: onDropFile, enabled: ddEnabled });
 
-  async function importFile(file: File) {
+  const importFile = useCallback(async (file: File) => {
     try {
       const info = await parse3mf(file);
       // Default plate selection.
@@ -171,7 +169,10 @@ export default function PrintRoute() {
     } catch (err) {
       toast.error(`Failed to parse 3MF: ${(err as Error).message}`);
     }
-  }
+  }, [activePrinterId]);
+
+  const onDropFile = useCallback((file: File) => void importFile(file), [importFile]);
+  const { dragging } = useDropZone({ accept: '.3mf', onFile: onDropFile, enabled: ddEnabled });
 
   function clearImport() {
     stream.cancel();
@@ -316,17 +317,52 @@ export default function PrintRoute() {
     }
   }
 
+  async function downloadPreview() {
+    if (state.kind !== 'previewReady') return;
+    try {
+      const fd = new FormData();
+      fd.append('preview_id', state.previewId);
+      fd.append('slice_only', 'true');
+      const res = await fetch('/api/print', { method: 'POST', body: fd });
+      if (!res.ok) {
+        let detail = res.statusText;
+        try {
+          const body = (await res.json()) as { detail?: string };
+          if (body?.detail) detail = body.detail;
+        } catch {
+          // not JSON
+        }
+        throw new Error(detail);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      // Use the original filename with a "_sliced" suffix
+      const baseName = state.file.name.replace(/\.3mf$/i, '');
+      a.download = `${baseName}_sliced.3mf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(`Download failed: ${(err as Error).message}`);
+    }
+  }
+
   // Build options for the select rows.
+  const fileMachineSettingId =
+    state.kind === 'empty' || state.kind === 'sent'
+      ? null
+      : state.info.printer.printer_settings_id || null;
+
   const machineOptions: SettingOption[] = useMemo(() => {
     const base: SettingOption[] = (machinesQuery.data ?? []).map((m) => ({ value: m.setting_id, label: m.name }));
-    if (state.kind !== 'empty' && state.kind !== 'sent') {
-      const fileMachine = state.info.printer.printer_settings_id;
-      if (fileMachine && !base.some((o) => o.value === fileMachine)) {
-        base.unshift({ value: fileMachine, label: fileMachine, fromFileMismatch: true });
-      }
+    if (fileMachineSettingId && !base.some((o) => o.value === fileMachineSettingId)) {
+      base.unshift({ value: fileMachineSettingId, label: fileMachineSettingId, fromFileMismatch: true });
     }
     return base;
-  }, [machinesQuery.data, state]);
+  }, [machinesQuery.data, fileMachineSettingId]);
 
   const processOptions: SettingOption[] = useMemo(() => {
     return (processesQuery.data ?? []).map((p) => ({ value: p.setting_id, label: p.name }));
@@ -354,7 +390,7 @@ export default function PrintRoute() {
         <SlicingProgressCard
           title={state.kind === 'slicing' ? 'Slicing…' : 'Uploading to printer…'}
           statusLine={state.kind === 'slicing' ? state.statusLine : `${state.percent}%`}
-          percent={state.kind === 'slicing' ? state.percent : state.percent}
+          percent={state.percent}
           onCancel={state.kind === 'slicing' ? cancelSlicing : cancelUploading}
         />
       )}
@@ -402,11 +438,11 @@ export default function PrintRoute() {
           )}
           <ActionButtons
             kind={state.kind}
-            previewId={state.kind === 'previewReady' ? state.previewId : null}
             onPreview={() => startSlicing(state.file, state.info, true)}
             onPrint={() => startSlicing(state.file, state.info, false)}
             onReslice={() => startSlicing(state.file, state.info, true)}
             onConfirmPrint={confirmPrint}
+            onDownload={downloadPreview}
           />
         </div>
       )}
@@ -416,18 +452,18 @@ export default function PrintRoute() {
 
 function ActionButtons({
   kind,
-  previewId,
   onPreview,
   onPrint,
   onReslice,
   onConfirmPrint,
+  onDownload,
 }: {
   kind: 'imported' | 'previewReady';
-  previewId: string | null;
   onPreview: () => void;
   onPrint: () => void;
   onReslice: () => void;
   onConfirmPrint: () => void;
+  onDownload: () => void;
 }) {
   if (kind === 'imported') {
     return (
@@ -459,13 +495,13 @@ function ActionButtons({
       >
         <RotateCcw className="w-4 h-4 mr-1.5" aria-hidden /> Re-slice
       </Button>
-      <a
-        href={`/api/print?preview_id=${encodeURIComponent(previewId ?? '')}&slice_only=true`}
-        download
-        className="inline-flex items-center justify-center rounded-full bg-surface-1 hover:bg-surface-2 text-accent border-0 h-11 text-[14px] font-semibold"
+      <Button
+        type="button"
+        onClick={onDownload}
+        className="rounded-full bg-surface-1 hover:bg-surface-2 text-accent border-0 h-11 text-[14px] font-semibold"
       >
         Download 3MF
-      </a>
+      </Button>
       <Button
         type="button"
         onClick={onConfirmPrint}
