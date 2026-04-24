@@ -13,10 +13,6 @@ from app import main as app_main
 @pytest.fixture
 def client(monkeypatch):
     """Build a TestClient with a stubbed printer_service that knows two printers."""
-    class _StubAms:
-        def __init__(self, pid: str) -> None:
-            self.pid = pid
-
     class _StubService:
         def __init__(self) -> None:
             self._known = {"DEFAULT01", "OTHER02"}
@@ -35,7 +31,7 @@ def client(monkeypatch):
             return object() if pid in self._known else None
 
     service = _StubService()
-    monkeypatch.setattr(app_main, "printer_service", service, raising=False)
+    monkeypatch.setattr(app_main, "printer_service", service)
 
     # Skip the slicer-profile fetch — it would try to hit OrcaSlicer over HTTP.
     async def _no_filaments(_pid):

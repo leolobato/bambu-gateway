@@ -69,7 +69,7 @@ logging.basicConfig(
 logging.getLogger("python_multipart").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-printer_service: PrinterService
+printer_service: PrinterService | None = None
 slicer_client: SlicerClient | None = None
 _APP_DIR = Path(__file__).resolve().parent
 _DIST_DIR = _APP_DIR / "static" / "dist"
@@ -778,7 +778,7 @@ async def _validate_selected_trays(
 
 @app.get("/api/ams", response_model=AMSResponse)
 async def get_ams(printer_id: str | None = Query(default=None)):
-    if printer_id:
+    if printer_id is not None:
         pid = _resolve_printer_id(printer_id)  # raises 404 on unknown
     else:
         pid = printer_service.default_printer_id()
