@@ -6,22 +6,12 @@ import { normalizeTrayColor } from '@/lib/filament-color';
 import type { AMSResponse, AMSTray, AMSUnit } from '@/lib/api/types';
 
 export function AmsSection({
-  activePrinterId,
   ams,
   activeTrayId,
 }: {
-  activePrinterId: string;
   ams: AMSResponse;
   activeTrayId: number | null;
 }) {
-  if (ams.printer_id !== activePrinterId) {
-    return (
-      <p className="text-xs text-text-2">
-        AMS data is only available for the default printer (backend follow-up planned).
-      </p>
-    );
-  }
-
   if (ams.units.length === 0 && !ams.vt_tray) return null;
 
   return (

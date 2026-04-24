@@ -19,12 +19,14 @@ export default function DashboardRoute() {
     refetchInterval: 4_000,
   });
 
+  // Active id is null on first paint until the picker defaults; once known the
+  // query key includes it so switching printers refetches without staleness.
+  const amsTargetId = activePrinterId ?? printersQuery.data?.printers[0]?.id ?? null;
   const amsQuery = useQuery({
-    queryKey: ['ams'],
-    queryFn: () => getAms(),
+    queryKey: ['ams', amsTargetId],
+    queryFn: () => getAms(amsTargetId ?? undefined),
     refetchInterval: 4_000,
-    // AMS endpoint 404s when no printers are configured — don't run it then.
-    enabled: !!printersQuery.data && printersQuery.data.printers.length > 0,
+    enabled: !!amsTargetId,
     retry: false,
   });
 
@@ -62,7 +64,6 @@ export default function DashboardRoute() {
 
       {amsQuery.data && (
         <AmsSection
-          activePrinterId={active.id}
           ams={amsQuery.data}
           activeTrayId={active.active_tray}
         />
