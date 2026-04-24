@@ -1,17 +1,10 @@
 import { StatChip } from '@/components/stat-chip';
+import { SpeedSelect } from '@/components/dashboard/speed-select';
 import { formatTemp } from '@/lib/format';
 import type { PrinterStatus } from '@/lib/api/types';
 
-const SPEED_LABELS: Record<number, string> = {
-  1: 'Silent',
-  2: 'Standard',
-  3: 'Sport',
-  4: 'Ludicrous',
-};
-
 export function StatChipsRow({ printer }: { printer: PrinterStatus }) {
   const t = printer.temperatures;
-  const speedLabel = SPEED_LABELS[printer.speed_level] ?? '—';
 
   return (
     <div className="grid grid-cols-3 gap-2.5">
@@ -27,7 +20,7 @@ export function StatChipsRow({ printer }: { printer: PrinterStatus }) {
         unit={`/${formatTemp(t.bed_target)}`}
         variant="warm"
       />
-      <StatChip label="Speed" value={speedLabel} variant="accent" />
+      <SpeedSelect printer={printer} />
     </div>
   );
 }
