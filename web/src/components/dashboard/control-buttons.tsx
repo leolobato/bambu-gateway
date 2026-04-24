@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
 import { Pause, Play, X } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -19,13 +18,11 @@ import type { PrinterStatus } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
 
 const ACTIVE_STATES = new Set<PrinterStatus['state']>(['printing', 'preparing', 'paused']);
-const IDLE_STATES = new Set<PrinterStatus['state']>(['idle', 'finished', 'cancelled']);
 
 export function ControlButtons({ printer }: { printer: PrinterStatus }) {
   if (!printer.online) return null;
   if (printer.state === 'error') return null;
   if (ACTIVE_STATES.has(printer.state)) return <ActiveControls printer={printer} />;
-  if (IDLE_STATES.has(printer.state)) return <OpenPrintButton />;
   return null;
 }
 
@@ -116,17 +113,3 @@ function ActiveControls({ printer }: { printer: PrinterStatus }) {
   );
 }
 
-function OpenPrintButton() {
-  // The active printer is already in PrinterContext (set by the picker on
-  // Dashboard); navigating to /print is enough — Phase 4 reads the same context.
-  const navigate = useNavigate();
-  return (
-    <Button
-      type="button"
-      onClick={() => navigate('/print')}
-      className="w-full rounded-full bg-gradient-to-r from-accent-strong to-accent text-white border-0 h-11 text-[14px] font-semibold"
-    >
-      Open Print
-    </Button>
-  );
-}
