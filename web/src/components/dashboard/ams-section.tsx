@@ -127,7 +127,11 @@ function AmsTrayRow({
 }) {
   const color = normalizeTrayColor(tray.tray_color);
   const isEmpty = color == null && !tray.tray_type;
-  const inUse = activeTrayId != null && activeTrayId === tray.tray_id;
+  // `active_tray` from PrinterStatus is the global slot index (0..N for AMS
+  // bays, 254 for the external spool), matching `tray.slot` set by the
+  // gateway. Comparing against `tray_id` (per-AMS 0..3) silently breaks
+  // multi-AMS setups because tray 0 of every unit would falsely match.
+  const inUse = activeTrayId != null && activeTrayId === tray.slot;
 
   const subtitleParts: string[] = [];
   if (tray.tray_type) subtitleParts.push(tray.tray_type);
