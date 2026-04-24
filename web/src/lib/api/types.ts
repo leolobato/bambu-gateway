@@ -243,3 +243,49 @@ export interface SettingsTransferInfo {
   transferred: TransferredSetting[];
   filaments: FilamentTransferEntry[];
 }
+
+// --- Settings: printer configs (mirror app/models.py) ---
+
+export interface PrinterConfigResponse {
+  serial: string;
+  ip: string;
+  name: string;
+  machine_model: string;
+}
+
+export interface PrinterConfigListResponse {
+  printers: PrinterConfigResponse[];
+}
+
+export interface PrinterConfigInput {
+  serial: string;
+  ip: string;
+  access_code: string;
+  name: string;
+  machine_model: string;
+}
+
+// --- Settings: push devices (mirror app/models.py DeviceInfo) ---
+
+export interface DeviceInfo {
+  id: string;
+  name: string;
+  has_device_token: boolean;
+  has_live_activity_start_token: boolean;
+  active_activity_count: number;
+  subscribed_printers: string[];
+  registered_at: string;
+  last_seen_at: string;
+}
+
+export interface DeviceListResponse {
+  devices: DeviceInfo[];
+}
+
+// --- Settings: capabilities (push enabled + gateway version) ---
+
+export interface Capabilities {
+  push: boolean;
+  live_activities: boolean;
+  version: string;
+}
