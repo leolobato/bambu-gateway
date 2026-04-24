@@ -5,6 +5,7 @@ import DashboardRoute from '@/routes/dashboard';
 import PrintRoute from '@/routes/print';
 import SettingsRoute from '@/routes/settings';
 import { Toaster } from '@/components/ui/sonner';
+import { PrinterProvider } from '@/lib/printer-context';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -33,8 +34,10 @@ const router = createBrowserRouter(
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-      <Toaster />
+      <PrinterProvider>
+        <RouterProvider router={router} />
+        <Toaster />
+      </PrinterProvider>
     </QueryClientProvider>
   );
 }
