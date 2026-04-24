@@ -88,7 +88,7 @@ FastAPI picks up the build output automatically — restart `python -m app` and 
 
 **Docker:** the Dockerfile runs the Node build stage automatically; no extra steps needed for `docker compose up -d` or the usual `deploy-docker.sh` flow.
 
-**Phase 3 (current):** `/beta` Dashboard now exposes pause/resume + cancel (with confirm), a `<Select/>`-driven Speed chip with optimistic update, and an AMS tray sheet with start/stop drying controls. The picker also drives `/api/ams` per printer.
+**Phase 4 (current):** `/beta/print` is the full Print flow — drag-and-drop a `.3mf` anywhere on the page, pick a plate, a machine (searchable, with the active printer pinned), a process and plate type, map project filaments to AMS trays, then preview-then-confirm or print directly. Slicing and FTP upload progress stream over SSE with cancel support. Pre-sliced (gcode-bearing) 3MFs skip the slicing UI and upload directly.
 
 ### Docker
 
