@@ -293,6 +293,7 @@ async def get_capabilities():
     return CapabilitiesResponse(
         push=settings.push_enabled,
         live_activities=settings.push_enabled,
+        version=app.version,
     )
 
 

@@ -19,7 +19,8 @@ def test_capabilities_reports_push_disabled(client):
     res = client.get("/api/capabilities")
     assert res.status_code == 200
     body = res.json()
-    assert body == {"push": False, "live_activities": False}
+    assert body["push"] is False
+    assert body["live_activities"] is False
 
 
 def test_device_register_upsert_then_delete(client):

@@ -381,6 +381,7 @@ class LightRequest(BaseModel):
 class CapabilitiesResponse(BaseModel):
     push: bool
     live_activities: bool
+    version: str = ""
 
 
 class DeviceRegisterRequest(BaseModel):
