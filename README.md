@@ -88,6 +88,8 @@ FastAPI picks up the build output automatically — restart `python -m app` and 
 
 **Docker:** the Dockerfile runs the Node build stage automatically; no extra steps needed for `docker compose up -d` or the usual `deploy-docker.sh` flow.
 
+**Phase 2 (current):** `/beta` shows a read-only Dashboard for the active printer (picker, hero, stat chips, AMS). No control buttons yet — pause/resume/cancel/speed and AMS drying ship in Phase 3.
+
 ### Docker
 
 ```bash
