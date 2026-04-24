@@ -6,6 +6,7 @@ import { PrinterPicker } from '@/components/printer-picker';
 import { HeroCard } from '@/components/dashboard/hero-card';
 import { StatChipsRow } from '@/components/dashboard/stat-chips-row';
 import { AmsSection } from '@/components/dashboard/ams-section';
+import { ControlButtons } from '@/components/dashboard/control-buttons';
 import { listPrinters } from '@/lib/api/printers';
 import { getAms } from '@/lib/api/ams';
 import { usePrinterContext } from '@/lib/printer-context';
@@ -61,6 +62,8 @@ export default function DashboardRoute() {
       <HeroCard printer={active} />
 
       <StatChipsRow printer={active} />
+
+      <ControlButtons printer={active} />
 
       {amsQuery.data && (
         <AmsSection
