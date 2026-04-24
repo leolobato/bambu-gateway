@@ -1,3 +1,9 @@
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+} from '@/components/ui/select';
 import { Card } from '@/components/ui/card';
 import type { PlateInfo, ThreeMFInfo } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
@@ -6,32 +12,61 @@ export function PlateCard({
   filename,
   info,
   selectedPlateId,
+  onSelectPlate,
   onClear,
+  disabled = false,
 }: {
   filename: string;
   info: ThreeMFInfo;
   /** Currently-selected plate id (1-based). */
   selectedPlateId: number;
+  onSelectPlate: (plateId: number) => void;
   onClear: () => void;
+  disabled?: boolean;
 }) {
   const plate = info.plates.find((p) => p.id === selectedPlateId) ?? info.plates[0];
-  const layers = info.print_profile.layer_height
-    ? estimateLayers(info, plate)
-    : null;
+  const multiPlate = info.plates.length > 1;
 
   return (
     <Card className="p-4 bg-card border-border flex gap-4 items-start">
       <PlateThumb plate={plate} />
       <div className="flex flex-col gap-2 min-w-0 flex-1">
         <div className="text-[15px] font-semibold text-white break-words">{filename}</div>
+        {multiPlate ? (
+          <Select
+            value={String(plate?.id ?? info.plates[0]?.id ?? 1)}
+            onValueChange={(v) => onSelectPlate(Number(v))}
+            disabled={disabled}
+          >
+            <SelectTrigger
+              aria-label="Select plate"
+              className={cn(
+                'h-auto py-1 px-2 w-fit border-0 bg-transparent text-text-1 text-xs',
+                'focus:ring-0 focus:ring-offset-0',
+              )}
+            >
+              <span className="truncate">
+                Plate {plate?.id ?? '—'} of {info.plates.length}
+                {plate?.name ? ` · ${plate.name}` : ''}
+              </span>
+            </SelectTrigger>
+            <SelectContent>
+              {info.plates.map((p) => (
+                <SelectItem key={p.id} value={String(p.id)}>
+                  Plate {p.id}
+                  {p.name ? ` · ${p.name}` : ''}
+                  {p.objects.length > 0 ? ` · ${p.objects.length} object${p.objects.length === 1 ? '' : 's'}` : ''}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <div className="text-xs text-text-1">
+            Plate {plate?.id ?? '—'} of {info.plates.length}
+          </div>
+        )}
         <div className="text-xs text-text-1">
-          Plate {plate?.id ?? '—'} of {info.plates.length} · {info.filaments.length} filament{info.filaments.length === 1 ? '' : 's'}
-          {layers != null && (
-            <>
-              {' · '}
-              <span className="font-mono tabular-nums">{layers} layers</span>
-            </>
-          )}
+          {info.filaments.length} filament{info.filaments.length === 1 ? '' : 's'}
         </div>
         <button
           type="button"
@@ -66,15 +101,4 @@ function PlateThumb({ plate }: { plate: PlateInfo | undefined }) {
       )}
     </div>
   );
-}
-
-/**
- * Layers can't be derived exactly without slicing; we don't display a value
- * unless the 3MF has both layer_height and the printer reports plate height.
- * Returning null hides the segment cleanly.
- */
-function estimateLayers(_info: ThreeMFInfo, _plate: PlateInfo | undefined): number | null {
-  // The backend doesn't expose total_layers in parse-3mf — we can revisit
-  // when slicing returns the count via the SSE result.
-  return null;
 }

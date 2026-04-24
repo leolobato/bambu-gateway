@@ -477,7 +477,9 @@ export default function PrintRoute() {
             filename={state.file.name}
             info={state.info}
             selectedPlateId={selectedPlateId}
+            onSelectPlate={setSelectedPlateId}
             onClear={clearImport}
+            disabled={state.kind === 'previewReady'}
           />
           {!state.info.has_gcode && (
             <SlicingSettingsGroup
