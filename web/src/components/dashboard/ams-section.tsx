@@ -22,6 +22,8 @@ export function AmsSection({
     );
   }
 
+  if (ams.units.length === 0 && !ams.vt_tray) return null;
+
   return (
     <section className="flex flex-col gap-4">
       {ams.units.map((unit) => (
