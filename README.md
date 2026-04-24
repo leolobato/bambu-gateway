@@ -63,16 +63,16 @@ python -m app
 
 Open [http://localhost:4844](http://localhost:4844) in your browser.
 
-### Frontend (new UI, staged at /beta)
+### Frontend
 
-The new React UI is in `web/` (Vite + React + TypeScript + Tailwind + shadcn/ui). During the rollout it's served at `/beta` alongside the existing Jinja UI at `/`; the two coexist until the Phase 6 cutover.
+The web UI lives in `web/` (Vite + React + TypeScript + Tailwind + shadcn/ui) and is served at the root path by FastAPI from the production build under `app/static/dist/`.
 
 **Dev:**
 
 ```bash
 cd web
 npm install
-npm run dev       # http://localhost:5173/beta/ with HMR; /api proxied to :4844
+npm run dev       # http://localhost:5173/ with HMR; /api proxied to :4844
 ```
 
 Run the Python backend in a separate terminal (`python -m app` or `uvicorn app.main:app --reload`).
@@ -84,13 +84,9 @@ cd web
 npm run build     # writes app/static/dist/{index.html, assets/*}
 ```
 
-FastAPI picks up the build output automatically — restart `python -m app` and visit `http://localhost:4844/beta/`.
+Restart `python -m app` to pick up the new bundle, then visit `http://localhost:4844/`.
 
-**Docker:** the Dockerfile runs the Node build stage automatically; no extra steps needed for `docker compose up -d` or the usual `deploy-docker.sh` flow.
-
-**Phase 4:** `/beta/print` is the full Print flow — drag-and-drop a `.3mf` anywhere on the page, pick a plate, a machine (searchable, with the active printer pinned), a process and plate type, map project filaments to AMS trays, then preview-then-confirm or print directly. Slicing and FTP upload progress stream over SSE with cancel support. Pre-sliced (gcode-bearing) 3MFs skip the slicing UI and upload directly.
-
-**Phase 5 (current):** `/beta/settings` is the redesigned Settings page — Printers list with live status dots, Add/Edit/Delete via shadcn Dialog with searchable machine-model picker, Push Notifications device list with Test push + Remove actions, and an About card with the gateway version. Connection-test buttons (MQTT/FTPS) are deferred — backend endpoints don't exist yet.
+The Dockerfile runs the Node build stage automatically; no extra steps for `docker compose up -d` or `deploy-docker.sh`.
 
 ### Docker
 
