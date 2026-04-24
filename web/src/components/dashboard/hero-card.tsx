@@ -94,7 +94,7 @@ function OfflineHero({ name }: { name: string }) {
       <StateBadge state="offline" />
       <div className="text-[22px] font-bold text-white">Offline · Check connection</div>
       <div className="text-sm text-text-1">
-        <a href="/beta/settings" className="text-accent hover:underline">
+        <a href="/settings" className="text-accent hover:underline">
           Open Settings to verify {name}'s IP and access code →
         </a>
       </div>

@@ -16,20 +16,17 @@ const queryClient = new QueryClient({
   },
 });
 
-const router = createBrowserRouter(
-  [
-    {
-      path: '/',
-      element: <AppShell />,
-      children: [
-        { index: true, element: <DashboardRoute /> },
-        { path: 'print', element: <PrintRoute /> },
-        { path: 'settings', element: <SettingsRoute /> },
-      ],
-    },
-  ],
-  { basename: '/beta' },
-);
+const router = createBrowserRouter([
+  {
+    path: '/',
+    element: <AppShell />,
+    children: [
+      { index: true, element: <DashboardRoute /> },
+      { path: 'print', element: <PrintRoute /> },
+      { path: 'settings', element: <SettingsRoute /> },
+    ],
+  },
+]);
 
 export default function App() {
   return (

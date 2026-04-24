@@ -110,7 +110,7 @@ function DashboardEmpty() {
         <div className="text-base font-semibold text-white">No printers configured</div>
         <div className="text-sm text-text-1">Add a printer to start monitoring its status here.</div>
         <a
-          href="/beta/settings"
+          href="/settings"
           className="inline-flex items-center px-3.5 py-2 rounded-full bg-accent-strong text-white text-sm font-semibold hover:bg-accent transition-colors"
         >
           Open Settings →
