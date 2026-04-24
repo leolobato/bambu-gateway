@@ -1,5 +1,4 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   Select,
@@ -83,7 +82,6 @@ export function SpeedSelect({ printer }: { printer: PrinterStatus }) {
         >
           <span className="flex items-baseline gap-1">
             <span className="text-[22px] font-bold leading-none">{currentLabel}</span>
-            <ChevronDown className="w-3.5 h-3.5 text-text-2 self-center" aria-hidden />
           </span>
         </SelectTrigger>
         <SelectContent>

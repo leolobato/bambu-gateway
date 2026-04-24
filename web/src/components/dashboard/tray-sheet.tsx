@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Square } from 'lucide-react';
 import { toast } from 'sonner';
@@ -167,7 +167,7 @@ function DryingControls({ printerId, unit }: { printerId: string; unit: AMSUnit 
     );
   }
 
-  return <DryingForm unit={unit} onSubmit={(p) => start.mutate(p)} pending={start.isPending} />;
+  return <DryingForm key={unit.id} unit={unit} onSubmit={(p) => start.mutate(p)} pending={start.isPending} />;
 }
 
 function DryingForm({
@@ -181,12 +181,6 @@ function DryingForm({
 }) {
   const [temp, setTemp] = useState<number>(unit.max_drying_temp);
   const [dur, setDur] = useState<number>(480);
-
-  // If the user opens the sheet for a different unit (different max temp),
-  // re-clamp the temperature input.
-  useEffect(() => {
-    setTemp((t) => Math.min(t, unit.max_drying_temp));
-  }, [unit.max_drying_temp]);
 
   const tempInvalid = !Number.isFinite(temp) || temp <= 0 || temp > unit.max_drying_temp;
   const durInvalid = !Number.isFinite(dur) || dur <= 0 || dur > 24 * 60;
