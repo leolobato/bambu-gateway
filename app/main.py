@@ -12,10 +12,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Query, UploadFile
-from fastapi.requests import Request
-from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
 from app.apns_client import ApnsClient
 from app.apns_jwt import ApnsJwtSigner
@@ -73,8 +71,6 @@ printer_service: PrinterService | None = None
 slicer_client: SlicerClient | None = None
 _APP_DIR = Path(__file__).resolve().parent
 _DIST_DIR = _APP_DIR / "static" / "dist"
-templates = Jinja2Templates(directory=str(_APP_DIR / "templates"))
-
 MAX_FILE_BYTES = settings.max_file_size_mb * 1024 * 1024
 DEFAULT_PLATE_TYPES = [
     {"value": "cool_plate", "label": "Cool Plate"},
@@ -238,46 +234,24 @@ app = FastAPI(title="Bambu Gateway", version="1.5.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(_APP_DIR / "static")), name="static")
 
 
-# --- New React UI (staged at /beta during Phase 1-5; becomes / at cutover) ---
+# --- React UI (root) ---
 
-# Mount is guarded so the app boots without a built React bundle (fresh clone).
-# If the bundle appears later, a process restart is required to pick up the mount.
+# Mount the hashed asset directory so /assets/* is served directly.
+# Guarded so the app boots without a built bundle (fresh clone).
 if _DIST_DIR.exists():
     app.mount(
-        "/beta/assets",
+        "/assets",
         StaticFiles(directory=str(_DIST_DIR / "assets")),
-        name="beta-assets",
+        name="assets",
     )
 
 
+# Backwards compatibility: 308-redirect old /beta/* bookmarks to the new root.
 @app.get("/beta")
 @app.get("/beta/{path:path}")
-async def beta_spa(path: str = ""):
-    """Serve the React SPA shell for any /beta or /beta/<route> request.
-
-    Hashed assets under /beta/assets/* are served by StaticFiles above.
-    Everything else returns index.html so client-side routing works.
-    """
-    index_path = _DIST_DIR / "index.html"
-    if not index_path.exists():
-        raise HTTPException(
-            status_code=503,
-            detail="React bundle not built. Run 'cd web && npm run build'.",
-        )
-    return FileResponse(index_path, media_type="text/html")
-
-
-# --- Web UI ---
-
-
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    return templates.TemplateResponse(request, "index.html")
-
-
-@app.get("/settings", response_class=HTMLResponse)
-async def settings_page(request: Request):
-    return templates.TemplateResponse(request, "settings.html")
+async def beta_redirect(path: str = ""):
+    target = "/" if not path else f"/{path}"
+    return RedirectResponse(url=target, status_code=308)
 
 
 # --- API ---
@@ -1529,3 +1503,20 @@ async def delete_printer_config(serial: str):
         raise HTTPException(status_code=404, detail="Printer not found")
     config_store.save(new_configs)
     printer_service.sync_printers(new_configs)
+
+
+# --- React SPA catch-all (MUST stay at the END of this file) ---
+#
+# Starlette matches routes in declaration order. This catch-all matches every
+# path that isn't a more specific route declared above (`/api/*`, `/static/*`,
+# `/assets/*`, `/docs`, `/openapi.json`, `/redoc`, etc.). Returning the SPA's
+# index.html lets the React Router resolve the path client-side.
+@app.get("/{path:path}")
+async def spa_catchall(path: str = ""):
+    index_path = _DIST_DIR / "index.html"
+    if not index_path.exists():
+        raise HTTPException(
+            status_code=503,
+            detail="React bundle not built. Run 'cd web && npm run build'.",
+        )
+    return FileResponse(index_path, media_type="text/html")
