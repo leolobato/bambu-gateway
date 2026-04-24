@@ -6,9 +6,48 @@ import logging
 from collections.abc import Callable
 
 from app.config import PrinterConfig
-from app.models import PrinterStatus
+from app.models import CameraInfo, ChamberLightInfo, PrinterStatus
 from app.mqtt_client import BambuMQTTClient
 from app import ftp_client
+
+
+# Bambu's internal machine codes (as used by the slicer's `machine` query param)
+# mapped to their camera transport. RTSPS models use port 322 with H.264 over
+# RTSP; TCP-JPEG models use port 6000 with a binary JPEG frame stream.
+_MACHINE_CODE_TRANSPORT: dict[str, str] = {
+    "GM001": "rtsps",     # X1 Carbon
+    "GM002": "rtsps",     # X1
+    "GM003": "rtsps",     # X1E
+    "GM017": "tcp_jpeg",  # P1P
+    "GM018": "tcp_jpeg",  # P1S
+    "GM020": "tcp_jpeg",  # A1 Mini
+    "GM021": "tcp_jpeg",  # A1
+}
+
+
+def _classify_camera_transport(machine_model: str) -> str | None:
+    """Map a Bambu machine_model string to the camera transport iOS needs.
+
+    Returns ``"rtsps"`` for X1/X1C/P2S family (RTSPS on port 322),
+    ``"tcp_jpeg"`` for A1/P1 family (TCP JPEG on port 6000), or ``None``
+    when the model is unknown — callers should omit the ``camera`` field
+    in that case.
+
+    Accepts both Bambu's internal machine codes (``GM020`` for A1 Mini,
+    ``GM001`` for X1 Carbon, …) and human-readable names (``A1``, ``X1C``,
+    ``P1S``, ``P2S``). New codes should be added to
+    ``_MACHINE_CODE_TRANSPORT`` above.
+    """
+    model = (machine_model or "").strip().upper()
+    if not model:
+        return None
+    if model in _MACHINE_CODE_TRANSPORT:
+        return _MACHINE_CODE_TRANSPORT[model]
+    if model.startswith("X1") or model.startswith("P2"):
+        return "rtsps"
+    if model.startswith("A1") or model.startswith("P1"):
+        return "tcp_jpeg"
+    return None
 
 logger = logging.getLogger(__name__)
 
@@ -101,14 +140,42 @@ class PrinterService:
 
     def get_all_statuses(self) -> list[PrinterStatus]:
         """Return status for every configured printer."""
-        return [client.get_status() for client in self._clients.values()]
+        return [
+            self._attach_camera(client.get_status(), client)
+            for client in self._clients.values()
+        ]
 
     def get_status(self, printer_id: str) -> PrinterStatus | None:
         """Return status for a single printer, or None if not found."""
         client = self._clients.get(printer_id)
         if client is None:
             return None
-        return client.get_status()
+        return self._attach_camera(client.get_status(), client)
+
+    def _attach_camera(
+        self, status: PrinterStatus, client: BambuMQTTClient,
+    ) -> PrinterStatus:
+        """Populate ``status.camera`` from the printer's config + last-known state.
+
+        Omits the camera entirely when the model isn't classifiable or the
+        config lacks IP/access code — iOS falls back to "not available".
+        """
+        config = self._configs.get(status.id)
+        if config is None or not config.ip or not config.access_code:
+            return status
+        transport = _classify_camera_transport(config.machine_model)
+        if transport is None:
+            return status
+        status.camera = CameraInfo(
+            ip=config.ip,
+            access_code=config.access_code,
+            transport=transport,
+            chamber_light=ChamberLightInfo(
+                supported=True,
+                on=client.chamber_light_on,
+            ),
+        )
+        return status
 
     def get_client(self, printer_id: str) -> BambuMQTTClient | None:
         """Return the MQTT client for a printer, or None if not found."""
@@ -197,6 +264,22 @@ class PrinterService:
             raise ConnectionError(f"Printer {printer_id} is offline")
         client.send_print_speed(level)
         logger.info("Print speed set to %d on printer %s", level, printer_id)
+
+    def set_chamber_light(
+        self, printer_id: str, on: bool, node: str = "chamber_light",
+    ) -> None:
+        """Toggle the printer's chamber light (or another LED node)."""
+        client = self._clients.get(printer_id)
+        if client is None:
+            raise ValueError(f"Printer {printer_id} not found")
+        client.ensure_connected()
+        status = client.get_status()
+        if not status.online:
+            raise ConnectionError(f"Printer {printer_id} is offline")
+        client.send_chamber_light(on, node=node)
+        logger.info(
+            "Light %s set to %s on printer %s", node, "on" if on else "off", printer_id,
+        )
 
     def start_drying(
         self,

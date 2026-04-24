@@ -103,6 +103,26 @@ class HMSCode(BaseModel):
     code: str  # severity/category hex
 
 
+class ChamberLightInfo(BaseModel):
+    """Chamber light capability + current state."""
+
+    supported: bool = True
+    on: bool | None = None  # null until the printer reports its first lights_report
+
+
+class CameraInfo(BaseModel):
+    """Per-printer camera stream details surfaced to API clients.
+
+    Omitted from ``PrinterStatus`` when the gateway can't classify the
+    printer's camera transport or lacks LAN credentials.
+    """
+
+    ip: str
+    access_code: str
+    transport: str  # "rtsps" (X1/X1C/P2S) or "tcp_jpeg" (A1/P1)
+    chamber_light: ChamberLightInfo | None = None
+
+
 class PrinterStatus(BaseModel):
     """Full status snapshot for a single printer."""
 
@@ -121,6 +141,7 @@ class PrinterStatus(BaseModel):
     hms_codes: list[HMSCode] = []
     print_error: int = 0  # non-zero when the printer auto-paused/stopped on an error
     error_message: str | None = None  # human-readable reason when paused/stopped at an error
+    camera: CameraInfo | None = None
 
 
 # --- API response models ---
@@ -345,6 +366,13 @@ class StartDryingRequest(BaseModel):
 
     temperature: int = 55
     duration_minutes: int = 480
+
+
+class LightRequest(BaseModel):
+    """Request body for toggling a printer LED (chamber light, work light)."""
+
+    on: bool
+    node: str = "chamber_light"
 
 
 # --- Push / Live Activity models ---

@@ -47,6 +47,8 @@ class BambuMQTTClient:
         self._ams_units: list[dict] = []
         self._vt_tray: dict | None = None
         self._ams_module_types: dict[int, AMSType] = {}  # ams_id -> AMSType from get_version
+        # None until the printer reports its first `lights_report`.
+        self._chamber_light_on: bool | None = None
         self._lock = threading.Lock()
         self._disconnect_timer: threading.Timer | None = None
         self._status_change_callback: Callable[[PrinterStatus, PrinterStatus], None] | None = None
@@ -247,6 +249,27 @@ class BambuMQTTClient:
                 "param": str(level),
             }
         })
+
+    def send_chamber_light(self, on: bool, node: str = "chamber_light") -> None:
+        """Toggle an LED node (chamber light by default) via `system.ledctrl`."""
+        self.publish({
+            "system": {
+                "sequence_id": "0",
+                "command": "ledctrl",
+                "led_node": node,
+                "led_mode": "on" if on else "off",
+                "led_on_time": 500,
+                "led_off_time": 500,
+                "loop_times": 0,
+                "interval_time": 0,
+            }
+        })
+
+    @property
+    def chamber_light_on(self) -> bool | None:
+        """Last-reported chamber light state; None until the printer reports."""
+        with self._lock:
+            return self._chamber_light_on
 
     def send_start_drying(
         self,
@@ -493,6 +516,20 @@ class BambuMQTTClient:
                     job.current_layer = int(print_info["layer_num"])
                 if "total_layer_num" in print_info:
                     job.total_layers = int(print_info["total_layer_num"])
+
+            # Lights report: [{"node": "chamber_light", "mode": "on"|"off"|"flashing"}, ...]
+            if "lights_report" in print_info:
+                raw = print_info["lights_report"]
+                if isinstance(raw, list):
+                    for entry in raw:
+                        if not isinstance(entry, dict):
+                            continue
+                        if entry.get("node") == "chamber_light":
+                            mode = entry.get("mode")
+                            if isinstance(mode, str):
+                                # Treat anything other than "off" as on — "flashing"
+                                # still emits light, and the UI only distinguishes on/off.
+                                self._chamber_light_on = mode.lower() != "off"
 
             # HMS codes
             if "hms" in print_info:

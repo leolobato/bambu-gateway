@@ -42,6 +42,7 @@ from app.models import (
     FilamentMatchReason,
     HealthResponse,
     FilamentInfo,
+    LightRequest,
     ProjectFilamentMatch,
     PrinterConfigInput,
     FilamentTransferEntry,
@@ -482,6 +483,20 @@ async def set_print_speed(printer_id: str, body: SpeedRequest):
     except ConnectionError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return CommandResponse(printer_id=pid, command=f"speed:{body.level.name}")
+
+
+@app.post("/api/printers/{printer_id}/light", response_model=CommandResponse)
+async def set_printer_light(printer_id: str, body: LightRequest):
+    pid = _resolve_printer_id(printer_id)
+    try:
+        printer_service.set_chamber_light(pid, body.on, node=body.node)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ConnectionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return CommandResponse(
+        printer_id=pid, command=f"light:{body.node}:{'on' if body.on else 'off'}",
+    )
 
 
 @app.post(
