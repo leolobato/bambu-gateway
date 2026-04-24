@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.apns_client import ApnsClient
@@ -229,7 +229,7 @@ async def lifespan(app: FastAPI):
         await apns_client.aclose()
 
 
-app = FastAPI(title="Bambu Gateway", version="1.5.0", lifespan=lifespan)
+app = FastAPI(title="Bambu Gateway", version="1.6.0", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory=str(_APP_DIR / "static")), name="static")
 
@@ -244,14 +244,6 @@ if _DIST_DIR.exists():
         StaticFiles(directory=str(_DIST_DIR / "assets")),
         name="assets",
     )
-
-
-# Backwards compatibility: 308-redirect old /beta/* bookmarks to the new root.
-@app.get("/beta")
-@app.get("/beta/{path:path}")
-async def beta_redirect(path: str = ""):
-    target = "/" if not path else f"/{path}"
-    return RedirectResponse(url=target, status_code=308)
 
 
 # --- API ---
