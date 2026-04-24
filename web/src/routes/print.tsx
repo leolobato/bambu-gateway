@@ -488,6 +488,7 @@ export default function PrintRoute() {
               machineOptions={machineOptions}
               processOptions={processOptions}
               plateTypeOptions={plateTypeOptions}
+              activeMachineModel={activePrinter?.machine_model || null}
               disabled={state.kind === 'previewReady'}
             />
           )}

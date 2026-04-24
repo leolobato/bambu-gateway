@@ -1,6 +1,7 @@
 import { Card } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { SettingRow, type SettingOption } from '@/components/print/setting-row';
+import { MachinePicker } from '@/components/print/machine-picker';
 
 export interface SlicingSettings {
   machine: string;
@@ -14,6 +15,7 @@ export function SlicingSettingsGroup({
   machineOptions,
   processOptions,
   plateTypeOptions,
+  activeMachineModel,
   disabled = false,
 }: {
   settings: SlicingSettings;
@@ -21,6 +23,8 @@ export function SlicingSettingsGroup({
   machineOptions: SettingOption[];
   processOptions: SettingOption[];
   plateTypeOptions: SettingOption[];
+  /** machine_model of the currently-selected printer; pinned to top of the picker. */
+  activeMachineModel: string | null;
   disabled?: boolean;
 }) {
   return (
@@ -29,10 +33,11 @@ export function SlicingSettingsGroup({
         Slicing settings
       </div>
       <Card className="px-4 bg-card border-border">
-        <SettingRow
+        <MachinePicker
           label="Machine"
           value={settings.machine}
           options={machineOptions}
+          activeMachineModel={activeMachineModel}
           onChange={(machine) => onChange({ ...settings, machine })}
           disabled={disabled}
         />
