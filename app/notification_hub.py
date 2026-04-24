@@ -28,7 +28,11 @@ def detect_events(
 ) -> list[NotificationEvent]:
     events: list[NotificationEvent] = []
 
-    if prev.state != new.state:
+    # Skip transitions out of `offline` — those are "discovery" reads after
+    # (re)connect, not real transitions. Otherwise every reconnect after the
+    # 20-second idle disconnect would surface a phantom "Print complete"
+    # notification when the printer reports its actual state.
+    if prev.state != new.state and prev.state != PrinterState.offline:
         transition_event = _state_transition_event(prev.state, new.state)
         if transition_event is not None:
             events.append(NotificationEvent(

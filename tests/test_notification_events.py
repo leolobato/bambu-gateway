@@ -79,6 +79,36 @@ def test_online_to_offline_while_idle_emits_nothing():
     assert detect_events(prev, new) == []
 
 
+# Discovery transitions: when prev was offline (or otherwise unknown)
+# the next MQTT pushall reveals the printer's actual state. That's not a
+# real transition — it's just the first reading after (re)connect — and
+# must NOT fire transition events. Otherwise every reconnect after the
+# 20-second idle disconnect surfaces a phantom "Print complete" toast.
+
+def test_offline_to_finished_emits_nothing():
+    prev = _status(PrinterState.offline, online=False)
+    new = _status(PrinterState.finished, progress=100)
+    assert detect_events(prev, new) == []
+
+
+def test_offline_to_printing_emits_nothing():
+    prev = _status(PrinterState.offline, online=False)
+    new = _status(PrinterState.printing, progress=42)
+    assert detect_events(prev, new) == []
+
+
+def test_offline_to_paused_emits_nothing():
+    prev = _status(PrinterState.offline, online=False)
+    new = _status(PrinterState.paused, progress=42)
+    assert detect_events(prev, new) == []
+
+
+def test_offline_to_error_emits_nothing():
+    prev = _status(PrinterState.offline, online=False)
+    new = _status(PrinterState.error)
+    assert detect_events(prev, new) == []
+
+
 def test_progress_tick_on_1pct_change():
     prev = _status(PrinterState.printing, progress=50, layer=100, remaining=60)
     new = _status(PrinterState.printing, progress=51, layer=100, remaining=60)
