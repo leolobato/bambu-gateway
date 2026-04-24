@@ -64,6 +64,7 @@ export default function DashboardRoute() {
 
       {amsQuery.data && (
         <AmsSection
+          printerId={active.id}
           ams={amsQuery.data}
           activeTrayId={active.active_tray}
         />

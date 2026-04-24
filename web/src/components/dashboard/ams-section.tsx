@@ -2,32 +2,53 @@ import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { TrayRow } from '@/components/tray-row';
 import { Badge } from '@/components/ui/badge';
+import { TraySheet, type TraySheetSelection } from '@/components/dashboard/tray-sheet';
 import { normalizeTrayColor } from '@/lib/filament-color';
 import type { AMSResponse, AMSTray, AMSUnit } from '@/lib/api/types';
 
 export function AmsSection({
+  printerId,
   ams,
   activeTrayId,
 }: {
+  printerId: string;
   ams: AMSResponse;
   activeTrayId: number | null;
 }) {
+  const [selection, setSelection] = useState<TraySheetSelection | null>(null);
+
   if (ams.units.length === 0 && !ams.vt_tray) return null;
 
   return (
-    <section className="flex flex-col gap-4">
-      {ams.units.map((unit) => (
-        <AmsUnitGroup
-          key={unit.id}
-          unit={unit}
-          trays={ams.trays.filter((t) => t.ams_id === unit.id)}
-          activeTrayId={activeTrayId}
-        />
-      ))}
-      {ams.vt_tray && (
-        <ExternalSpoolGroup tray={ams.vt_tray} activeTrayId={activeTrayId} />
-      )}
-    </section>
+    <>
+      <section className="flex flex-col gap-4">
+        {ams.units.map((unit) => (
+          <AmsUnitGroup
+            key={unit.id}
+            unit={unit}
+            trays={ams.trays.filter((t) => t.ams_id === unit.id)}
+            activeTrayId={activeTrayId}
+            onSelectTray={(tray) =>
+              setSelection({ tray, unit, label: `Tray ${tray.slot + 1}` })
+            }
+          />
+        ))}
+        {ams.vt_tray && (
+          <ExternalSpoolGroup
+            tray={ams.vt_tray}
+            activeTrayId={activeTrayId}
+            onSelect={(tray) =>
+              setSelection({ tray, unit: null, label: 'External Spool' })
+            }
+          />
+        )}
+      </section>
+      <TraySheet
+        printerId={printerId}
+        selection={selection}
+        onClose={() => setSelection(null)}
+      />
+    </>
   );
 }
 
@@ -35,10 +56,12 @@ function AmsUnitGroup({
   unit,
   trays,
   activeTrayId,
+  onSelectTray,
 }: {
   unit: AMSUnit;
   trays: AMSTray[];
   activeTrayId: number | null;
+  onSelectTray: (tray: AMSTray) => void;
 }) {
   const storageKey = `bg.ams-unit-${unit.id}.collapsed`;
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -85,7 +108,12 @@ function AmsUnitGroup({
       {!collapsed && (
         <div className="flex flex-col gap-2">
           {sorted.map((tray) => (
-            <AmsTrayRow key={`${tray.ams_id}-${tray.slot}`} tray={tray} activeTrayId={activeTrayId} />
+            <AmsTrayRow
+              key={`${tray.ams_id}-${tray.slot}`}
+              tray={tray}
+              activeTrayId={activeTrayId}
+              onSelect={() => onSelectTray(tray)}
+            />
           ))}
         </div>
       )}
@@ -96,16 +124,18 @@ function AmsUnitGroup({
 function ExternalSpoolGroup({
   tray,
   activeTrayId,
+  onSelect,
 }: {
   tray: AMSTray;
   activeTrayId: number | null;
+  onSelect: (tray: AMSTray) => void;
 }) {
   return (
     <div className="flex flex-col gap-2">
       <header className="flex items-center justify-between">
         <span className="text-base font-semibold text-white">External Spool</span>
       </header>
-      <AmsTrayRow tray={tray} activeTrayId={activeTrayId} />
+      <AmsTrayRow tray={tray} activeTrayId={activeTrayId} onSelect={() => onSelect(tray)} />
     </div>
   );
 }
@@ -113,9 +143,11 @@ function ExternalSpoolGroup({
 function AmsTrayRow({
   tray,
   activeTrayId,
+  onSelect,
 }: {
   tray: AMSTray;
   activeTrayId: number | null;
+  onSelect: () => void;
 }) {
   const color = normalizeTrayColor(tray.tray_color);
   const isEmpty = color == null && !tray.tray_type;
@@ -148,6 +180,7 @@ function AmsTrayRow({
       }
       right={inUse && <Badge className="bg-accent/15 text-accent border-transparent">In Use</Badge>}
       highlighted={inUse}
+      onClick={onSelect}
     />
   );
 }
