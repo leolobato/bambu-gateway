@@ -14,9 +14,8 @@ An iOS client is also available: **[BambuGateway iOS](https://github.com/leoloba
 - Pause, resume, cancel, and adjust speed of active prints
 - AMS unit info (humidity, temperature) and external spool holder support
 - AMS filament drying control (AMS 2 Pro and AMS HT)
-- Upload, slice and print 3MF files from the browser with upload progress
+- Upload, slice and print 3MF files from the browser, including custom filament profiles through [orcaslicer-cli](https://github.com/leolobato/orcaslicer-cli)
 - Automatic AMS tray matching for project filaments
-- Supports custom filament profiles through [orcaslicer-cli](https://github.com/leolobato/orcaslicer-cli)
 - Multi-printer support
 - Optional iOS Live Activities and push notifications via APNs
 - REST API for automation and integration
@@ -24,83 +23,37 @@ An iOS client is also available: **[BambuGateway iOS](https://github.com/leoloba
 
 ## Quick Start
 
-### Prerequisites
+You'll need a Bambu Lab printer with **Developer Mode** enabled — the access code and IP are in the printer's network settings.
 
-- Python 3.12+
-- A Bambu Lab printer with **Developer Mode** enabled (find the access code and IP in
-  the printer's network settings)
+### Run with Docker (recommended)
 
-### Setup
+```bash
+docker run -d --name bambu-gateway \
+  -p 4844:4844 \
+  -v $(pwd)/data:/data \
+  ghcr.io/leolobato/bambu-gateway:latest
+```
+
+Or with `docker compose`:
+
+```bash
+docker compose up -d
+```
+
+Open [http://localhost:4844](http://localhost:4844) and add your printer from the **Settings** page.
+
+### Run from source
+
+Requires Python 3.12+.
 
 ```bash
 git clone https://github.com/leolobato/bambu-gateway.git
 cd bambu-gateway
 pip install -r requirements.txt
-cp .env.example .env
-```
-
-Edit `.env` with your printer details:
-
-```env
-BAMBU_PRINTER_IP=192.168.1.100
-BAMBU_PRINTER_ACCESS_CODE=12345678
-BAMBU_PRINTER_SERIAL=01P00A000000000
-```
-
-For multiple printers, use comma-separated values:
-
-```env
-BAMBU_PRINTER_IP=192.168.1.100,192.168.1.101
-BAMBU_PRINTER_ACCESS_CODE=12345678,87654321
-BAMBU_PRINTER_SERIAL=01P00A000000000,01P00A000000001
-```
-
-### Run
-
-```bash
 python -m app
 ```
 
-Open [http://localhost:4844](http://localhost:4844) in your browser.
-
-### Frontend
-
-The web UI lives in `web/` (Vite + React + TypeScript + Tailwind + shadcn/ui) and is served at the root path by FastAPI from the production build under `app/static/dist/`.
-
-**Dev:**
-
-```bash
-cd web
-npm install
-npm run dev       # http://localhost:5173/ with HMR; /api proxied to :4844
-```
-
-Run the Python backend in a separate terminal (`python -m app` or `uvicorn app.main:app --reload`).
-
-**Production build:**
-
-```bash
-cd web
-npm run build     # writes app/static/dist/{index.html, assets/*}
-```
-
-Restart `python -m app` to pick up the new bundle, then visit `http://localhost:4844/`.
-
-The Dockerfile runs the Node build stage automatically; no extra steps for `docker compose up -d` or `deploy-docker.sh`.
-
-### Docker
-
-```bash
-docker compose up --build
-```
-
-The Docker image reads `.env` for printer configuration and persists data to a `./data` volume.
-
-A pre-built image is also available from GitHub Container Registry:
-
-```bash
-docker pull ghcr.io/leolobato/bambu-gateway:latest
-```
+Open [http://localhost:4844](http://localhost:4844) and add your printer from the **Settings** page. Printer configuration is saved to `printers.json` in the working directory.
 
 ### iOS push notifications (optional)
 
