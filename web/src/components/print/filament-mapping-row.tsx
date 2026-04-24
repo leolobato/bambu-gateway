@@ -75,13 +75,28 @@ export function FilamentMappingRow({
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="-1">Skip (use file's profile)</SelectItem>
-          {trays.map((tray) => (
-            <SelectItem key={`${tray.ams_id}-${tray.slot}`} value={String(tray.slot)}>
-              Tray {tray.slot + 1}
-              {tray.tray_type ? ` · ${tray.tray_type}` : ''}
-              {tray.matched_filament?.name ? ` · ${tray.matched_filament.name}` : ''}
-            </SelectItem>
-          ))}
+          {trays.map((tray) => {
+            const trayColor = normalizeTrayColor(tray.tray_color);
+            const detail = [tray.tray_type, tray.matched_filament?.name].filter(Boolean).join(' · ');
+            return (
+              <SelectItem key={`${tray.ams_id}-${tray.slot}`} value={String(tray.slot)}>
+                <span className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      'shrink-0 w-3 h-3 rounded-full',
+                      trayColor == null && 'border border-dashed border-text-2',
+                    )}
+                    style={trayColor ? { backgroundColor: trayColor } : undefined}
+                    aria-hidden
+                  />
+                  <span>
+                    Tray {tray.slot + 1}
+                    {detail && ` · ${detail}`}
+                  </span>
+                </span>
+              </SelectItem>
+            );
+          })}
         </SelectContent>
       </Select>
     </div>
