@@ -22,7 +22,15 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_model_settings(zf: zipfile.ZipFile) -> list[PlateInfo]:
-    """Parse Metadata/model_settings.config for objects and plates."""
+    """Parse Metadata/model_settings.config for objects and plates.
+
+    Generic 3MFs (Thingiverse, MakerWorld, non-Bambu slicers) lack this
+    Bambu-specific metadata file. In that case fall back to a single empty
+    plate so the file can still be sliced — the slicer will assign objects
+    to plate 1 by default.
+    """
+    if "Metadata/model_settings.config" not in zf.namelist():
+        return [PlateInfo(id=1, name="", objects=[])]
     raw = zf.read("Metadata/model_settings.config").decode()
     root = ET.fromstring(raw)
 
@@ -73,7 +81,14 @@ def _get_arr(settings: dict, key: str, index: int, default: str = "") -> str:
 def _parse_project_settings(
     zf: zipfile.ZipFile,
 ) -> tuple[list[FilamentInfo], PrintProfileInfo, PrinterInfo]:
-    """Parse Metadata/project_settings.config for filaments, profile, printer."""
+    """Parse Metadata/project_settings.config for filaments, profile, printer.
+
+    Generic 3MFs without Bambu's project settings still slice fine — the user
+    will pick machine/process manually and there are no project filaments to
+    map to AMS trays.
+    """
+    if "Metadata/project_settings.config" not in zf.namelist():
+        return [], PrintProfileInfo(), PrinterInfo()
     raw = zf.read("Metadata/project_settings.config").decode()
     settings = json.loads(raw)
 
