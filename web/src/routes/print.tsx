@@ -356,8 +356,14 @@ export default function PrintRoute() {
       ? null
       : state.info.printer.printer_settings_id || null;
 
+  // Slicer profiles can include entries with empty `setting_id` (some
+  // vendors ship process variants without a unique id). Radix Select rejects
+  // empty-value items, so filter them out — they wouldn't be selectable
+  // server-side either.
   const machineOptions: SettingOption[] = useMemo(() => {
-    const base: SettingOption[] = (machinesQuery.data ?? []).map((m) => ({ value: m.setting_id, label: m.name }));
+    const base: SettingOption[] = (machinesQuery.data ?? [])
+      .filter((m) => m.setting_id)
+      .map((m) => ({ value: m.setting_id, label: m.name }));
     if (fileMachineSettingId && !base.some((o) => o.value === fileMachineSettingId)) {
       base.unshift({ value: fileMachineSettingId, label: fileMachineSettingId, fromFileMismatch: true });
     }
@@ -365,11 +371,15 @@ export default function PrintRoute() {
   }, [machinesQuery.data, fileMachineSettingId]);
 
   const processOptions: SettingOption[] = useMemo(() => {
-    return (processesQuery.data ?? []).map((p) => ({ value: p.setting_id, label: p.name }));
+    return (processesQuery.data ?? [])
+      .filter((p) => p.setting_id)
+      .map((p) => ({ value: p.setting_id, label: p.name }));
   }, [processesQuery.data]);
 
   const plateTypeOptions: SettingOption[] = useMemo(() => {
-    return (plateTypesQuery.data ?? []).map((p) => ({ value: p.value, label: p.label }));
+    return (plateTypesQuery.data ?? [])
+      .filter((p) => p.value)
+      .map((p) => ({ value: p.value, label: p.label }));
   }, [plateTypesQuery.data]);
 
   // --- Render ---
