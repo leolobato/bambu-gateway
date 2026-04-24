@@ -1,8 +1,16 @@
+import { PrintersSection } from '@/components/settings/printers-section';
+import { PushSection } from '@/components/settings/push-section';
+import { AboutSection } from '@/components/settings/about-section';
+
 export default function SettingsRoute() {
   return (
-    <>
-      <h1 className="text-[28px] font-extrabold tracking-tight text-white">Settings</h1>
-      <p className="text-text-1 text-sm mt-2">Phase 5 will fill this in.</p>
-    </>
+    <div className="flex flex-col gap-6">
+      <header>
+        <h1 className="text-[28px] font-extrabold tracking-tight text-white">Settings</h1>
+      </header>
+      <PrintersSection />
+      <PushSection />
+      <AboutSection />
+    </div>
   );
 }
