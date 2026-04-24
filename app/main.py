@@ -11,7 +11,7 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Form, HTTPException, UploadFile
+from fastapi import FastAPI, Form, HTTPException, Query, UploadFile
 from fastapi.requests import Request
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -777,10 +777,13 @@ async def _validate_selected_trays(
 
 
 @app.get("/api/ams", response_model=AMSResponse)
-async def get_ams():
-    pid = printer_service.default_printer_id()
-    if pid is None:
-        raise HTTPException(status_code=404, detail="No printers configured")
+async def get_ams(printer_id: str | None = Query(default=None)):
+    if printer_id:
+        pid = _resolve_printer_id(printer_id)  # raises 404 on unknown
+    else:
+        pid = printer_service.default_printer_id()
+        if pid is None:
+            raise HTTPException(status_code=404, detail="No printers configured")
 
     # Wait briefly for the first MQTT pushall on cold-start so clients don't
     # see a transient empty AMS snapshot.
