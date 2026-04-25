@@ -315,6 +315,20 @@ class SettingsTransferInfo(BaseModel):
     filaments: list[FilamentTransferEntry] = []
 
 
+class PrintEstimate(BaseModel):
+    total_filament_millimeters: float | None = None
+    total_filament_grams: float | None = None
+    model_filament_millimeters: float | None = None
+    model_filament_grams: float | None = None
+    prepare_seconds: int | None = None
+    model_print_seconds: int | None = None
+    total_seconds: int | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        return all(value is None for value in self.model_dump().values())
+
+
 class PrintResponse(BaseModel):
     status: str
     file_name: str
@@ -322,6 +336,7 @@ class PrintResponse(BaseModel):
     was_sliced: bool = False
     settings_transfer: SettingsTransferInfo | None = None
     upload_id: str | None = None
+    estimate: PrintEstimate | None = None
 
 
 # --- Settings API models ---

@@ -244,6 +244,18 @@ export interface SettingsTransferInfo {
   filaments: FilamentTransferEntry[];
 }
 
+// --- Print estimate (returned by slicing/printing responses when available) ---
+
+export interface PrintEstimate {
+  total_filament_millimeters?: number | null;
+  total_filament_grams?: number | null;
+  model_filament_millimeters?: number | null;
+  model_filament_grams?: number | null;
+  prepare_seconds?: number | null;
+  model_print_seconds?: number | null;
+  total_seconds?: number | null;
+}
+
 // --- Settings: printer configs (mirror app/models.py) ---
 
 export interface PrinterConfigResponse {

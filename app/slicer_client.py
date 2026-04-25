@@ -10,6 +10,9 @@ from typing import Any
 
 import httpx
 
+from app.models import PrintEstimate
+from app.print_estimate import extract_print_estimate
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,6 +28,24 @@ class SliceResult:
     settings_transfer_status: str = ""
     settings_transferred: list[dict] = field(default_factory=list)
     filament_transfers: list[dict] = field(default_factory=list)
+    estimate: PrintEstimate | None = None
+
+
+def _decode_print_estimate(value: str) -> PrintEstimate | None:
+    if not value:
+        return None
+    payload = value
+    try:
+        payload = base64.b64decode(value).decode()
+    except Exception:
+        # Some slicer versions may send raw JSON instead of base64.
+        pass
+    try:
+        estimate = PrintEstimate(**json.loads(payload))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        logger.warning("Failed to parse X-Print-Estimate header")
+        return None
+    return None if estimate.is_empty else estimate
 
 
 class SlicerClient:
@@ -85,11 +106,17 @@ class SlicerClient:
             except json.JSONDecodeError:
                 logger.warning("Failed to parse X-Filament-Settings-Transferred header")
 
+        estimate = (
+            _decode_print_estimate(resp.headers.get("x-print-estimate", ""))
+            or extract_print_estimate(resp.content)
+        )
+
         return SliceResult(
             content=resp.content,
             settings_transfer_status=status,
             settings_transferred=transferred,
             filament_transfers=filament_transfers,
+            estimate=estimate,
         )
 
     async def _check_stream_support(self) -> bool:
@@ -201,6 +228,8 @@ class SlicerClient:
             "file_base64": base64.b64encode(result.content).decode(),
             "file_size": len(result.content),
             "settings_transfer": transfer_info or None,
+            "estimate": result.estimate.model_dump(exclude_none=True)
+            if result.estimate else None,
         }}
         yield {"event": "done", "data": {}}
 

@@ -48,6 +48,7 @@ from app.models import (
     PrinterConfigResponse,
     PrinterDetailResponse,
     PrinterListResponse,
+    PrintEstimate,
     PrintResponse,
     SettingsTransferInfo,
     SlicerFilament,
@@ -56,6 +57,7 @@ from app.models import (
     TransferredSetting,
 )
 from app.parse_3mf import parse_3mf
+from app.print_estimate import extract_print_estimate
 from app.printer_service import PrinterService
 from app.slicer_client import SlicerClient, SliceResult, SlicingError
 from app.upload_tracker import UploadCancelledError, tracker as upload_tracker
@@ -92,6 +94,7 @@ def _store_preview(
     plate_id: int = 0,
     filament_profiles: list[str] | dict | None = None,
     project_filament_count: int | None = None,
+    estimate: PrintEstimate | None = None,
 ) -> str:
     preview_id = uuid.uuid4().hex[:12]
     meta = {"filename": filename, "printer_id": printer_id, "plate_id": plate_id}
@@ -99,6 +102,8 @@ def _store_preview(
         meta["filament_profiles"] = filament_profiles
     if project_filament_count is not None:
         meta["project_filament_count"] = project_filament_count
+    if estimate is not None and not estimate.is_empty:
+        meta["estimate"] = estimate.model_dump(exclude_none=True)
     (_PREVIEW_DIR / f"{preview_id}.3mf").write_bytes(file_data)
     (_PREVIEW_DIR / f"{preview_id}.json").write_text(json.dumps(meta))
     return preview_id
@@ -117,6 +122,7 @@ def _pop_preview(preview_id: str) -> dict | None:
         "plate_id": 0,
         "filament_profiles": None,
         "project_filament_count": None,
+        "estimate": None,
     }
     if meta_path.exists():
         try:
@@ -126,6 +132,20 @@ def _pop_preview(preview_id: str) -> dict | None:
         meta_path.unlink(missing_ok=True)
     data_path.unlink(missing_ok=True)
     return {"file_data": file_data, **meta}
+
+
+def _estimate_response_header(estimate: PrintEstimate | None) -> str | None:
+    if estimate is None or estimate.is_empty:
+        return None
+    payload = json.dumps(estimate.model_dump(exclude_none=True)).encode()
+    return base64.b64encode(payload).decode()
+
+
+def _estimate_from_preview_meta(value: object) -> PrintEstimate | None:
+    if not isinstance(value, dict):
+        return None
+    estimate = PrintEstimate(**value)
+    return None if estimate.is_empty else estimate
 
 
 def _extract_selected_tray_slots(
@@ -974,6 +994,7 @@ async def print_file(
             printer_id=pid,
             was_sliced=True,
             upload_id=state.upload_id,
+            estimate=_estimate_from_preview_meta(preview.get("estimate")),
         )
 
     # --- Normal path ---
@@ -1099,6 +1120,11 @@ async def print_file(
         headers = {
             "Content-Disposition": f'attachment; filename="{file.filename}"',
         }
+        estimate_header = _estimate_response_header(
+            slice_result.estimate if slice_result else None
+        )
+        if estimate_header:
+            headers["X-Print-Estimate"] = estimate_header
         if settings_transfer:
             headers["X-Settings-Transfer-Status"] = settings_transfer.status
             if settings_transfer.transferred:
@@ -1160,6 +1186,7 @@ async def print_file(
         was_sliced=was_sliced,
         settings_transfer=settings_transfer,
         upload_id=state.upload_id,
+        estimate=slice_result.estimate if slice_result else None,
     )
 
 
@@ -1228,12 +1255,16 @@ async def print_preview(
         plate_id=plate_id,
         filament_profiles=filament_payload,
         project_filament_count=len(info.filaments),
+        estimate=slice_result.estimate,
     )
 
     headers = {
         "Content-Disposition": f'attachment; filename="{file.filename}"',
         "X-Preview-Id": preview_id,
     }
+    estimate_header = _estimate_response_header(slice_result.estimate)
+    if estimate_header:
+        headers["X-Print-Estimate"] = estimate_header
     if slice_result.settings_transfer_status:
         headers["X-Settings-Transfer-Status"] = slice_result.settings_transfer_status
         if slice_result.settings_transferred:
@@ -1313,6 +1344,7 @@ async def print_file_stream(
     async def generate():
         result_bytes = None
         settings_transfer_data = None
+        estimate_data = None
 
         try:
             async for event in slicer_client.slice_stream(
@@ -1329,9 +1361,18 @@ async def print_file_stream(
 
                 if etype == "result":
                     settings_transfer_data = edata.get("settings_transfer")
+                    estimate_data = edata.get("estimate")
                     result_bytes = base64.b64decode(edata["file_base64"])
+                    if estimate_data is None:
+                        extracted_estimate = extract_print_estimate(result_bytes)
+                        if extracted_estimate is not None:
+                            estimate_data = extracted_estimate.model_dump(
+                                exclude_none=True
+                            )
+                            edata["estimate"] = estimate_data
 
                     if preview:
+                        estimate = _estimate_from_preview_meta(estimate_data)
                         pid_preview = _store_preview(
                             result_bytes,
                             filename,
@@ -1339,6 +1380,7 @@ async def print_file_stream(
                             plate_id=plate_id,
                             filament_profiles=filament_payload,
                             project_filament_count=len(info.filaments),
+                            estimate=estimate,
                         )
                         edata["preview_id"] = pid_preview
                         yield _sse_event("result", edata)
@@ -1402,6 +1444,7 @@ async def print_file_stream(
                                     "printer_id": pid,
                                     "file_name": filename,
                                     "settings_transfer": settings_transfer_data,
+                                    "estimate": estimate_data,
                                 })
                         except Exception as e:
                             yield _sse_event("error", {"error": str(e)})

@@ -12,6 +12,7 @@ import { FilamentsGroup, type FilamentMapping } from '@/components/print/filamen
 import { InfoBanner } from '@/components/print/info-banner';
 import { SlicingProgressCard } from '@/components/print/slicing-progress-card';
 import { SettingsTransferNote } from '@/components/print/settings-transfer-note';
+import { PrintEstimationCard } from '@/components/print/print-estimation-card';
 import { parse3mf } from '@/lib/api/3mf';
 import {
   getSlicerMachines,
@@ -28,10 +29,12 @@ import { useDropZone } from '@/lib/use-drop-zone';
 import { usePrinterContext } from '@/lib/printer-context';
 import type {
   AMSTray,
+  PrintEstimate,
   SettingsTransferInfo,
   ThreeMFInfo,
 } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
+import { hasPrintEstimate } from '@/lib/print-estimate';
 
 type PrintState =
   | { kind: 'empty' }
@@ -54,6 +57,7 @@ type PrintState =
       info: ThreeMFInfo;
       previewId: string;
       transfer: SettingsTransferInfo | null;
+      estimate: PrintEstimate | null;
     }
   | {
       kind: 'uploading';
@@ -62,7 +66,7 @@ type PrintState =
       uploadId: string;
       percent: number;
     }
-  | { kind: 'sent' };
+  | { kind: 'sent'; printerName: string | null; estimate: PrintEstimate | null };
 
 interface BannerData {
   variant: 'info' | 'warn' | 'success' | 'error';
@@ -276,6 +280,7 @@ export default function PrintRoute() {
               info,
               previewId: r.preview_id,
               transfer: r.settings_transfer ?? null,
+              estimate: r.estimate ?? null,
             });
           }
           // For non-preview, the upload phase is signalled by the next `status`/`upload_progress` events.
@@ -290,8 +295,16 @@ export default function PrintRoute() {
           }),
         onPrintStarted: (p) => {
           toast.success(`Print started on ${activePrinterName ?? p.printer_id}`);
-          setState({ kind: 'sent' });
-          navigate('/');
+          if (hasPrintEstimate(p.estimate)) {
+            setState({
+              kind: 'sent',
+              printerName: activePrinterName ?? p.printer_id,
+              estimate: p.estimate,
+            });
+          } else {
+            setState({ kind: 'sent', printerName: activePrinterName ?? p.printer_id, estimate: null });
+            navigate('/');
+          }
         },
         onError: (e) => {
           setState({
@@ -311,10 +324,18 @@ export default function PrintRoute() {
   async function confirmPrint() {
     if (state.kind !== 'previewReady') return;
     try {
-      await printFromPreview(state.previewId, activePrinterId ?? undefined);
+      const resp = await printFromPreview(state.previewId, activePrinterId ?? undefined);
       toast.success(`Print started on ${activePrinterName ?? 'printer'}`);
-      setState({ kind: 'sent' });
-      navigate('/');
+      if (hasPrintEstimate(resp.estimate)) {
+        setState({
+          kind: 'sent',
+          printerName: activePrinterName ?? resp.printer_id,
+          estimate: resp.estimate,
+        });
+      } else {
+        setState({ kind: 'sent', printerName: activePrinterName ?? resp.printer_id, estimate: null });
+        navigate('/');
+      }
     } catch (err) {
       toast.error(`Print failed: ${(err as Error).message}`);
     }
@@ -356,8 +377,16 @@ export default function PrintRoute() {
       if (!resp.upload_id) {
         // Synchronous success (no upload tracker created — rare).
         toast.success(`Print started on ${activePrinterName ?? resp.printer_id}`);
-        setState({ kind: 'sent' });
-        navigate('/');
+        if (hasPrintEstimate(resp.estimate)) {
+          setState({
+            kind: 'sent',
+            printerName: activePrinterName ?? resp.printer_id,
+            estimate: resp.estimate,
+          });
+        } else {
+          setState({ kind: 'sent', printerName: activePrinterName ?? resp.printer_id, estimate: null });
+          navigate('/');
+        }
         return;
       }
       const uploadId = resp.upload_id;
@@ -385,8 +414,16 @@ export default function PrintRoute() {
         );
         if (progress.status === 'completed') {
           toast.success(`Print started on ${activePrinterName ?? resp.printer_id}`);
-          setState({ kind: 'sent' });
-          navigate('/');
+          if (hasPrintEstimate(resp.estimate)) {
+            setState({
+              kind: 'sent',
+              printerName: activePrinterName ?? resp.printer_id,
+              estimate: resp.estimate,
+            });
+          } else {
+            setState({ kind: 'sent', printerName: activePrinterName ?? resp.printer_id, estimate: null });
+            navigate('/');
+          }
           return;
         }
         if (progress.status === 'cancelled') {
@@ -497,6 +534,15 @@ export default function PrintRoute() {
         <DropZoneCard onFile={onDropFile} targetPrinterName={activePrinterName} />
       )}
 
+      {state.kind === 'sent' && (
+        <PrintSentReceipt
+          printerName={state.printerName}
+          estimate={state.estimate}
+          onDashboard={() => navigate('/')}
+          onAnother={clearImport}
+        />
+      )}
+
       {(state.kind === 'slicing' || state.kind === 'uploading') && (
         <SlicingProgressCard
           title={state.kind === 'slicing' ? 'Slicing…' : 'Uploading to printer…'}
@@ -549,6 +595,7 @@ export default function PrintRoute() {
                 title="Preview ready"
                 message="Review the sliced file, then confirm the print."
               />
+              <PrintEstimationCard estimate={state.estimate} />
               <SettingsTransferNote info={state.transfer} />
             </>
           )}
@@ -567,6 +614,45 @@ export default function PrintRoute() {
           />
         </div>
       )}
+    </div>
+  );
+}
+
+function PrintSentReceipt({
+  printerName,
+  estimate,
+  onDashboard,
+  onAnother,
+}: {
+  printerName: string | null;
+  estimate: PrintEstimate | null;
+  onDashboard: () => void;
+  onAnother: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-4 rounded-[24px] border border-line bg-surface-0 p-5 shadow-card">
+      <InfoBanner
+        variant="success"
+        title={printerName ? `Print sent to ${printerName}` : 'Print sent'}
+        message="The printer accepted the job. Keep this summary as a receipt, or return to the dashboard."
+      />
+      <PrintEstimationCard estimate={estimate} />
+      <div className="grid grid-cols-2 gap-2.5">
+        <Button
+          type="button"
+          onClick={onAnother}
+          className="rounded-full bg-surface-1 hover:bg-surface-2 text-accent border-0 h-11 text-[14px] font-semibold"
+        >
+          Print another
+        </Button>
+        <Button
+          type="button"
+          onClick={onDashboard}
+          className="rounded-full bg-gradient-to-r from-accent-strong to-accent text-white border-0 h-11 text-[14px] font-semibold"
+        >
+          Dashboard
+        </Button>
+      </div>
     </div>
   );
 }

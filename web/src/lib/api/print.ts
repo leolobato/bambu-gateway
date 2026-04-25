@@ -1,11 +1,14 @@
 import { ApiError } from './client';
+import type { PrintEstimate, SettingsTransferInfo } from './types';
 
 export interface PrintDirectResponse {
   status: string;
   file_name: string;
   printer_id: string;
   was_sliced: boolean;
+  settings_transfer?: SettingsTransferInfo | null;
   upload_id: string | null;
+  estimate?: PrintEstimate | null;
 }
 
 async function postPrint(fd: FormData): Promise<PrintDirectResponse> {

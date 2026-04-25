@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import type { SettingsTransferInfo } from './api/types';
+import type { PrintEstimate, SettingsTransferInfo } from './api/types';
 
 export interface PrintStreamStatus {
   phase: string;
@@ -22,6 +22,7 @@ export interface PrintStreamUploadProgress {
 export interface PrintStreamResult {
   file_base64: string;
   settings_transfer?: SettingsTransferInfo;
+  estimate?: PrintEstimate | null;
   preview_id?: string;
   [key: string]: unknown;
 }
@@ -30,6 +31,7 @@ export interface PrintStreamPrintStarted {
   printer_id: string;
   file_name: string;
   settings_transfer?: SettingsTransferInfo;
+  estimate?: PrintEstimate | null;
 }
 
 export interface PrintStreamHandlers {
