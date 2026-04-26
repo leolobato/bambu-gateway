@@ -449,6 +449,7 @@ class SliceJobManager:
                 except Exception:
                     pass
         except Exception as e:
+            logger.exception("slice job %s slicer call raised", job.id)
             await self._fail(job, f"Slicing failed: {e}")
             return
 
@@ -493,6 +494,7 @@ class SliceJobManager:
         await self._store.upsert(job)
 
     async def _fail(self, job: SliceJob, message: str) -> None:
+        logger.warning("slice job %s failed: %s", job.id, message)
         job.error = message
         job.phase = None
         await self._set_status(job, SliceJobStatus.FAILED)
