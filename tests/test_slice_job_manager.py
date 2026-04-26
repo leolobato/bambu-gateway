@@ -564,3 +564,64 @@ async def test_cancel_during_upload_aborts(tmp_jobs_dir: Path):
         assert cancelled.error is None
     finally:
         await manager.stop()
+
+
+async def test_progress_event_with_null_percent_is_tolerated(tmp_jobs_dir: Path):
+    """Real OrcaSlicer can send `percent: null` before it has computed one."""
+    import base64
+
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    slicer = make_slicer([
+        # First a malformed tick — used to crash with int(None) → TypeError
+        {"event": "progress", "data": {"percent": None}},
+        {"event": "progress", "data": {"percent": "42.7"}},
+        {
+            "event": "result",
+            "data": {
+                "file_base64": base64.b64encode(b"sliced").decode(),
+                "file_size": 6,
+            },
+        },
+        {"event": "done", "data": {}},
+    ])
+    manager = SliceJobManager(
+        store=store, slicer=slicer, printer_service=MagicMock(),
+        notifier=None, max_concurrent=1,
+    )
+    await manager.start()
+    try:
+        job = await manager.submit(
+            file_data=b"x", filename="cube.3mf",
+            machine_profile="GM014", process_profile="0.20mm",
+            filament_profiles={}, plate_id=1, plate_type="",
+            project_filament_count=0, printer_id=None, auto_print=False,
+        )
+        ready = await _wait_for_status(store, job.id, SliceJobStatus.READY)
+        assert ready.error is None
+        assert ready.progress == 100
+    finally:
+        await manager.stop()
+
+
+async def test_result_event_without_file_base64_is_failed(tmp_jobs_dir: Path):
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    slicer = make_slicer([
+        {"event": "result", "data": {}},
+        {"event": "done", "data": {}},
+    ])
+    manager = SliceJobManager(
+        store=store, slicer=slicer, printer_service=MagicMock(),
+        notifier=None, max_concurrent=1,
+    )
+    await manager.start()
+    try:
+        job = await manager.submit(
+            file_data=b"x", filename="cube.3mf",
+            machine_profile="GM014", process_profile="0.20mm",
+            filament_profiles={}, plate_id=1, plate_type="",
+            project_filament_count=0, printer_id=None, auto_print=False,
+        )
+        failed = await _wait_for_status(store, job.id, SliceJobStatus.FAILED)
+        assert "file_base64" in (failed.error or "")
+    finally:
+        await manager.stop()

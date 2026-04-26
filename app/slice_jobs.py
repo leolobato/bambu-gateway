@@ -421,14 +421,24 @@ class SliceJobManager:
                     etype = event.get("event")
                     edata = event.get("data") or {}
                     if etype == "progress":
-                        pct = int(edata.get("percent", 0))
-                        job.progress = pct
+                        # Slicer may emit a progress tick with `percent: null`
+                        # before it has computed any. Treat null/missing/non-
+                        # numeric values as "no update" and keep prior progress.
+                        pct_raw = edata.get("percent")
+                        if pct_raw is not None:
+                            try:
+                                job.progress = max(0, min(100, int(float(pct_raw))))
+                            except (TypeError, ValueError):
+                                pass
                         now = time.monotonic()
                         if now - last_write >= self.PROGRESS_WRITE_INTERVAL_SECONDS:
                             await self._store.upsert(job)
                             last_write = now
                     elif etype == "result":
-                        result_bytes = base64.b64decode(edata["file_base64"])
+                        b64 = edata.get("file_base64")
+                        if not b64:
+                            raise ValueError("result event missing file_base64")
+                        result_bytes = base64.b64decode(b64)
                         estimate = edata.get("estimate")
                         settings_transfer = edata.get("settings_transfer")
                     elif etype == "done":
