@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import enum
 import json
 import logging
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable, Protocol
 
 from app.models import PrintEstimate
 
@@ -200,3 +202,202 @@ class SliceJobStore:
         tmp.write_text(payload)
         tmp.replace(self._json_path)
         self._jobs = jobs
+
+
+class _SlicerLike(Protocol):
+    def slice_stream(
+        self,
+        file_data: bytes,
+        filename: str,
+        machine_profile: str,
+        process_profile: str,
+        filament_profiles: list | dict,
+        plate_type: str = "",
+        plate: int = 1,
+    ): ...
+
+
+# Optional callback signature: notifier(job, kind) where kind is "ready" or "failed".
+TerminalCallback = Callable[[SliceJob, str], Awaitable[None]]
+
+
+class SliceJobManager:
+    """Owns the asyncio queue and worker tasks for slice jobs."""
+
+    PROGRESS_WRITE_INTERVAL_SECONDS = 1.0
+
+    def __init__(
+        self,
+        *,
+        store: SliceJobStore,
+        slicer: _SlicerLike,
+        printer_service,
+        notifier: TerminalCallback | None,
+        max_concurrent: int = 1,
+    ) -> None:
+        self._store = store
+        self._slicer = slicer
+        self._printer_service = printer_service
+        self._notifier = notifier
+        self._max_concurrent = max(1, max_concurrent)
+        self._queue: asyncio.Queue[str] = asyncio.Queue()
+        self._workers: list[asyncio.Task] = []
+        self._cancel_events: dict[str, asyncio.Event] = {}
+        self._running = False
+
+    async def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        for i in range(self._max_concurrent):
+            self._workers.append(
+                asyncio.create_task(self._worker_loop(), name=f"slice-worker-{i}")
+            )
+
+    async def stop(self) -> None:
+        if not self._running:
+            return
+        self._running = False
+        for _ in self._workers:
+            await self._queue.put("__STOP__")
+        for w in self._workers:
+            await w
+        self._workers.clear()
+
+    async def submit(
+        self,
+        *,
+        file_data: bytes,
+        filename: str,
+        machine_profile: str,
+        process_profile: str,
+        filament_profiles: list | dict,
+        plate_id: int,
+        plate_type: str,
+        project_filament_count: int | None,
+        printer_id: str | None,
+        auto_print: bool,
+    ) -> SliceJob:
+        # Allocate job id, then write input blob at the matching path so the
+        # job record always references a real file.
+        job_id = uuid.uuid4().hex[:12]
+        input_path = self._store.input_path(job_id)
+        input_path.write_bytes(file_data)
+
+        job = SliceJob.new(
+            filename=filename,
+            machine_profile=machine_profile,
+            process_profile=process_profile,
+            filament_profiles=filament_profiles,
+            plate_id=plate_id,
+            plate_type=plate_type,
+            project_filament_count=project_filament_count,
+            printer_id=printer_id,
+            auto_print=auto_print,
+            input_path=input_path,
+        )
+        # SliceJob.new generates its own id, but we want it to match the blob.
+        job.id = job_id
+
+        await self._store.upsert(job)
+        self._cancel_events[job.id] = asyncio.Event()
+        await self._queue.put(job.id)
+        return job
+
+    async def get(self, job_id: str) -> SliceJob | None:
+        return await self._store.get(job_id)
+
+    async def list(self) -> list[SliceJob]:
+        return await self._store.list_all()
+
+    async def _worker_loop(self) -> None:
+        while True:
+            job_id = await self._queue.get()
+            if job_id == "__STOP__":
+                return
+            try:
+                await self._run_job(job_id)
+            except Exception:
+                logger.exception("slice worker crashed on job %s", job_id)
+            finally:
+                self._cancel_events.pop(job_id, None)
+
+    async def _run_job(self, job_id: str) -> None:
+        job = await self._store.get(job_id)
+        if job is None:
+            return
+        cancel = self._cancel_events.get(job_id)
+        if cancel is not None and cancel.is_set():
+            await self._set_status(job, SliceJobStatus.CANCELLED)
+            return
+
+        await self._set_status(job, SliceJobStatus.SLICING, phase="slicing")
+        file_data = Path(job.input_path).read_bytes()
+
+        result_bytes: bytes | None = None
+        estimate: dict | None = None
+        settings_transfer: dict | None = None
+        last_write = 0.0
+
+        try:
+            async for event in self._slicer.slice_stream(
+                file_data, job.filename, job.machine_profile, job.process_profile,
+                job.filament_profiles, plate_type=job.plate_type,
+                plate=job.plate_id or 1,
+            ):
+                etype = event.get("event")
+                edata = event.get("data") or {}
+                if etype == "progress":
+                    pct = int(edata.get("percent", 0))
+                    job.progress = pct
+                    now = time.monotonic()
+                    if now - last_write >= self.PROGRESS_WRITE_INTERVAL_SECONDS:
+                        await self._store.upsert(job)
+                        last_write = now
+                elif etype == "result":
+                    result_bytes = base64.b64decode(edata["file_base64"])
+                    estimate = edata.get("estimate")
+                    settings_transfer = edata.get("settings_transfer")
+                elif etype == "done":
+                    break
+        except Exception as e:
+            await self._fail(job, f"Slicing failed: {e}")
+            return
+
+        if result_bytes is None:
+            await self._fail(job, "Slicer produced no output")
+            return
+
+        out_path = self._store.output_path(job.id)
+        out_path.write_bytes(result_bytes)
+        job.output_path = str(out_path)
+        job.output_size = len(result_bytes)
+        job.estimate = estimate
+        job.settings_transfer = settings_transfer
+        job.progress = 100
+        job.phase = None
+
+        # No auto-print yet (handled in Task 9) — settle in READY.
+        await self._set_status(job, SliceJobStatus.READY)
+        await self._notify(job, "ready")
+
+    async def _set_status(
+        self, job: SliceJob, status: SliceJobStatus, *, phase: str | None = None,
+    ) -> None:
+        job.status = status
+        job.phase = phase
+        await self._store.upsert(job)
+
+    async def _fail(self, job: SliceJob, message: str) -> None:
+        job.error = message
+        job.phase = None
+        await self._set_status(job, SliceJobStatus.FAILED)
+        await self._notify(job, "failed")
+
+    async def _notify(self, job: SliceJob, kind: str) -> None:
+        if self._notifier is None:
+            return
+        try:
+            await self._notifier(job, kind)
+        except Exception:
+            logger.exception("slice job notifier raised for %s", job.id)

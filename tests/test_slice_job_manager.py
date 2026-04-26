@@ -1,0 +1,136 @@
+import asyncio
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from app.slice_jobs import (
+    SliceJob,
+    SliceJobManager,
+    SliceJobStatus,
+    SliceJobStore,
+)
+
+
+def make_slicer(events: list[dict]):
+    """Build a SlicerClient mock whose slice_stream yields the given events."""
+    client = MagicMock()
+
+    async def stream(*args, **kwargs):
+        for e in events:
+            yield e
+
+    client.slice_stream = stream
+    return client
+
+
+async def _wait_for_status(
+    store: SliceJobStore, job_id: str, target: SliceJobStatus, timeout: float = 2.0,
+):
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        job = await store.get(job_id)
+        if job and job.status == target:
+            return job
+        await asyncio.sleep(0.02)
+    pytest.fail(f"job {job_id} never reached {target} (last={job.status if job else None})")
+
+
+async def test_submit_slice_succeeds_and_writes_output_blob(tmp_jobs_dir: Path):
+    import base64
+
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    slicer = make_slicer([
+        {"event": "progress", "data": {"percent": 25}},
+        {"event": "progress", "data": {"percent": 80}},
+        {
+            "event": "result",
+            "data": {
+                "file_base64": base64.b64encode(b"sliced!").decode(),
+                "file_size": 7,
+                "estimate": {"total_time_seconds": 1234},
+            },
+        },
+        {"event": "done", "data": {}},
+    ])
+    manager = SliceJobManager(
+        store=store,
+        slicer=slicer,
+        printer_service=MagicMock(),
+        notifier=None,
+        max_concurrent=1,
+    )
+    await manager.start()
+    try:
+        job = await manager.submit(
+            file_data=b"original-3mf-bytes",
+            filename="cube.3mf",
+            machine_profile="GM014",
+            process_profile="0.20mm",
+            filament_profiles={"0": "GFL99"},
+            plate_id=1,
+            plate_type="",
+            project_filament_count=1,
+            printer_id=None,
+            auto_print=False,
+        )
+        assert job.status == SliceJobStatus.QUEUED
+
+        ready = await _wait_for_status(store, job.id, SliceJobStatus.READY)
+        assert ready.progress == 100
+        assert ready.output_path is not None
+        assert Path(ready.output_path).read_bytes() == b"sliced!"
+        assert ready.estimate == {"total_time_seconds": 1234}
+        assert ready.error is None
+    finally:
+        await manager.stop()
+
+
+async def test_progress_events_update_job_progress(tmp_jobs_dir: Path):
+    import base64
+
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    seen_progress: list[int] = []
+
+    # Slow slicer so we can observe intermediate state.
+    async def stream(*a, **kw):
+        yield {"event": "progress", "data": {"percent": 33}}
+        await asyncio.sleep(0.05)
+        yield {"event": "progress", "data": {"percent": 66}}
+        await asyncio.sleep(0.05)
+        yield {
+            "event": "result",
+            "data": {
+                "file_base64": base64.b64encode(b"x").decode(),
+                "file_size": 1,
+            },
+        }
+        yield {"event": "done", "data": {}}
+
+    slicer = MagicMock()
+    slicer.slice_stream = stream
+    manager = SliceJobManager(
+        store=store, slicer=slicer, printer_service=MagicMock(),
+        notifier=None, max_concurrent=1,
+    )
+    await manager.start()
+    try:
+        job = await manager.submit(
+            file_data=b"x", filename="cube.3mf",
+            machine_profile="GM014", process_profile="0.20mm",
+            filament_profiles={}, plate_id=1, plate_type="",
+            project_filament_count=0, printer_id=None, auto_print=False,
+        )
+        # Sample progress periodically until terminal
+        deadline = asyncio.get_event_loop().time() + 2.0
+        while asyncio.get_event_loop().time() < deadline:
+            cur = await store.get(job.id)
+            if cur and cur.progress not in seen_progress:
+                seen_progress.append(cur.progress)
+            if cur and cur.status.is_terminal:
+                break
+            await asyncio.sleep(0.01)
+        assert any(p in seen_progress for p in (33, 66))
+        assert seen_progress[-1] == 100
+    finally:
+        await manager.stop()
