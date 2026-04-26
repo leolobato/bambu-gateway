@@ -1456,15 +1456,24 @@ async def create_slice_job(
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Failed to parse 3MF: {e}")
 
-    try:
-        parsed_filaments = json.loads(filament_profiles)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="filament_profiles must be valid JSON")
-
     if auto_print and not printer_id:
         raise HTTPException(
             status_code=400,
             detail="printer_id is required when auto_print=true",
+        )
+
+    # Validate + normalize filament selections the same way /api/print-stream
+    # and /api/print-preview do, so missing setting_ids or unavailable AMS
+    # tray slots are surfaced here instead of as opaque slicer 400s.
+    filament_payload, filament_error = await _resolve_slice_filament_payload(
+        [f.setting_id for f in info.filaments],
+        filament_profiles,
+        printer_id,
+    )
+    if filament_error is not None or filament_payload is None:
+        raise HTTPException(
+            status_code=400,
+            detail=filament_error or "filament_profiles must be valid JSON",
         )
 
     job = await slice_jobs.submit(
@@ -1472,7 +1481,7 @@ async def create_slice_job(
         filename=file.filename,
         machine_profile=machine_profile,
         process_profile=process_profile,
-        filament_profiles=parsed_filaments,
+        filament_profiles=filament_payload,
         plate_id=plate_id,
         plate_type=plate_type.strip(),
         project_filament_count=len(info.filaments),

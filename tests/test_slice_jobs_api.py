@@ -262,3 +262,58 @@ async def test_get_output_409_when_not_ready(app_client):
 async def test_get_output_404_unknown_job(app_client):
     resp = await app_client.get("/api/slice-jobs/deadbeef/output")
     assert resp.status_code == 404
+
+
+async def test_create_rejects_invalid_filament_payload_with_400(
+    tmp_path, monkeypatch
+):
+    """Missing profile_setting_id should be caught at the gateway (not the slicer)."""
+    from app import config_store
+    from app.config import settings
+    import app.main as main_mod
+    from app.slice_jobs import SliceJobManager, SliceJobStore
+
+    config_store.set_path(tmp_path / "printers.json")
+    monkeypatch.setattr(settings, "orcaslicer_api_url", "http://stub")
+    # Project has 5 filaments — matches the user's bug report shape.
+    monkeypatch.setattr(
+        main_mod,
+        "parse_3mf",
+        lambda data: MagicMock(
+            filaments=[MagicMock(setting_id=f"f{i}") for i in range(5)],
+        ),
+    )
+
+    main_mod.printer_service = MagicMock()
+    main_mod.printer_service.default_printer_id.return_value = "PRINTER1"
+
+    slicer = MagicMock()
+    slicer.slice_stream = MagicMock()  # should never be called
+    main_mod.slicer_client = slicer
+
+    store = SliceJobStore(tmp_path / "slice_jobs.json")
+    main_mod.slice_jobs = SliceJobManager(
+        store=store, slicer=slicer, printer_service=main_mod.printer_service,
+        notifier=None, max_concurrent=1,
+    )
+    await main_mod.slice_jobs.start()
+    try:
+        transport = httpx.ASGITransport(app=main_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/api/slice-jobs",
+                files={"file": ("cube.3mf", b"x", "application/octet-stream")},
+                data={
+                    "machine_profile": "GM014",
+                    "process_profile": "0.20mm",
+                    # Override for index 4 with a missing profile_setting_id
+                    "filament_profiles": '{"4": {"profile_setting_id": ""}}',
+                },
+            )
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "profile_setting_id" in detail
+        # Slicer was never invoked.
+        slicer.slice_stream.assert_not_called()
+    finally:
+        await main_mod.slice_jobs.stop()
