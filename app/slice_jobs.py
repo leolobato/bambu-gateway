@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import enum
+import io
 import json
 import logging
 import re
 import time
 import uuid
+import zipfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,6 +80,9 @@ class SliceJob:
     estimate: dict | None = None  # PrintEstimate.model_dump
     settings_transfer: dict | None = None
     output_size: int | None = None
+    # base64-encoded data URL (e.g. "data:image/png;base64,...") of the
+    # sliced output's plate_1 thumbnail, or None when not available.
+    thumbnail: str | None = None
 
     # failure
     error: str | None = None
@@ -248,6 +253,31 @@ _STATUS_CALLBACK_RE = re.compile(
     r"(?:,\s*message=(?P<message>[^,]+?))?"
     r"(?:,\s*message_type=\d+)?\s*$"
 )
+
+
+def _extract_plate_thumbnail(sliced_3mf: bytes) -> str | None:
+    """Return a base64 data URL for the sliced 3MF's plate-1 thumbnail.
+
+    Sliced output is always single-plate (the gateway extracts the chosen
+    plate before slicing), so we look for `Metadata/plate_1.png` first and
+    fall back to the half-resolution version if present. Returns None when
+    no thumbnail is found or the archive can't be read.
+    """
+    candidates = (
+        "Metadata/plate_1.png",
+        "Metadata/plate_no_light_1.png",
+        "Metadata/top_1.png",
+    )
+    try:
+        with zipfile.ZipFile(io.BytesIO(sliced_3mf)) as zf:
+            names = set(zf.namelist())
+            for path in candidates:
+                if path in names:
+                    raw = zf.read(path)
+                    return "data:image/png;base64," + base64.b64encode(raw).decode()
+    except (zipfile.BadZipFile, KeyError):
+        return None
+    return None
 
 
 def _parse_orca_progress(line: str) -> tuple[int | None, str | None]:
@@ -546,6 +576,7 @@ class SliceJobManager:
         job.output_size = len(result_bytes)
         job.estimate = estimate
         job.settings_transfer = settings_transfer
+        job.thumbnail = _extract_plate_thumbnail(result_bytes)
         job.progress = 100
         job.phase = None
 

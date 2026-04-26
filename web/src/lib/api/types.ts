@@ -334,6 +334,8 @@ export interface SliceJob {
   settings_transfer: SettingsTransferInfo | null;
   output_size: number | null;
   error: string | null;
+  /** True when `GET /api/slice-jobs/{id}/thumbnail` will return a PNG. */
+  has_thumbnail: boolean;
 }
 
 export interface SliceJobListResponse {

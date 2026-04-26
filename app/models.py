@@ -460,6 +460,8 @@ class SliceJobResponse(BaseModel):
     settings_transfer: dict | None = None
     output_size: int | None = None
     error: str | None = None
+    # True when a plate thumbnail is available for `GET /api/slice-jobs/{id}/thumbnail`.
+    has_thumbnail: bool = False
 
 
 class SliceJobListResponse(BaseModel):

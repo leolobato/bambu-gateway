@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Download, Loader2, Printer, Trash2, X } from 'lucide-react';
+import { Download, Info, Loader2, Printer, Trash2, X } from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -17,11 +17,19 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import { PrintEstimationCard } from '@/components/print/print-estimation-card';
+import { hasPrintEstimate } from '@/lib/print-estimate';
+import {
   cancelSliceJob,
   clearSliceJobs,
   deleteSliceJob,
   listSliceJobs,
   sliceJobOutputUrl,
+  sliceJobThumbnailUrl,
 } from '@/lib/api/slice-jobs';
 import { printFromJob } from '@/lib/api/print';
 import { listPrinters } from '@/lib/api/printers';
@@ -224,9 +232,22 @@ function SliceJobRow({
   const canDownload = job.status === 'ready' || job.status === 'printing';
   const rowBusy = isCancelling || isDeleting || isPrinting;
 
+  const showThumbnail =
+    job.has_thumbnail && (job.status === 'ready' || job.status === 'printing');
+  const showSummary = canPrint && hasPrintEstimate(job.estimate);
+
   return (
     <li className="rounded-lg border border-line bg-surface-0 p-3 flex flex-col gap-2">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start gap-3">
+        {showThumbnail && (
+          <img
+            src={sliceJobThumbnailUrl(job.job_id)}
+            alt=""
+            aria-hidden
+            className="h-14 w-14 flex-shrink-0 rounded-md border border-line bg-bg-1 object-contain"
+            loading="lazy"
+          />
+        )}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span
@@ -270,6 +291,31 @@ function SliceJobRow({
           )}
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
+          {showSummary && (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  aria-label={`Show summary for ${job.filename}`}
+                  title="Summary"
+                  className="h-10 w-10 text-text-1 hover:text-text-0"
+                >
+                  <Info className="h-4 w-4" aria-hidden />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="end"
+                className="w-[320px] border-line bg-bg-1 p-0"
+              >
+                <PrintEstimationCard
+                  estimate={job.estimate}
+                  className="border-0 bg-transparent shadow-none p-3"
+                />
+              </PopoverContent>
+            </Popover>
+          )}
           {canPrint && (
             <Button
               type="button"

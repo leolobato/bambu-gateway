@@ -264,6 +264,50 @@ async def test_get_output_404_unknown_job(app_client):
     assert resp.status_code == 404
 
 
+async def test_get_thumbnail_404_when_missing(app_client):
+    """A queued job has no thumbnail yet — endpoint returns 404."""
+    import app.main as main_mod
+    from app.slice_jobs import SliceJob
+
+    seed = SliceJob.new(
+        filename="x.3mf", machine_profile="GM014", process_profile="0.20mm",
+        filament_profiles={}, plate_id=1, plate_type="",
+        project_filament_count=0, printer_id=None, auto_print=False,
+        input_path=main_mod.slice_jobs._store.input_path("thumbjob"),
+    )
+    seed.id = "thumbjob"
+    Path(seed.input_path).write_bytes(b"x")
+    await main_mod.slice_jobs._store.upsert(seed)
+
+    resp = await app_client.get(f"/api/slice-jobs/{seed.id}/thumbnail")
+    assert resp.status_code == 404
+
+
+async def test_get_thumbnail_returns_png_bytes(app_client):
+    """When a job has a stored thumbnail data URL, the endpoint streams the PNG."""
+    import base64 as _b64
+    import app.main as main_mod
+    from app.slice_jobs import SliceJob
+
+    seed = SliceJob.new(
+        filename="x.3mf", machine_profile="GM014", process_profile="0.20mm",
+        filament_profiles={}, plate_id=1, plate_type="",
+        project_filament_count=0, printer_id=None, auto_print=False,
+        input_path=main_mod.slice_jobs._store.input_path("thumbjob2"),
+    )
+    seed.id = "thumbjob2"
+    Path(seed.input_path).write_bytes(b"x")
+    seed.thumbnail = (
+        "data:image/png;base64," + _b64.b64encode(b"\x89PNG\r\n\x1a\n_fake").decode()
+    )
+    await main_mod.slice_jobs._store.upsert(seed)
+
+    resp = await app_client.get(f"/api/slice-jobs/{seed.id}/thumbnail")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.content == b"\x89PNG\r\n\x1a\n_fake"
+
+
 async def test_create_rejects_invalid_filament_payload_with_400(
     tmp_path, monkeypatch
 ):

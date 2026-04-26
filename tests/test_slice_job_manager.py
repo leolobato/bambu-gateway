@@ -799,3 +799,38 @@ async def test_status_event_populates_phase(tmp_jobs_dir: Path):
     finally:
         release.set()
         await manager.stop()
+
+
+def test_extract_plate_thumbnail_pulls_plate_1_png():
+    import io
+    import zipfile
+    from app.slice_jobs import _extract_plate_thumbnail
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("Metadata/plate_1.png", b"\x89PNG\r\n\x1a\n_thumb")
+    payload = buf.getvalue()
+
+    data_url = _extract_plate_thumbnail(payload)
+    assert data_url is not None
+    assert data_url.startswith("data:image/png;base64,")
+    import base64
+    decoded = base64.b64decode(data_url.split(",", 1)[1])
+    assert decoded == b"\x89PNG\r\n\x1a\n_thumb"
+
+
+def test_extract_plate_thumbnail_returns_none_for_archive_without_thumbnail():
+    import io
+    import zipfile
+    from app.slice_jobs import _extract_plate_thumbnail
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("3D/3dmodel.model", b"<model></model>")
+    assert _extract_plate_thumbnail(buf.getvalue()) is None
+
+
+def test_extract_plate_thumbnail_returns_none_for_invalid_zip():
+    from app.slice_jobs import _extract_plate_thumbnail
+
+    assert _extract_plate_thumbnail(b"not a zip") is None

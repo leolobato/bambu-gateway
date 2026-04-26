@@ -83,3 +83,7 @@ export async function clearSliceJobs(
 export function sliceJobOutputUrl(jobId: string): string {
   return `/api/slice-jobs/${encodeURIComponent(jobId)}/output`;
 }
+
+export function sliceJobThumbnailUrl(jobId: string): string {
+  return `/api/slice-jobs/${encodeURIComponent(jobId)}/thumbnail`;
+}

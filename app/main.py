@@ -113,6 +113,7 @@ def _slice_job_to_response(job) -> SliceJobResponse:
         settings_transfer=job.settings_transfer,
         output_size=job.output_size,
         error=job.error,
+        has_thumbnail=bool(job.thumbnail),
     )
 
 
@@ -1528,6 +1529,35 @@ async def get_slice_job(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return _slice_job_to_response(job)
+
+
+@app.get("/api/slice-jobs/{job_id}/thumbnail")
+async def get_slice_job_thumbnail(job_id: str):
+    """Return the sliced 3MF's plate thumbnail as a PNG."""
+    if slice_jobs is None:
+        raise HTTPException(status_code=404, detail="Slice jobs disabled")
+    job = await slice_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not job.thumbnail:
+        raise HTTPException(status_code=404, detail="No thumbnail available")
+    # `thumbnail` is stored as a `data:image/png;base64,...` URL — pull the
+    # bytes back out so the browser can cache the response by URL.
+    prefix, _, data_b64 = job.thumbnail.partition(",")
+    if not data_b64:
+        raise HTTPException(status_code=500, detail="Malformed thumbnail")
+    media_type = "image/png"
+    if prefix.startswith("data:") and ";" in prefix:
+        media_type = prefix[5:].split(";", 1)[0] or media_type
+    try:
+        data = base64.b64decode(data_b64)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=500, detail="Malformed thumbnail")
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @app.get("/api/slice-jobs/{job_id}/output")
