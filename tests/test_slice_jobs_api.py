@@ -214,3 +214,51 @@ async def test_print_with_unknown_job_id_404(app_client):
         data={"job_id": "deadbeef"},
     )
     assert resp.status_code == 404
+
+
+async def test_get_output_returns_sliced_bytes(app_client):
+    create = await app_client.post(
+        "/api/slice-jobs",
+        files={"file": ("cube.3mf", b"x", "application/octet-stream")},
+        data={
+            "machine_profile": "GM014",
+            "process_profile": "0.20mm",
+            "filament_profiles": "{}",
+        },
+    )
+    job_id = create.json()["job_id"]
+    for _ in range(40):
+        cur = await app_client.get(f"/api/slice-jobs/{job_id}")
+        if cur.json()["status"] == "ready":
+            break
+        await asyncio.sleep(0.05)
+
+    resp = await app_client.get(f"/api/slice-jobs/{job_id}/output")
+    assert resp.status_code == 200
+    assert resp.content == b"sliced"
+    assert resp.headers["x-job-id"] == job_id
+    assert resp.headers["x-preview-id"] == job_id
+
+
+async def test_get_output_409_when_not_ready(app_client):
+    """A queued job has no output yet — endpoint returns 409."""
+    import app.main as main_mod
+    from app.slice_jobs import SliceJob
+
+    seed = SliceJob.new(
+        filename="x.3mf", machine_profile="GM014", process_profile="0.20mm",
+        filament_profiles={}, plate_id=1, plate_type="",
+        project_filament_count=0, printer_id=None, auto_print=False,
+        input_path=main_mod.slice_jobs._store.input_path("seedjob"),
+    )
+    seed.id = "seedjob"
+    Path(seed.input_path).write_bytes(b"x")
+    await main_mod.slice_jobs._store.upsert(seed)
+
+    resp = await app_client.get(f"/api/slice-jobs/{seed.id}/output")
+    assert resp.status_code == 409
+
+
+async def test_get_output_404_unknown_job(app_client):
+    resp = await app_client.get("/api/slice-jobs/deadbeef/output")
+    assert resp.status_code == 404

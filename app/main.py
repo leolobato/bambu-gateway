@@ -1515,6 +1515,50 @@ async def get_slice_job(job_id: str):
     return _slice_job_to_response(job)
 
 
+@app.get("/api/slice-jobs/{job_id}/output")
+async def get_slice_job_output(job_id: str):
+    """Download the sliced 3MF bytes for a job in `ready` or `printing` state."""
+    if slice_jobs is None:
+        raise HTTPException(status_code=404, detail="Slice jobs disabled")
+    job = await slice_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status.value not in ("ready", "printing"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is {job.status.value}, no output available",
+        )
+    if not job.output_path or not Path(job.output_path).exists():
+        raise HTTPException(status_code=410, detail="Output blob is gone")
+
+    output_bytes = Path(job.output_path).read_bytes()
+    headers = {
+        "Content-Disposition": f'attachment; filename="{job.filename}"',
+        "X-Job-Id": job.id,
+        "X-Preview-Id": job.id,
+    }
+    if job.estimate:
+        headers["X-Print-Estimate"] = base64.b64encode(
+            json.dumps(job.estimate).encode(),
+        ).decode()
+    if job.settings_transfer:
+        if job.settings_transfer.get("status"):
+            headers["X-Settings-Transfer-Status"] = job.settings_transfer["status"]
+        if job.settings_transfer.get("transferred"):
+            headers["X-Settings-Transferred"] = json.dumps(
+                job.settings_transfer["transferred"]
+            )
+        if job.settings_transfer.get("filaments"):
+            headers["X-Filament-Settings-Transferred"] = json.dumps(
+                job.settings_transfer["filaments"]
+            )
+    return Response(
+        content=output_bytes,
+        media_type="application/octet-stream",
+        headers=headers,
+    )
+
+
 @app.post("/api/slice-jobs/{job_id}/cancel", response_model=SliceJobResponse)
 async def cancel_slice_job(job_id: str):
     if slice_jobs is None:
