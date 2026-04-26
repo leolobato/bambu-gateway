@@ -83,30 +83,62 @@ def test_extract_print_estimate_from_sliced_3mf_slice_info():
     )
 
 
-async def test_print_preview_returns_base64_estimate_header(monkeypatch):
-    estimate = PrintEstimate(total_seconds=9356, total_filament_grams=29.46)
+async def test_print_preview_returns_base64_estimate_header(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+    from app.slice_jobs import SliceJobManager, SliceJobStore
+
+    estimate_dict = {"total_seconds": 9356, "total_filament_grams": 29.46}
+
+    async def stream_events(*args, **kwargs):
+        yield {
+            "event": "result",
+            "data": {
+                "file_base64": base64.b64encode(b"sliced-3mf").decode(),
+                "estimate": estimate_dict,
+            },
+        }
+        yield {"event": "done", "data": {}}
 
     class StubSlicer:
-        async def slice(self, *args, **kwargs):
-            return SliceResult(content=b"sliced-3mf", estimate=estimate)
+        def slice_stream(self, *a, **kw):
+            return stream_events()
 
-    monkeypatch.setattr(app_main, "slicer_client", StubSlicer())
+    stub_slicer = StubSlicer()
+    monkeypatch.setattr(app_main, "slicer_client", stub_slicer)
     monkeypatch.setattr(
         app_main,
         "parse_3mf",
         lambda data: SimpleNamespace(filaments=[]),
     )
 
-    upload = UploadFile(filename="demo.3mf", file=BytesIO(b"raw-3mf"))
-    response = await app_main.print_preview(
-        file=upload,
-        printer_id="P01",
-        plate_id=1,
-        machine_profile="GM020",
-        process_profile="0.16mm",
-        filament_profiles="",
-        plate_type="",
+    async def _fake_resolve(*a, **kw):
+        return {}, None
+    monkeypatch.setattr(app_main, "_resolve_slice_filament_payload", _fake_resolve)
+
+    printer_service = MagicMock()
+    monkeypatch.setattr(app_main, "printer_service", printer_service)
+
+    store = SliceJobStore(tmp_path / "slice_jobs.json")
+    manager = SliceJobManager(
+        store=store, slicer=stub_slicer, printer_service=printer_service,
+        notifier=None, max_concurrent=1,
     )
+    await manager.start()
+    monkeypatch.setattr(app_main, "slice_jobs", manager)
+
+    try:
+        upload = UploadFile(filename="demo.3mf", file=BytesIO(b"raw-3mf"))
+        response = await app_main.print_preview(
+            file=upload,
+            printer_id="P01",
+            plate_id=1,
+            machine_profile="GM020",
+            process_profile="0.16mm",
+            filament_profiles="",
+            plate_type="",
+        )
+    finally:
+        await manager.stop()
 
     assert response.headers["X-Print-Estimate"]
     assert _decode_estimate_header(response.headers["X-Print-Estimate"]) == {

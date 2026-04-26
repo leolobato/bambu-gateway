@@ -148,3 +148,19 @@ async def test_print_stream_wraps_slice_job(app_client):
     assert "event: done" in body
     # preview mode includes preview_id alias
     assert "preview_id" in body
+
+
+async def test_print_preview_returns_sliced_bytes_and_headers(app_client):
+    resp = await app_client.post(
+        "/api/print-preview",
+        files={"file": ("cube.3mf", b"x", "application/octet-stream")},
+        data={
+            "machine_profile": "GM014",
+            "process_profile": "0.20mm",
+            "filament_profiles": "{}",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.content == b"sliced"
+    assert resp.headers["x-preview-id"]
+    assert resp.headers["x-job-id"] == resp.headers["x-preview-id"]

@@ -1170,7 +1170,14 @@ async def print_preview(
     filament_profiles: str = Form(""),
     plate_type: str = Form(""),
 ):
-    """Slice a 3MF file, store the result for later printing, and return it."""
+    """Slice synchronously via the job manager and return the sliced bytes.
+
+    Kept for backward compat with iOS clients that still use the sync
+    preview endpoint. Internally a job with auto_print=false; we wait
+    for terminal state.
+    """
+    if slice_jobs is None or slicer_client is None:
+        raise HTTPException(status_code=400, detail="Slicing not available")
     if not file.filename or not file.filename.lower().endswith(".3mf"):
         raise HTTPException(status_code=400, detail="File must be a .3mf file")
 
@@ -1180,18 +1187,11 @@ async def print_preview(
             status_code=400,
             detail=f"File exceeds {settings.max_file_size_mb} MB limit",
         )
-
     if not machine_profile or not process_profile:
         raise HTTPException(
             status_code=400,
             detail="machine_profile and process_profile are required",
         )
-    if slicer_client is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Slicing not available: ORCASLICER_API_URL not configured",
-        )
-
     try:
         info = parse_3mf(file_data)
     except Exception as e:
@@ -1205,49 +1205,62 @@ async def print_preview(
     if filament_error is not None or filament_payload is None:
         raise HTTPException(status_code=400, detail=filament_error)
 
-    try:
-        slice_result = await slicer_client.slice(
-            file_data,
-            file.filename,
-            machine_profile,
-            process_profile,
-            filament_payload,
-            plate_type=plate_type.strip(),
-            plate=plate_id or 1,
-        )
-    except SlicingError as e:
-        raise HTTPException(status_code=502, detail=f"Slicing failed: {e}")
-
-    preview_id = _store_preview(
-        slice_result.content,
-        file.filename,
-        printer_id=printer_id,
-        plate_id=plate_id,
+    job = await slice_jobs.submit(
+        file_data=file_data,
+        filename=file.filename,
+        machine_profile=machine_profile,
+        process_profile=process_profile,
         filament_profiles=filament_payload,
+        plate_id=plate_id,
+        plate_type=plate_type.strip(),
         project_filament_count=len(info.filaments),
-        estimate=slice_result.estimate,
+        printer_id=printer_id or None,
+        auto_print=False,
     )
 
-    headers = {
-        "Content-Disposition": f'attachment; filename="{file.filename}"',
-        "X-Preview-Id": preview_id,
-    }
-    estimate_header = _estimate_response_header(slice_result.estimate)
-    if estimate_header:
-        headers["X-Print-Estimate"] = estimate_header
-    if slice_result.settings_transfer_status:
-        headers["X-Settings-Transfer-Status"] = slice_result.settings_transfer_status
-        if slice_result.settings_transferred:
-            headers["X-Settings-Transferred"] = json.dumps(
-                slice_result.settings_transferred
-            )
-    if slice_result.filament_transfers:
-        headers["X-Filament-Settings-Transferred"] = json.dumps(
-            slice_result.filament_transfers
+    # Wait for terminal state (bounded — preview is meant to be sync-ish).
+    deadline = asyncio.get_event_loop().time() + 600
+    cur = None
+    while asyncio.get_event_loop().time() < deadline:
+        cur = await slice_jobs.get(job.id)
+        if cur is None:
+            raise HTTPException(status_code=500, detail="Job disappeared")
+        if cur.status.is_terminal:
+            break
+        await asyncio.sleep(0.2)
+    else:
+        raise HTTPException(status_code=504, detail="Slicing timed out")
+
+    if cur.status.value != "ready":
+        raise HTTPException(
+            status_code=502,
+            detail=f"Slicing {cur.status.value}: {cur.error or 'no result'}",
         )
 
+    output_bytes = Path(cur.output_path).read_bytes()
+    headers = {
+        "Content-Disposition": f'attachment; filename="{file.filename}"',
+        "X-Preview-Id": cur.id,           # backward compat
+        "X-Job-Id": cur.id,
+    }
+    if cur.estimate:
+        headers["X-Print-Estimate"] = base64.b64encode(
+            json.dumps(cur.estimate).encode(),
+        ).decode()
+    if cur.settings_transfer:
+        if cur.settings_transfer.get("status"):
+            headers["X-Settings-Transfer-Status"] = cur.settings_transfer["status"]
+        if cur.settings_transfer.get("transferred"):
+            headers["X-Settings-Transferred"] = json.dumps(
+                cur.settings_transfer["transferred"]
+            )
+        if cur.settings_transfer.get("filaments"):
+            headers["X-Filament-Settings-Transferred"] = json.dumps(
+                cur.settings_transfer["filaments"]
+            )
+
     return Response(
-        content=slice_result.content,
+        content=output_bytes,
         media_type="application/octet-stream",
         headers=headers,
     )
