@@ -7,6 +7,7 @@ import base64
 import enum
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -236,6 +237,37 @@ def _is_printer_idle(printer_service, printer_id: str) -> bool:
     return getattr(status, "gcode_state", "IDLE") not in _PRINTER_BUSY_STATES
 
 
+# OrcaSlicer streams its internal progress callback into log lines like
+#   [debug] default_status_callback: percent=75, warning_step=-1, message=Optimizing toolpath, message_type=0
+# Pull `percent` and `message` out so we can drive a smooth progress bar instead
+# of relying on the sparse SSE-level `percent` field.
+_STATUS_CALLBACK_RE = re.compile(
+    r"default_status_callback:\s*"
+    r"percent=(?P<percent>-?\d+)"
+    r"(?:,\s*warning_step=-?\d+)?"
+    r"(?:,\s*message=(?P<message>[^,]+?))?"
+    r"(?:,\s*message_type=\d+)?\s*$"
+)
+
+
+def _parse_orca_progress(line: str) -> tuple[int | None, str | None]:
+    """Return (percent, message) extracted from an orca status-callback log line."""
+    if not line or "default_status_callback" not in line:
+        return None, None
+    match = _STATUS_CALLBACK_RE.search(line)
+    if match is None:
+        return None, None
+    pct: int | None
+    try:
+        pct = int(match.group("percent"))
+    except (TypeError, ValueError):
+        pct = None
+    message = match.group("message")
+    if message is not None:
+        message = message.strip() or None
+    return pct, message
+
+
 class SliceJobManager:
     """Owns the asyncio queue and worker tasks for slice jobs."""
 
@@ -436,10 +468,34 @@ class SliceJobManager:
                                 job.progress = max(0, min(100, int(float(pct_raw))))
                             except (TypeError, ValueError):
                                 pass
+                        else:
+                            # Fall back to mining the embedded orca log line for
+                            # `default_status_callback` percent + message — the
+                            # slicer reports far more granular progress through
+                            # those debug lines than via the SSE `percent` field.
+                            line = edata.get("line") or ""
+                            embedded_pct, embedded_msg = _parse_orca_progress(line)
+                            if embedded_pct is not None:
+                                job.progress = max(0, min(100, embedded_pct))
+                            if embedded_msg:
+                                job.phase = embedded_msg
                         now = time.monotonic()
                         if now - last_write >= self.PROGRESS_WRITE_INTERVAL_SECONDS:
                             await self._store.upsert(job)
                             last_write = now
+                    elif etype == "status":
+                        # Coarse-phase markers from orcaslicer-cli (e.g.
+                        # "reading_3mf", "slicing"). Use them as a fallback
+                        # phase when we haven't seen a more specific message
+                        # yet.
+                        if isinstance(edata, dict):
+                            phase = edata.get("message") or edata.get("phase")
+                            if phase:
+                                job.phase = str(phase)
+                                now = time.monotonic()
+                                if now - last_write >= self.PROGRESS_WRITE_INTERVAL_SECONDS:
+                                    await self._store.upsert(job)
+                                    last_write = now
                     elif etype == "result":
                         b64 = edata.get("file_base64")
                         if not b64:

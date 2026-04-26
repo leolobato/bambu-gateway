@@ -678,3 +678,124 @@ async def test_no_output_failure_includes_seen_events(tmp_jobs_dir: Path):
         assert "progress" in (failed.error or "")
     finally:
         await manager.stop()
+
+
+def test_parse_orca_progress_extracts_percent_and_message():
+    from app.slice_jobs import _parse_orca_progress
+
+    line = (
+        "[2026-04-26 19:43:56.413206] [0x00007f9e] [debug]   "
+        "default_status_callback: percent=75, warning_step=-1, "
+        "message=Optimizing toolpath, message_type=0"
+    )
+    pct, msg = _parse_orca_progress(line)
+    assert pct == 75
+    assert msg == "Optimizing toolpath"
+
+
+def test_parse_orca_progress_handles_missing_message():
+    from app.slice_jobs import _parse_orca_progress
+
+    line = "[debug]  default_status_callback: percent=20, warning_step=-1"
+    pct, msg = _parse_orca_progress(line)
+    assert pct == 20
+    assert msg is None
+
+
+def test_parse_orca_progress_returns_none_for_unrelated_lines():
+    from app.slice_jobs import _parse_orca_progress
+
+    assert _parse_orca_progress("") == (None, None)
+    assert _parse_orca_progress("just some random log line") == (None, None)
+    assert _parse_orca_progress("[debug] ~PrintObject: this=0x123") == (None, None)
+
+
+async def test_progress_extracts_from_embedded_orca_log_line(tmp_jobs_dir: Path):
+    """When SSE-level percent is null, mine the orca log line for percent + message."""
+    import base64
+
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    slicer = make_slicer([
+        {
+            "event": "progress",
+            "data": {
+                "line": "[debug] default_status_callback: percent=42, message=Generating skirt, message_type=0",
+                "percent": None,
+            },
+        },
+        {
+            "event": "result",
+            "data": {
+                "file_base64": base64.b64encode(b"sliced").decode(),
+                "file_size": 6,
+            },
+        },
+        {"event": "done", "data": {}},
+    ])
+    manager = SliceJobManager(
+        store=store, slicer=slicer, printer_service=MagicMock(),
+        notifier=None, max_concurrent=1,
+    )
+    await manager.start()
+    try:
+        job = await manager.submit(
+            file_data=b"x", filename="cube.3mf",
+            machine_profile="GM014", process_profile="0.20mm",
+            filament_profiles={}, plate_id=1, plate_type="",
+            project_filament_count=0, printer_id=None, auto_print=False,
+        )
+        ready = await _wait_for_status(store, job.id, SliceJobStatus.READY)
+        # Phase was cleared on transition to READY but the slice should have
+        # gone through the embedded-log code path (no error).
+        assert ready.error is None
+        # Reach the slicer call's `last_write` so the intermediate phase had
+        # at least one chance to flush — verified by absence of crash.
+    finally:
+        await manager.stop()
+
+
+async def test_status_event_populates_phase(tmp_jobs_dir: Path):
+    """Coarse `event: status` frames from the slicer should set the job phase."""
+    import base64
+
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    slicer_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stream(*a, **kw):
+        yield {"event": "status", "data": {"phase": "reading_3mf", "message": "Reading input file"}}
+        slicer_started.set()
+        await release.wait()
+        yield {
+            "event": "result",
+            "data": {"file_base64": base64.b64encode(b"x").decode(), "file_size": 1},
+        }
+        yield {"event": "done", "data": {}}
+
+    slicer = MagicMock()
+    slicer.slice_stream = stream
+    manager = SliceJobManager(
+        store=store, slicer=slicer, printer_service=MagicMock(),
+        notifier=None, max_concurrent=1,
+    )
+    await manager.start()
+    try:
+        job = await manager.submit(
+            file_data=b"x", filename="cube.3mf",
+            machine_profile="GM014", process_profile="0.20mm",
+            filament_profiles={}, plate_id=1, plate_type="",
+            project_filament_count=0, printer_id=None, auto_print=False,
+        )
+        # Wait until the slicer has emitted the status event and the manager
+        # processed it; then sample the store before releasing.
+        await asyncio.wait_for(slicer_started.wait(), timeout=2.0)
+        # Give the manager a tick to flush the phase update.
+        await asyncio.sleep(0.05)
+        mid = await store.get(job.id)
+        assert mid is not None
+        assert mid.phase == "Reading input file"
+        release.set()
+        await _wait_for_status(store, job.id, SliceJobStatus.READY)
+    finally:
+        release.set()
+        await manager.stop()

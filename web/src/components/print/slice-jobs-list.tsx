@@ -255,6 +255,14 @@ function SliceJobRow({
               .filter(Boolean)
               .join(' · ')}
           </div>
+          {showProgress && job.phase && (
+            <div
+              className="text-[12px] text-text-1 mt-0.5 truncate"
+              title={job.phase}
+            >
+              {job.phase}
+            </div>
+          )}
           {job.error && (
             <div className="text-[12px] text-danger mt-1 break-words">
               {job.error}
