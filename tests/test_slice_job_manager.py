@@ -625,3 +625,56 @@ async def test_result_event_without_file_base64_is_failed(tmp_jobs_dir: Path):
         assert "file_base64" in (failed.error or "")
     finally:
         await manager.stop()
+
+
+async def test_error_event_surfaces_slicer_message(tmp_jobs_dir: Path):
+    """An SSE `error` frame should fail the job with the slicer's message."""
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    slicer = make_slicer([
+        {"event": "progress", "data": {"percent": 12}},
+        {"event": "error", "data": {"error": "filament profile xyz not found"}},
+        {"event": "done", "data": {}},
+    ])
+    manager = SliceJobManager(
+        store=store, slicer=slicer, printer_service=MagicMock(),
+        notifier=None, max_concurrent=1,
+    )
+    await manager.start()
+    try:
+        job = await manager.submit(
+            file_data=b"x", filename="cube.3mf",
+            machine_profile="GM014", process_profile="0.20mm",
+            filament_profiles={}, plate_id=1, plate_type="",
+            project_filament_count=0, printer_id=None, auto_print=False,
+        )
+        failed = await _wait_for_status(store, job.id, SliceJobStatus.FAILED)
+        assert "filament profile xyz not found" in (failed.error or "")
+    finally:
+        await manager.stop()
+
+
+async def test_no_output_failure_includes_seen_events(tmp_jobs_dir: Path):
+    """When the slicer closes without a result, the failure lists what we did see."""
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    slicer = make_slicer([
+        {"event": "progress", "data": {"percent": 50}},
+        {"event": "status", "data": {"phase": "preparing"}},
+        {"event": "done", "data": {}},
+    ])
+    manager = SliceJobManager(
+        store=store, slicer=slicer, printer_service=MagicMock(),
+        notifier=None, max_concurrent=1,
+    )
+    await manager.start()
+    try:
+        job = await manager.submit(
+            file_data=b"x", filename="cube.3mf",
+            machine_profile="GM014", process_profile="0.20mm",
+            filament_profiles={}, plate_id=1, plate_type="",
+            project_filament_count=0, printer_id=None, auto_print=False,
+        )
+        failed = await _wait_for_status(store, job.id, SliceJobStatus.FAILED)
+        assert "events seen" in (failed.error or "")
+        assert "progress" in (failed.error or "")
+    finally:
+        await manager.stop()

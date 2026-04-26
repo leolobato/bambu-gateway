@@ -386,6 +386,7 @@ class SliceJobManager:
         estimate: dict | None = None
         settings_transfer: dict | None = None
         last_write = 0.0
+        events_seen: list[str] = []
 
         try:
             agen = self._slicer.slice_stream(
@@ -420,6 +421,11 @@ class SliceJobManager:
                         break
                     etype = event.get("event")
                     edata = event.get("data") or {}
+                    events_seen.append(etype or "?")
+                    logger.debug(
+                        "slice job %s slicer event: %s data=%s",
+                        job.id, etype, edata,
+                    )
                     if etype == "progress":
                         # Slicer may emit a progress tick with `percent: null`
                         # before it has computed any. Treat null/missing/non-
@@ -441,6 +447,14 @@ class SliceJobManager:
                         result_bytes = base64.b64decode(b64)
                         estimate = edata.get("estimate")
                         settings_transfer = edata.get("settings_transfer")
+                    elif etype == "error":
+                        msg = (
+                            (isinstance(edata, dict) and (
+                                edata.get("error") or edata.get("message")
+                            ))
+                            or "Slicer reported an error"
+                        )
+                        raise RuntimeError(msg)
                     elif etype == "done":
                         break
             finally:
@@ -449,12 +463,18 @@ class SliceJobManager:
                 except Exception:
                     pass
         except Exception as e:
-            logger.exception("slice job %s slicer call raised", job.id)
+            logger.warning(
+                "slice job %s slicer call raised after events=%s: %s",
+                job.id, events_seen, e,
+            )
             await self._fail(job, f"Slicing failed: {e}")
             return
 
         if result_bytes is None:
-            await self._fail(job, "Slicer produced no output")
+            await self._fail(
+                job,
+                f"Slicer produced no output (events seen: {events_seen or 'none'})",
+            )
             return
 
         # If the slicer didn't return an estimate, try to extract one from the
