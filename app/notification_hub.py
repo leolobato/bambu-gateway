@@ -266,6 +266,43 @@ class NotificationHub:
         }:
             await self._dispatch_live_activity_update(event)
 
+    async def notify_slice_terminal(self, job, kind: str) -> None:
+        """Push a slice_ready / slice_failed alert.
+
+        Scoped to subscribers of `job.printer_id` if set; otherwise broadcasts
+        to all known devices. Safe no-op if the device store is empty or the
+        kind is not recognized.
+        """
+        if kind == "ready":
+            event_type = "slice_ready"
+            title = "Slice ready"
+            body = f"{job.filename} is ready to print"
+        elif kind == "failed":
+            event_type = "slice_failed"
+            title = "Slice failed"
+            body = job.error or f"Slicing {job.filename} failed"
+        else:
+            return
+
+        if job.printer_id:
+            subs = self._store.subscribers_for_printer(job.printer_id)
+        else:
+            subs = self._store.list_devices()
+
+        for dev in subs:
+            if not getattr(dev, "device_token", None):
+                continue
+            try:
+                result = await self._apns.send_alert(
+                    device_token=dev.device_token,
+                    title=title, body=body,
+                    event_type=event_type,
+                    printer_id=job.printer_id or "",
+                )
+                self._handle_result(result, dev.device_token)
+            except Exception:
+                logger.exception("notify_slice_terminal: APNs send failed")
+
     async def _send_alerts(self, event: NotificationEvent) -> None:
         title_tpl, body_tpl = _ALERT_COPY[event.event_type]
         subscribers = self._store.subscribers_for_printer(event.printer_id)
