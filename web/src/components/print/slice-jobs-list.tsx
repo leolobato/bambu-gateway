@@ -1,7 +1,18 @@
 import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Download, Printer, Trash2, X } from 'lucide-react';
+import { Download, Loader2, Printer, Trash2, X } from 'lucide-react';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
@@ -46,7 +57,7 @@ const STATUS_CLASSES: Record<SliceJobStatus, string> = {
   printing: 'bg-success/15 text-success border border-success/40',
   ready: 'bg-success/15 text-success border border-success/40',
   failed: 'bg-danger/15 text-danger border border-danger/40',
-  cancelled: 'bg-bg-1 text-text-1 border border-line',
+  cancelled: 'bg-bg-1 text-text-1/70 border border-line line-through',
 };
 
 function formatRelativeTime(iso: string): string {
@@ -69,7 +80,12 @@ export function SliceJobsList() {
   const jobsQuery = useQuery({
     queryKey: ['slice-jobs'],
     queryFn: listSliceJobs,
-    refetchInterval: 2000,
+    // Poll fast while there's work in flight, slow when everything is settled.
+    refetchInterval: (q) => {
+      const data = q.state.data;
+      if (!data || data.some((j) => !isTerminal(j.status))) return 2000;
+      return 30_000;
+    },
   });
 
   // Resolve printer ids → names so rows can show "Printer A" instead of a serial.
@@ -90,13 +106,13 @@ export function SliceJobsList() {
   const cancelMut = useMutation({
     mutationFn: (jobId: string) => cancelSliceJob(jobId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['slice-jobs'] }),
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => toast.error(`Couldn't cancel job: ${e.message}`),
   });
 
   const deleteMut = useMutation({
     mutationFn: (jobId: string) => deleteSliceJob(jobId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['slice-jobs'] }),
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => toast.error(`Couldn't delete job: ${e.message}`),
   });
 
   const printMut = useMutation({
@@ -106,7 +122,7 @@ export function SliceJobsList() {
       toast.success(`Print started: ${res.file_name}`);
       queryClient.invalidateQueries({ queryKey: ['slice-jobs'] });
     },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => toast.error(`Couldn't start print: ${e.message}`),
   });
 
   const clearMut = useMutation({
@@ -115,7 +131,7 @@ export function SliceJobsList() {
       toast.success(`Cleared ${jobs.length} job${jobs.length === 1 ? '' : 's'}`);
       queryClient.invalidateQueries({ queryKey: ['slice-jobs'] });
     },
-    onError: (e: Error) => toast.error(e.message),
+    onError: (e: Error) => toast.error(`Couldn't clear jobs: ${e.message}`),
   });
 
   const jobs = jobsQuery.data ?? [];
@@ -126,7 +142,7 @@ export function SliceJobsList() {
       ),
     [jobs],
   );
-  const hasTerminal = sortedJobs.some((j) => isTerminal(j.status));
+  const terminalCount = sortedJobs.filter((j) => isTerminal(j.status)).length;
 
   return (
     <Card className="p-4 bg-card border border-line flex flex-col gap-3">
@@ -136,10 +152,13 @@ export function SliceJobsList() {
           type="button"
           variant="ghost"
           onClick={() => clearMut.mutate()}
-          disabled={!hasTerminal || clearMut.isPending}
+          disabled={terminalCount === 0 || clearMut.isPending}
           className="h-auto py-1 px-2 text-text-1 text-[12px] font-semibold hover:text-text-0"
         >
-          Clear completed
+          {clearMut.isPending ? (
+            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" aria-hidden />
+          ) : null}
+          Clear completed{terminalCount > 0 ? ` (${terminalCount})` : ''}
         </Button>
       </div>
 
@@ -166,11 +185,9 @@ export function SliceJobsList() {
                   printerId: job.printer_id ?? activePrinterId ?? undefined,
                 })
               }
-              busy={
-                cancelMut.isPending ||
-                deleteMut.isPending ||
-                printMut.isPending
-              }
+              isCancelling={cancelMut.isPending && cancelMut.variables === job.job_id}
+              isDeleting={deleteMut.isPending && deleteMut.variables === job.job_id}
+              isPrinting={printMut.isPending && printMut.variables?.jobId === job.job_id}
             />
           ))}
         </ul>
@@ -185,14 +202,18 @@ function SliceJobRow({
   onCancel,
   onDelete,
   onPrint,
-  busy,
+  isCancelling,
+  isDeleting,
+  isPrinting,
 }: {
   job: SliceJob;
   printerName: string | null;
   onCancel: () => void;
   onDelete: () => void;
   onPrint: () => void;
-  busy: boolean;
+  isCancelling: boolean;
+  isDeleting: boolean;
+  isPrinting: boolean;
 }) {
   const terminal = isTerminal(job.status);
   const showProgress =
@@ -201,22 +222,27 @@ function SliceJobRow({
     job.status === 'queued';
   const canPrint = job.status === 'ready';
   const canDownload = job.status === 'ready' || job.status === 'printing';
+  const rowBusy = isCancelling || isDeleting || isPrinting;
 
   return (
     <li className="rounded-lg border border-line bg-surface-0 p-3 flex flex-col gap-2">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[14px] font-semibold text-text-0 truncate">
+            <span
+              className="text-[14px] font-semibold text-text-0 truncate"
+              title={job.filename}
+            >
               {job.filename}
             </span>
             <span
               className={cn(
-                'rounded-full px-2 py-0.5 text-[11px] font-semibold',
+                'rounded-full px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap',
                 STATUS_CLASSES[job.status],
               )}
             >
               {STATUS_LABEL[job.status]}
+              {showProgress ? ` ${job.progress}%` : ''}
             </span>
             {job.auto_print && (
               <span className="rounded-full px-2 py-0.5 text-[11px] font-semibold bg-bg-1 text-text-1 border border-line">
@@ -235,26 +261,36 @@ function SliceJobRow({
             </div>
           )}
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 flex-shrink-0">
           {canPrint && (
             <Button
               type="button"
               size="icon"
               variant="ghost"
               onClick={onPrint}
-              disabled={busy}
+              disabled={rowBusy}
+              aria-label={`Print ${job.filename}`}
               title="Print"
-              className="h-8 w-8 text-accent hover:text-accent"
+              className="h-10 w-10 text-accent hover:text-accent"
             >
-              <Printer className="h-4 w-4" aria-hidden />
+              {isPrinting ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              ) : (
+                <Printer className="h-4 w-4" aria-hidden />
+              )}
             </Button>
           )}
           {canDownload && (
             <a
               href={sliceJobOutputUrl(job.job_id)}
               download
+              aria-label={`Download sliced 3MF for ${job.filename}`}
               title="Download sliced 3MF"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-text-1 hover:text-text-0"
+              className={cn(
+                'inline-flex h-10 w-10 items-center justify-center rounded-md text-text-1 hover:text-text-0',
+                rowBusy && 'pointer-events-none opacity-50',
+              )}
+              tabIndex={rowBusy ? -1 : 0}
             >
               <Download className="h-4 w-4" aria-hidden />
             </a>
@@ -265,32 +301,80 @@ function SliceJobRow({
               size="icon"
               variant="ghost"
               onClick={onCancel}
-              disabled={busy}
+              disabled={rowBusy}
+              aria-label={`Cancel slice job for ${job.filename}`}
               title="Cancel"
-              className="h-8 w-8 text-danger hover:text-danger"
+              className="h-10 w-10 text-danger hover:text-danger"
             >
-              <X className="h-4 w-4" aria-hidden />
+              {isCancelling ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              ) : (
+                <X className="h-4 w-4" aria-hidden />
+              )}
             </Button>
           )}
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            onClick={onDelete}
-            disabled={busy}
-            title="Delete"
-            className="h-8 w-8 text-text-1 hover:text-danger"
-          >
-            <Trash2 className="h-4 w-4" aria-hidden />
-          </Button>
+          <DeleteAction
+            filename={job.filename}
+            onConfirm={onDelete}
+            disabled={rowBusy}
+            isDeleting={isDeleting}
+          />
         </div>
       </div>
       {showProgress && (
         <Progress
           value={Math.max(0, Math.min(100, job.progress))}
-          className="h-1 bg-bg-1 [&>div]:bg-gradient-to-r [&>div]:from-accent-strong [&>div]:to-accent"
+          aria-label={`Slicing progress for ${job.filename}`}
+          className="h-2 bg-bg-1 [&>div]:bg-gradient-to-r [&>div]:from-accent-strong [&>div]:to-accent"
         />
       )}
     </li>
+  );
+}
+
+function DeleteAction({
+  filename,
+  onConfirm,
+  disabled,
+  isDeleting,
+}: {
+  filename: string;
+  onConfirm: () => void;
+  disabled: boolean;
+  isDeleting: boolean;
+}) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          disabled={disabled}
+          aria-label={`Delete slice job for ${filename}`}
+          title="Delete"
+          className="h-10 w-10 text-text-1 hover:text-danger"
+        >
+          {isDeleting ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+          ) : (
+            <Trash2 className="h-4 w-4" aria-hidden />
+          )}
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this slice job?</AlertDialogTitle>
+          <AlertDialogDescription>
+            <span className="font-semibold">{filename}</span> and its sliced 3MF
+            will be permanently removed. This can't be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={onConfirm}>Delete</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
