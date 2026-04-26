@@ -64,6 +64,7 @@ from app.models import (
 from app.parse_3mf import parse_3mf
 from app.print_estimate import extract_print_estimate
 from app.printer_service import PrinterService
+from app.slice_jobs import SliceJobManager, SliceJobStatus, SliceJobStore
 from app.slicer_client import SlicerClient, SliceResult, SlicingError
 from app.upload_tracker import UploadCancelledError, tracker as upload_tracker
 
@@ -76,6 +77,7 @@ logger = logging.getLogger(__name__)
 
 printer_service: PrinterService | None = None
 slicer_client: SlicerClient | None = None
+slice_jobs: SliceJobManager | None = None
 _APP_DIR = Path(__file__).resolve().parent
 _DIST_DIR = _APP_DIR / "static" / "dist"
 MAX_FILE_BYTES = settings.max_file_size_mb * 1024 * 1024
@@ -156,7 +158,7 @@ def _estimate_from_preview_meta(value: object) -> PrintEstimate | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global printer_service, slicer_client
+    global printer_service, slicer_client, slice_jobs
     configs = config_store.load()
 
     # Device registry + APNs
@@ -191,11 +193,28 @@ async def lifespan(app: FastAPI):
     if settings.orcaslicer_api_url:
         slicer_client = SlicerClient(settings.orcaslicer_api_url)
 
+    if slicer_client is not None:
+        store_path = config_store._config_path.parent / "slice_jobs.json"
+        slice_jobs = SliceJobManager(
+            store=SliceJobStore(store_path),
+            slicer=slicer_client,
+            printer_service=printer_service,
+            notifier=(
+                notification_hub.notify_slice_terminal
+                if notification_hub is not None else None
+            ),
+            max_concurrent=settings.slice_max_concurrent,
+        )
+        await slice_jobs.recover_on_startup()
+        await slice_jobs.start()
+
     app.state.device_store = device_store
     app.state.notification_hub = notification_hub
     app.state.apns_client = apns_client
 
     yield
+    if slice_jobs is not None:
+        await slice_jobs.stop()
     printer_service.stop()
     if notification_hub is not None:
         notification_hub.stop()
