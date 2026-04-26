@@ -21,7 +21,12 @@ docker compose up -d
 
 Or build and push for Portainer: `docker build -t <registry>/bambu-gateway:latest .`
 
-There is no test suite or linter configured.
+## Tests
+
+Run the suite with `.venv/bin/pytest` (the project virtualenv lives at `.venv/`,
+which has the FastAPI/httpx/jwt deps the system Python lacks). Config is in
+`pytest.ini`; shared fixtures in `tests/conftest.py`. There is no linter
+configured.
 
 ## Architecture
 
