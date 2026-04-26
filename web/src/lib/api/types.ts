@@ -301,3 +301,34 @@ export interface Capabilities {
   live_activities: boolean;
   version: string;
 }
+
+// --- Slice jobs ---
+
+export type SliceJobStatus =
+  | 'queued'
+  | 'slicing'
+  | 'uploading'
+  | 'printing'
+  | 'ready'
+  | 'failed'
+  | 'cancelled';
+
+export interface SliceJob {
+  job_id: string;
+  status: SliceJobStatus;
+  progress: number;
+  phase: string | null;
+  filename: string;
+  printer_id: string | null;
+  auto_print: boolean;
+  created_at: string;
+  updated_at: string;
+  estimate: PrintEstimate | null;
+  settings_transfer: SettingsTransferInfo | null;
+  output_size: number | null;
+  error: string | null;
+}
+
+export interface SliceJobListResponse {
+  jobs: SliceJob[];
+}

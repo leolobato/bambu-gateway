@@ -11,6 +11,7 @@ import type { SettingOption } from '@/components/print/setting-row';
 import { FilamentsGroup, type FilamentMapping } from '@/components/print/filaments-group';
 import { InfoBanner } from '@/components/print/info-banner';
 import { SlicingProgressCard } from '@/components/print/slicing-progress-card';
+import { SliceJobsList } from '@/components/print/slice-jobs-list';
 import { SettingsTransferNote } from '@/components/print/settings-transfer-note';
 import { PrintEstimationCard } from '@/components/print/print-estimation-card';
 import { parse3mf } from '@/lib/api/3mf';
@@ -614,6 +615,8 @@ export default function PrintRoute() {
           />
         </div>
       )}
+
+      <SliceJobsList />
     </div>
   );
 }

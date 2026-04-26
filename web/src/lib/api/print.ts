@@ -40,6 +40,19 @@ export async function printFromPreview(
 }
 
 /**
+ * POST /api/print using a slice job id (skip re-slicing).
+ */
+export async function printFromJob(
+  jobId: string,
+  printerId?: string,
+): Promise<PrintDirectResponse> {
+  const fd = new FormData();
+  fd.append('job_id', jobId);
+  if (printerId) fd.append('printer_id', printerId);
+  return postPrint(fd);
+}
+
+/**
  * POST /api/print with a 3MF that already contains G-code (no slicing).
  * Returns the upload_id so the caller can poll /api/uploads/{id}.
  */
