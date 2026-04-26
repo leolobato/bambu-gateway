@@ -134,3 +134,57 @@ async def test_progress_events_update_job_progress(tmp_jobs_dir: Path):
         assert seen_progress[-1] == 100
     finally:
         await manager.stop()
+
+
+async def test_max_concurrent_limits_parallel_slices(tmp_jobs_dir: Path):
+    """With max_concurrent=2, the 3rd job must wait until one of the first two finishes."""
+    import base64
+
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    in_flight = 0
+    peak = 0
+    gate = asyncio.Event()
+
+    async def stream(*a, **kw):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        try:
+            await gate.wait()
+            yield {
+                "event": "result",
+                "data": {"file_base64": base64.b64encode(b"x").decode(), "file_size": 1},
+            }
+            yield {"event": "done", "data": {}}
+        finally:
+            in_flight -= 1
+
+    slicer = MagicMock()
+    slicer.slice_stream = stream
+
+    manager = SliceJobManager(
+        store=store, slicer=slicer, printer_service=MagicMock(),
+        notifier=None, max_concurrent=2,
+    )
+    await manager.start()
+    try:
+        ids = []
+        for _ in range(3):
+            job = await manager.submit(
+                file_data=b"x", filename="c.3mf",
+                machine_profile="GM014", process_profile="0.20mm",
+                filament_profiles={}, plate_id=1, plate_type="",
+                project_filament_count=0, printer_id=None, auto_print=False,
+            )
+            ids.append(job.id)
+
+        # Give workers a chance to pick up jobs
+        await asyncio.sleep(0.1)
+        assert peak == 2  # never exceeded the limit
+        gate.set()
+
+        for jid in ids:
+            await _wait_for_status(store, jid, SliceJobStatus.READY)
+    finally:
+        gate.set()
+        await manager.stop()
