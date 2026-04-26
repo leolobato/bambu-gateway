@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def build_slicer_filament_payload(
@@ -70,3 +73,113 @@ def build_slicer_filament_payload(
             return None, f"AMS tray slot {tray_slot} is not available on the selected printer"
 
     return payload, None
+
+
+def extract_selected_tray_slots(
+    filament_payload: list[str] | dict | None,
+) -> dict[int, int]:
+    """Return {project filament index -> AMS tray slot} from a payload.
+
+    Returns {} for None, list payloads, or any payload with no integer tray_slot
+    selections. (List payloads represent slicer profile-id lists with no AMS
+    intent.)
+    """
+    if not isinstance(filament_payload, dict):
+        return {}
+
+    tray_slots: dict[int, int] = {}
+    for slot_str, selection in filament_payload.items():
+        if not isinstance(selection, dict):
+            continue
+        tray_slot = selection.get("tray_slot")
+        if not isinstance(tray_slot, int):
+            continue
+        try:
+            filament_index = int(slot_str)
+        except (TypeError, ValueError):
+            continue
+        tray_slots[filament_index] = tray_slot
+    return tray_slots
+
+
+def build_ams_mapping(
+    filament_payload: list[str] | dict | None,
+    project_filament_count: int | None = None,
+) -> tuple[list[int] | None, bool]:
+    """Build the ams_mapping array for the printer's project_file command.
+
+    Returns a variable-length array (one entry per project filament) mapping
+    each filament index to an AMS tray slot, plus a use_ams flag. Indices
+    without a selection get -1.
+    Returns (None, False) when no AMS selections are present.
+    """
+    tray_slots = extract_selected_tray_slots(filament_payload)
+    if not tray_slots:
+        logger.info(
+            "AMS mapping: no tray_slot selections found in payload=%s",
+            filament_payload,
+        )
+        return None, False
+
+    if project_filament_count is None:
+        project_filament_count = max(tray_slots) + 1
+
+    ams_mapping = [-1] * project_filament_count
+
+    use_ams = False
+    for filament_index, tray_slot in tray_slots.items():
+        if filament_index < 0 or filament_index >= project_filament_count:
+            continue
+        ams_mapping[filament_index] = tray_slot
+        use_ams = True
+
+    logger.info("AMS mapping: %s, use_ams=%s", ams_mapping, use_ams)
+    return ams_mapping, use_ams
+
+
+async def validate_selected_trays(
+    filament_payload: list[str] | dict | None,
+    printer_id: str,
+    printer_service,
+) -> str | None:
+    """Validate that every tray_slot referenced in the payload is loaded.
+
+    Returns None on success, or a human-readable error string if a referenced
+    tray is empty. Mirrors the original `_validate_selected_trays` from
+    `app/main.py`.
+    """
+    if not isinstance(filament_payload, dict):
+        return None
+
+    tray_selections = {
+        slot_str: selection
+        for slot_str, selection in filament_payload.items()
+        if isinstance(selection, dict) and selection.get("tray_slot") is not None
+    }
+    if not tray_selections:
+        return None
+
+    ams_info = printer_service.get_ams_info(printer_id)
+    if ams_info is None:
+        return None
+
+    raw_trays, _raw_units, raw_vt_tray = ams_info
+
+    all_trays = list(raw_trays)
+    if raw_vt_tray is not None:
+        all_trays.append(raw_vt_tray)
+
+    tray_profile_map: dict[int, str] = {}
+    for raw in all_trays:
+        try:
+            slot = int(raw.get("slot", -1))
+        except (TypeError, ValueError):
+            continue
+        tray_profile_map[slot] = str(raw.get("tray_info_idx", "")).strip()
+
+    for slot_str, selection in tray_selections.items():
+        tray_slot = selection.get("tray_slot")
+        if tray_slot not in tray_profile_map:
+            return f"AMS tray slot {tray_slot} is not available on the selected printer"
+
+    return None

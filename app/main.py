@@ -20,7 +20,12 @@ from app.apns_jwt import ApnsJwtSigner
 from app.config import PrinterConfig, settings
 from app import config_store
 from app.device_store import ActiveActivity, DeviceRecord, DeviceStore
-from app.filament_selection import build_slicer_filament_payload
+from app.filament_selection import (
+    build_ams_mapping,
+    build_slicer_filament_payload,
+    extract_selected_tray_slots,
+    validate_selected_trays,
+)
 from app.notification_hub import NotificationHub
 from app.models import (
     ActivityRegisterRequest,
@@ -147,57 +152,6 @@ def _estimate_from_preview_meta(value: object) -> PrintEstimate | None:
     estimate = PrintEstimate(**value)
     return None if estimate.is_empty else estimate
 
-
-def _extract_selected_tray_slots(
-    filament_payload: list[str] | dict | None,
-) -> dict[int, int]:
-    """Return project filament index -> selected AMS tray slot."""
-    if not isinstance(filament_payload, dict):
-        return {}
-
-    tray_slots: dict[int, int] = {}
-    for slot_str, selection in filament_payload.items():
-        if not isinstance(selection, dict):
-            continue
-        tray_slot = selection.get("tray_slot")
-        if not isinstance(tray_slot, int):
-            continue
-        try:
-            filament_index = int(slot_str)
-        except (TypeError, ValueError):
-            continue
-        tray_slots[filament_index] = tray_slot
-    return tray_slots
-
-
-def _build_ams_mapping(
-    filament_payload: list[str] | dict | None,
-    project_filament_count: int | None = None,
-) -> tuple[list[int] | None, bool]:
-    """Build the ams_mapping array for the printer's project_file command.
-
-    Returns a variable-length array (one entry per project filament) mapping
-    each filament index to an AMS tray slot, plus a use_ams flag.
-    """
-    tray_slots = _extract_selected_tray_slots(filament_payload)
-    if not tray_slots:
-        logger.info("AMS mapping: no tray_slot selections found in payload=%s", filament_payload)
-        return None, False
-
-    if project_filament_count is None:
-        project_filament_count = max(tray_slots) + 1
-
-    ams_mapping = [-1] * project_filament_count
-
-    use_ams = False
-    for filament_index, tray_slot in tray_slots.items():
-        if filament_index < 0 or filament_index >= project_filament_count:
-            continue
-        ams_mapping[filament_index] = tray_slot
-        use_ams = True
-
-    logger.info("AMS mapping: %s, use_ams=%s", ams_mapping, use_ams)
-    return ams_mapping, use_ams
 
 
 @asynccontextmanager
@@ -738,30 +692,6 @@ async def _resolve_slice_filament_payload(
     )
 
 
-async def _validate_selected_trays(
-    filament_payload: list[str] | dict | None,
-    printer_id: str,
-) -> str | None:
-    """Re-check tray-specific selections against current AMS state."""
-    if not isinstance(filament_payload, dict):
-        return None
-
-    tray_selections = {
-        slot_str: selection
-        for slot_str, selection in filament_payload.items()
-        if isinstance(selection, dict) and selection.get("tray_slot") is not None
-    }
-    if not tray_selections:
-        return None
-
-    tray_profile_map = await _get_ams_tray_profile_map(printer_id)
-    for slot_str, selection in tray_selections.items():
-        tray_slot = selection.get("tray_slot")
-        if tray_slot not in tray_profile_map:
-            return f"AMS tray slot {tray_slot} is not available on the selected printer"
-
-    return None
-
 
 @app.get("/api/ams", response_model=AMSResponse)
 async def get_ams(printer_id: str | None = Query(default=None)):
@@ -962,10 +892,10 @@ async def print_file(
 
         # Sliced files are always single-plate (plate extracted before slicing).
         pplate = 1
-        tray_error = await _validate_selected_trays(preview.get("filament_profiles"), pid)
+        tray_error = await validate_selected_trays(preview.get("filament_profiles"), pid, printer_service)
         if tray_error is not None:
             raise HTTPException(status_code=409, detail=tray_error)
-        ams_mapping, use_ams = _build_ams_mapping(
+        ams_mapping, use_ams = build_ams_mapping(
             preview.get("filament_profiles"),
             project_filament_count=preview.get("project_filament_count"),
         )
@@ -1146,10 +1076,10 @@ async def print_file(
     if pid is None:
         raise HTTPException(status_code=404, detail="No printers configured")
 
-    tray_error = await _validate_selected_trays(filament_payload, pid)
+    tray_error = await validate_selected_trays(filament_payload, pid, printer_service)
     if tray_error is not None:
         raise HTTPException(status_code=409, detail=tray_error)
-    ams_mapping, use_ams = _build_ams_mapping(
+    ams_mapping, use_ams = build_ams_mapping(
         filament_payload,
         project_filament_count=len(info.filaments) or None,
     )
@@ -1392,12 +1322,12 @@ async def print_file_stream(
                 elif etype == "done":
                     if not slice_only and not preview and result_bytes is not None:
                         try:
-                            tray_error = await _validate_selected_trays(filament_payload, pid)
+                            tray_error = await validate_selected_trays(filament_payload, pid, printer_service)
                             if tray_error is not None:
                                 yield _sse_event("error", {"error": tray_error})
                                 yield _sse_event("done", {})
                                 return
-                            ams_mapping, use_ams = _build_ams_mapping(
+                            ams_mapping, use_ams = build_ams_mapping(
                                 filament_payload,
                                 project_filament_count=len(info.filaments),
                             )
