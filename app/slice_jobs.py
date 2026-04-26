@@ -278,6 +278,25 @@ class SliceJobManager:
             await w
         self._workers.clear()
 
+    async def recover_on_startup(self) -> None:
+        """Reconcile persisted jobs with the live worker state.
+
+        - jobs in slicing/uploading -> failed("interrupted by gateway restart")
+        - jobs in queued -> re-enqueued (cancel event recreated)
+        - terminal jobs left alone
+        """
+        for job in await self._store.list_all():
+            if job.status in (
+                SliceJobStatus.SLICING,
+                SliceJobStatus.UPLOADING,
+            ):
+                job.error = "interrupted by gateway restart"
+                job.phase = None
+                await self._set_status(job, SliceJobStatus.FAILED)
+            elif job.status == SliceJobStatus.QUEUED:
+                self._cancel_events[job.id] = asyncio.Event()
+                await self._queue.put(job.id)
+
     async def submit(
         self,
         *,
