@@ -6,6 +6,46 @@ export async function listSliceJobs(): Promise<SliceJob[]> {
   return res.jobs;
 }
 
+export async function fetchSliceJob(jobId: string): Promise<SliceJob> {
+  return fetchJson<SliceJob>(`/api/slice-jobs/${encodeURIComponent(jobId)}`);
+}
+
+export interface SubmitSliceJobArgs {
+  file: File;
+  printerId?: string;
+  plateId: number;
+  machineProfile: string;
+  processProfile: string;
+  filamentProfiles: Record<string, { profile_setting_id: string; tray_slot: number }>;
+  plateType?: string;
+  autoPrint?: boolean;
+}
+
+export async function submitSliceJob(args: SubmitSliceJobArgs): Promise<SliceJob> {
+  const fd = new FormData();
+  fd.append('file', args.file);
+  if (args.printerId) fd.append('printer_id', args.printerId);
+  fd.append('plate_id', String(args.plateId));
+  fd.append('machine_profile', args.machineProfile);
+  fd.append('process_profile', args.processProfile);
+  fd.append('filament_profiles', JSON.stringify(args.filamentProfiles));
+  if (args.plateType) fd.append('plate_type', args.plateType);
+  if (args.autoPrint) fd.append('auto_print', 'true');
+
+  const res = await fetch('/api/slice-jobs', { method: 'POST', body: fd });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body?.detail) detail = body.detail;
+    } catch {
+      // body wasn't JSON
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as SliceJob;
+}
+
 export async function cancelSliceJob(jobId: string): Promise<SliceJob> {
   return fetchJson<SliceJob>(`/api/slice-jobs/${encodeURIComponent(jobId)}/cancel`, {
     method: 'POST',

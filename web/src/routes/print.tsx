@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -24,8 +24,13 @@ import { getAms } from '@/lib/api/ams';
 import { listPrinters } from '@/lib/api/printers';
 import { getFilamentMatches } from '@/lib/api/filament-matches';
 import { cancelUpload, getUploadState } from '@/lib/api/uploads';
-import { printFromPreview, printGcodeFile } from '@/lib/api/print';
-import { usePrintStream } from '@/lib/use-print-stream';
+import { printFromJob, printGcodeFile } from '@/lib/api/print';
+import {
+  cancelSliceJob,
+  fetchSliceJob,
+  submitSliceJob,
+  sliceJobOutputUrl,
+} from '@/lib/api/slice-jobs';
 import { useDropZone } from '@/lib/use-drop-zone';
 import { usePrinterContext } from '@/lib/printer-context';
 import type {
@@ -49,14 +54,16 @@ type PrintState =
       kind: 'slicing';
       file: File;
       info: ThreeMFInfo;
+      jobId: string;
       percent: number | null;
       statusLine: string;
+      isPreview: boolean;
     }
   | {
       kind: 'previewReady';
       file: File;
       info: ThreeMFInfo;
-      previewId: string;
+      jobId: string;
       transfer: SettingsTransferInfo | null;
       estimate: PrintEstimate | null;
     }
@@ -132,7 +139,8 @@ export default function PrintRoute() {
   }, [amsQuery.data]);
 
   // SSE consumer.
-  const stream = usePrintStream();
+  const queryClient = useQueryClient();
+  const sliceAbortRef = useRef<AbortController | null>(null);
 
   // The 3MF stores the slicer profile *name* in `printer_settings_id` /
   // `print_settings_id` (e.g. "Bambu Lab A1 mini 0.4 nozzle"), but the
@@ -205,7 +213,8 @@ export default function PrintRoute() {
   const { dragging } = useDropZone({ accept: '.3mf', onFile: onDropFile, enabled: ddEnabled });
 
   function clearImport() {
-    stream.cancel();
+    sliceAbortRef.current?.abort();
+    sliceAbortRef.current = null;
     setState({ kind: 'empty' });
     setFilamentMapping({});
   }
@@ -225,14 +234,19 @@ export default function PrintRoute() {
     return out;
   }
 
-  function startSlicing(file: File, info: ThreeMFInfo, preview: boolean) {
+  async function startSlicing(file: File, info: ThreeMFInfo, preview: boolean) {
     if (!settings.machine || !settings.process) {
       toast.error('Pick a machine and process before slicing.');
       return;
     }
-    setState({ kind: 'slicing', file, info, percent: null, statusLine: 'Starting…' });
-    void stream.start(
-      {
+
+    sliceAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    sliceAbortRef.current = ctrl;
+
+    let job;
+    try {
+      job = await submitSliceJob({
         file,
         printerId: activePrinterId ?? undefined,
         plateId: selectedPlateId,
@@ -240,124 +254,224 @@ export default function PrintRoute() {
         processProfile: settings.process,
         filamentProfiles: buildFilamentProfilesPayload(info),
         plateType: settings.plateType || undefined,
-        preview,
-      },
-      {
-        onStatus: (s) =>
-          setState((cur) => {
-            if (cur.kind === 'slicing') {
-              if (s.upload_id) {
-                // Backend signalled the transition into the FTP upload phase.
-                return {
-                  kind: 'uploading',
-                  file,
-                  info,
-                  uploadId: s.upload_id,
-                  percent: 0,
-                };
-              }
-              return { ...cur, statusLine: s.message };
-            }
-            if (cur.kind === 'uploading' && s.upload_id && !cur.uploadId) {
-              return { ...cur, uploadId: s.upload_id };
-            }
-            return cur;
-          }),
-        onProgress: (p) =>
-          setState((cur) =>
-            cur.kind === 'slicing'
-              ? {
-                  ...cur,
-                  percent: typeof p.percent === 'number' ? p.percent : cur.percent,
-                  statusLine: typeof p.status_line === 'string' ? p.status_line : cur.statusLine,
-                }
-              : cur,
-          ),
-        onResult: (r) => {
-          if (preview && r.preview_id) {
-            setState({
-              kind: 'previewReady',
-              file,
-              info,
-              previewId: r.preview_id,
-              transfer: r.settings_transfer ?? null,
-              estimate: r.estimate ?? null,
-            });
-          }
-          // For non-preview, the upload phase is signalled by the next `status`/`upload_progress` events.
+        autoPrint: false,
+      });
+    } catch (err) {
+      setState({
+        kind: 'imported',
+        file,
+        info,
+        banner: {
+          variant: 'error',
+          title: 'Slicing failed to start',
+          details: (err as Error).message,
         },
-        onUploadProgress: (u) =>
-          setState((cur) => {
-            if (cur.kind === 'slicing') {
-              return { kind: 'uploading', file, info, uploadId: '', percent: u.percent };
+      });
+      return;
+    }
+
+    queryClient.invalidateQueries({ queryKey: ['slice-jobs'] });
+    setState({
+      kind: 'slicing',
+      file,
+      info,
+      jobId: job.job_id,
+      percent: job.progress,
+      statusLine: job.phase ?? job.status,
+      isPreview: preview,
+    });
+
+    // Poll the job until terminal. The slice-jobs list at the bottom of the
+    // page also polls (every 2s); this loop is the single-job driver that
+    // transitions our local state machine.
+    while (!ctrl.signal.aborted) {
+      await new Promise((r) => setTimeout(r, 1000));
+      if (ctrl.signal.aborted) return;
+      let current;
+      try {
+        current = await fetchSliceJob(job.job_id);
+      } catch (err) {
+        if (ctrl.signal.aborted) return;
+        setState({
+          kind: 'imported',
+          file,
+          info,
+          banner: {
+            variant: 'error',
+            title: 'Lost track of slice job',
+            details: (err as Error).message,
+          },
+        });
+        return;
+      }
+      setState((cur) =>
+        cur.kind === 'slicing' && cur.jobId === current.job_id
+          ? {
+              ...cur,
+              percent: current.progress,
+              statusLine: current.phase ?? current.status,
             }
-            if (cur.kind === 'uploading') return { ...cur, percent: u.percent };
-            return cur;
-          }),
-        onPrintStarted: (p) => {
-          toast.success(`Print started on ${activePrinterName ?? p.printer_id}`);
-          if (hasPrintEstimate(p.estimate)) {
-            setState({
-              kind: 'sent',
-              printerName: activePrinterName ?? p.printer_id,
-              estimate: p.estimate,
-            });
-          } else {
-            setState({ kind: 'sent', printerName: activePrinterName ?? p.printer_id, estimate: null });
-            navigate('/');
-          }
-        },
-        onError: (e) => {
+          : cur,
+      );
+
+      if (current.status === 'failed') {
+        setState({
+          kind: 'imported',
+          file,
+          info,
+          banner: {
+            variant: 'error',
+            title: 'Slicing failed',
+            details: current.error ?? 'Unknown error',
+          },
+        });
+        return;
+      }
+      if (current.status === 'cancelled') {
+        setState({ kind: 'imported', file, info, banner: undefined });
+        return;
+      }
+      if (current.status === 'ready') {
+        if (preview) {
           setState({
-            kind: 'imported',
+            kind: 'previewReady',
             file,
             info,
-            banner: { variant: 'error', title: 'Slicing failed', details: e.error },
+            jobId: current.job_id,
+            transfer: current.settings_transfer ?? null,
+            estimate: current.estimate ?? null,
           });
+          return;
+        }
+        // Print intent — kick off the printer upload via /api/print {job_id}
+        await startPrintUploadFromJob(current.job_id, file, info, current.estimate ?? null);
+        return;
+      }
+    }
+  }
+
+  async function startPrintUploadFromJob(
+    jobId: string,
+    file: File,
+    info: ThreeMFInfo,
+    estimate: PrintEstimate | null,
+  ) {
+    let resp;
+    try {
+      resp = await printFromJob(jobId, activePrinterId ?? undefined);
+    } catch (err) {
+      setState({
+        kind: 'imported',
+        file,
+        info,
+        banner: {
+          variant: 'error',
+          title: 'Could not start print',
+          details: (err as Error).message,
         },
-        onDone: () => {
-          // Stream closed; state should already be terminal (previewReady/sent/error).
-        },
-      },
-    );
+      });
+      return;
+    }
+    queryClient.invalidateQueries({ queryKey: ['slice-jobs'] });
+
+    if (!resp.upload_id) {
+      const printerName = activePrinterName ?? resp.printer_id;
+      toast.success(`Print started on ${printerName}`);
+      if (hasPrintEstimate(resp.estimate ?? estimate)) {
+        setState({ kind: 'sent', printerName, estimate: resp.estimate ?? estimate });
+      } else {
+        setState({ kind: 'sent', printerName, estimate: null });
+        navigate('/');
+      }
+      return;
+    }
+    const uploadId = resp.upload_id;
+    setState({ kind: 'uploading', file, info, uploadId, percent: 0 });
+
+    while (true) {
+      await new Promise((r) => setTimeout(r, 500));
+      let progress;
+      try {
+        progress = await getUploadState(uploadId);
+      } catch (err) {
+        setState({
+          kind: 'imported',
+          file,
+          info,
+          banner: {
+            variant: 'error',
+            title: 'Upload tracking failed',
+            details: (err as Error).message,
+          },
+        });
+        return;
+      }
+      setState((cur) =>
+        cur.kind === 'uploading' && cur.uploadId === uploadId
+          ? { ...cur, percent: progress.progress }
+          : cur,
+      );
+      if (progress.status === 'completed') {
+        const printerName = activePrinterName ?? resp.printer_id;
+        toast.success(`Print started on ${printerName}`);
+        if (hasPrintEstimate(resp.estimate ?? estimate)) {
+          setState({ kind: 'sent', printerName, estimate: resp.estimate ?? estimate });
+        } else {
+          setState({ kind: 'sent', printerName, estimate: null });
+          navigate('/');
+        }
+        return;
+      }
+      if (progress.status === 'cancelled') {
+        setState({ kind: 'imported', file, info, banner: undefined });
+        return;
+      }
+      if (progress.status === 'failed') {
+        setState({
+          kind: 'imported',
+          file,
+          info,
+          banner: {
+            variant: 'error',
+            title: 'Upload failed',
+            details: progress.error ?? 'Unknown error',
+          },
+        });
+        return;
+      }
+    }
   }
 
   async function confirmPrint() {
     if (state.kind !== 'previewReady') return;
-    try {
-      const resp = await printFromPreview(state.previewId, activePrinterId ?? undefined);
-      toast.success(`Print started on ${activePrinterName ?? 'printer'}`);
-      if (hasPrintEstimate(resp.estimate)) {
-        setState({
-          kind: 'sent',
-          printerName: activePrinterName ?? resp.printer_id,
-          estimate: resp.estimate,
-        });
-      } else {
-        setState({ kind: 'sent', printerName: activePrinterName ?? resp.printer_id, estimate: null });
-        navigate('/');
-      }
-    } catch (err) {
-      toast.error(`Print failed: ${(err as Error).message}`);
-    }
+    await startPrintUploadFromJob(state.jobId, state.file, state.info, state.estimate);
   }
 
   function cancelSlicing() {
     if (state.kind !== 'slicing') return;
-    stream.cancel();
+    const jobId = state.jobId;
+    sliceAbortRef.current?.abort();
+    sliceAbortRef.current = null;
     setState({ kind: 'imported', file: state.file, info: state.info, banner: undefined });
+    // Best-effort: also tell the gateway to drop the job.
+    void cancelSliceJob(jobId)
+      .catch(() => {
+        // Job may already be terminal — ignore.
+      })
+      .finally(() => {
+        queryClient.invalidateQueries({ queryKey: ['slice-jobs'] });
+      });
   }
 
   async function cancelUploading() {
     if (state.kind !== 'uploading') return;
     if (!state.uploadId) {
-      stream.cancel();
       setState({ kind: 'imported', file: state.file, info: state.info, banner: undefined });
       return;
     }
     try {
       await cancelUpload(state.uploadId);
-      // The SSE error handler will move state back to imported.
+      // Polling loop in startPrintUploadFromJob will see the cancelled status.
     } catch (err) {
       toast.error(`Cancel failed: ${(err as Error).message}`);
     }
@@ -449,10 +563,7 @@ export default function PrintRoute() {
   async function downloadPreview() {
     if (state.kind !== 'previewReady') return;
     try {
-      const fd = new FormData();
-      fd.append('preview_id', state.previewId);
-      fd.append('slice_only', 'true');
-      const res = await fetch('/api/print', { method: 'POST', body: fd });
+      const res = await fetch(sliceJobOutputUrl(state.jobId));
       if (!res.ok) {
         let detail = res.statusText;
         try {
@@ -467,7 +578,6 @@ export default function PrintRoute() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      // Use the original filename with a "_sliced" suffix
       const baseName = state.file.name.replace(/\.3mf$/i, '');
       a.download = `${baseName}_sliced.3mf`;
       document.body.appendChild(a);
