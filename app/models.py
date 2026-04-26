@@ -270,6 +270,10 @@ class FilamentInfo(BaseModel):
     type: str = ""
     color: str = ""
     setting_id: str = ""
+    # True if any object/part in the 3MF references this extruder.
+    # Files declare more filaments than they actually use; we only require
+    # valid setting_ids for `used=True` entries.
+    used: bool = True
 
 
 class PrinterInfo(BaseModel):

@@ -13,8 +13,16 @@ def build_slicer_filament_payload(
     project_filament_ids: list[str],
     filament_profiles: str,
     tray_profile_map: dict[int, str] | None = None,
+    used_filament_indices: set[int] | None = None,
 ) -> tuple[list[str] | dict[str, Any] | None, str | None]:
-    """Normalize filament selection input for the slicer API."""
+    """Normalize filament selection input for the slicer API.
+
+    `used_filament_indices` (when provided) lists the project filament indices
+    actually referenced by objects/parts. Indices outside this set are padded
+    with a benign profile_setting_id so the slicer doesn't reject the request
+    over filament profiles that won't actually print anything. Pass `None` to
+    disable padding (legacy behavior).
+    """
     if not filament_profiles:
         return list(project_filament_ids), None
 
@@ -72,7 +80,39 @@ def build_slicer_filament_payload(
         if tray_slot not in tray_profile_map:
             return None, f"AMS tray slot {tray_slot} is not available on the selected printer"
 
+    # Pad unused indices with a known-valid profile so the slicer doesn't
+    # reject the request over filaments that no object will extrude.
+    # We can only do this when we know which indices are used and we have a
+    # valid profile to fill with (taken from one of the user's overrides).
+    if used_filament_indices is not None and project_filament_ids:
+        fill_profile = _pick_fill_profile(payload)
+        if fill_profile is not None:
+            for i in range(len(project_filament_ids)):
+                slot_str = str(i)
+                if slot_str in payload:
+                    continue
+                if i in used_filament_indices:
+                    # Used filament with no override — fall back to the project's
+                    # setting_id; the resolver-caller is expected to validate
+                    # this elsewhere if it isn't in the slicer catalog.
+                    continue
+                payload[slot_str] = {"profile_setting_id": fill_profile}
+
     return payload, None
+
+
+def _pick_fill_profile(payload: dict[str, Any]) -> str | None:
+    """Return the first profile_setting_id found in the user's overrides."""
+    for selection in payload.values():
+        if isinstance(selection, dict):
+            pid = str(selection.get("profile_setting_id", "")).strip()
+            if pid:
+                return pid
+        elif isinstance(selection, str):
+            pid = selection.strip()
+            if pid:
+                return pid
+    return None
 
 
 def extract_selected_tray_slots(

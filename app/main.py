@@ -656,6 +656,7 @@ async def _resolve_slice_filament_payload(
     project_filament_ids: list[str],
     filament_profiles: str,
     printer_id: str = "",
+    used_filament_indices: set[int] | None = None,
 ) -> tuple[list[str] | dict | None, str | None]:
     """Return the slicer payload for project filament selections."""
     tray_profile_map = None
@@ -669,6 +670,7 @@ async def _resolve_slice_filament_payload(
         project_filament_ids,
         filament_profiles,
         tray_profile_map=tray_profile_map,
+        used_filament_indices=used_filament_indices,
     )
 
 
@@ -1002,6 +1004,7 @@ async def print_file(
             [f.setting_id for f in info.filaments],
             filament_profiles,
             printer_id,
+            used_filament_indices={f.index for f in info.filaments if f.used},
         )
         if filament_error is not None or filament_payload is None:
             raise HTTPException(status_code=400, detail=filament_error)
@@ -1151,6 +1154,7 @@ async def print_preview(
         [f.setting_id for f in info.filaments],
         filament_profiles,
         printer_id,
+        used_filament_indices={f.index for f in info.filaments if f.used},
     )
     if filament_error is not None or filament_payload is None:
         raise HTTPException(status_code=400, detail=filament_error)
@@ -1265,6 +1269,7 @@ async def print_file_stream(
         [f.setting_id for f in info.filaments],
         filament_profiles,
         printer_id,
+        used_filament_indices={f.index for f in info.filaments if f.used},
     )
     if filament_error is not None or filament_payload is None:
         raise HTTPException(status_code=400, detail=filament_error)
@@ -1469,6 +1474,7 @@ async def create_slice_job(
         [f.setting_id for f in info.filaments],
         filament_profiles,
         printer_id,
+        used_filament_indices={f.index for f in info.filaments if f.used},
     )
     if filament_error is not None or filament_payload is None:
         raise HTTPException(
