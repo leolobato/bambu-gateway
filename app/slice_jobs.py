@@ -14,7 +14,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
+from app.filament_selection import build_ams_mapping, validate_selected_trays
 from app.models import PrintEstimate
+from app.upload_tracker import UploadCancelledError
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +222,18 @@ class _SlicerLike(Protocol):
 # Optional callback signature: notifier(job, kind) where kind is "ready" or "failed".
 TerminalCallback = Callable[[SliceJob, str], Awaitable[None]]
 
+_PRINTER_BUSY_STATES = {"RUNNING", "PAUSE", "PREPARE"}
+
+
+def _is_printer_idle(printer_service, printer_id: str) -> bool:
+    """Return True iff the named printer is online and not currently printing."""
+    if not printer_id:
+        return False
+    status = printer_service.get_status(printer_id)
+    if status is None or not getattr(status, "online", False):
+        return False
+    return getattr(status, "gcode_state", "IDLE") not in _PRINTER_BUSY_STATES
+
 
 class SliceJobManager:
     """Owns the asyncio queue and worker tasks for slice jobs."""
@@ -421,9 +435,18 @@ class SliceJobManager:
         job.progress = 100
         job.phase = None
 
-        # No auto-print yet (handled in Task 9) — settle in READY.
-        await self._set_status(job, SliceJobStatus.READY)
-        await self._notify(job, "ready")
+        if not job.auto_print or not job.printer_id:
+            await self._set_status(job, SliceJobStatus.READY)
+            await self._notify(job, "ready")
+            return
+
+        if not _is_printer_idle(self._printer_service, job.printer_id):
+            # Best-effort: degrade to READY; user starts the print manually.
+            await self._set_status(job, SliceJobStatus.READY)
+            await self._notify(job, "ready")
+            return
+
+        await self._auto_print(job, result_bytes)
 
     async def _set_status(
         self, job: SliceJob, status: SliceJobStatus, *, phase: str | None = None,
@@ -445,3 +468,65 @@ class SliceJobManager:
             await self._notifier(job, kind)
         except Exception:
             logger.exception("slice job notifier raised for %s", job.id)
+
+    async def _auto_print(self, job: SliceJob, file_data: bytes) -> None:
+        """Validate trays, derive AMS mapping, upload + start the print."""
+        tray_error = await validate_selected_trays(
+            job.filament_profiles, job.printer_id, self._printer_service,
+        )
+        if tray_error is not None:
+            # Sliced bytes are good; degrade to READY and surface the warning.
+            job.error = tray_error
+            await self._set_status(job, SliceJobStatus.READY)
+            await self._notify(job, "ready")
+            return
+
+        ams_mapping, use_ams = build_ams_mapping(
+            job.filament_profiles,
+            project_filament_count=job.project_filament_count,
+        )
+
+        await self._set_status(job, SliceJobStatus.UPLOADING, phase="uploading")
+        bytes_total = len(file_data)
+        bytes_sent = 0
+        last_write = 0.0
+        cancel = self._cancel_events.get(job.id)
+        loop = asyncio.get_running_loop()
+
+        def progress_cb(chunk: int) -> None:
+            nonlocal bytes_sent
+            if cancel is not None and cancel.is_set():
+                # Raised inside the FTP storbinary callback — aborts the upload.
+                raise UploadCancelledError("Cancelled by user")
+            bytes_sent += chunk
+
+        def do_submit() -> None:
+            self._printer_service.submit_print(
+                job.printer_id, file_data, job.filename,
+                plate_id=1,
+                ams_mapping=ams_mapping,
+                use_ams=use_ams,
+                progress_callback=progress_cb,
+            )
+
+        future = loop.run_in_executor(None, do_submit)
+        try:
+            while not future.done():
+                await asyncio.sleep(0.2)
+                if bytes_total:
+                    job.progress = min(99, int(bytes_sent * 100 / bytes_total))
+                now = time.monotonic()
+                if now - last_write >= self.PROGRESS_WRITE_INTERVAL_SECONDS:
+                    await self._store.upsert(job)
+                    last_write = now
+            await future
+        except UploadCancelledError:
+            await self._set_status(job, SliceJobStatus.CANCELLED)
+            return
+        except Exception as e:
+            await self._fail(job, f"Upload failed: {e}")
+            return
+
+        job.progress = 100
+        job.phase = None
+        await self._set_status(job, SliceJobStatus.PRINTING)

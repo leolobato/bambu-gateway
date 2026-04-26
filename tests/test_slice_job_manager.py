@@ -300,3 +300,50 @@ async def test_cancel_during_slicing_aborts(tmp_jobs_dir: Path):
         assert not finished_naturally
     finally:
         await manager.stop()
+
+
+async def test_auto_print_uploads_when_printer_idle(tmp_jobs_dir: Path):
+    import base64
+
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    slicer = make_slicer([
+        {"event": "result",
+         "data": {"file_base64": base64.b64encode(b"sliced").decode(),
+                  "file_size": 6}},
+        {"event": "done", "data": {}},
+    ])
+
+    submit_calls = []
+    printer_service = MagicMock()
+
+    def fake_submit(printer_id, file_data, filename, **kwargs):
+        submit_calls.append((printer_id, filename, len(file_data)))
+        cb = kwargs.get("progress_callback")
+        if cb:
+            cb(len(file_data))
+
+    printer_service.submit_print = fake_submit
+
+    status = MagicMock()
+    status.gcode_state = "IDLE"
+    status.online = True
+    printer_service.get_status = MagicMock(return_value=status)
+
+    manager = SliceJobManager(
+        store=store, slicer=slicer, printer_service=printer_service,
+        notifier=None, max_concurrent=1,
+    )
+    await manager.start()
+    try:
+        job = await manager.submit(
+            file_data=b"x", filename="cube.3mf",
+            machine_profile="GM014", process_profile="0.20mm",
+            filament_profiles={}, plate_id=1, plate_type="",
+            project_filament_count=0, printer_id="PRINTER1",
+            auto_print=True,
+        )
+        terminal = await _wait_for_status(store, job.id, SliceJobStatus.PRINTING)
+        assert submit_calls == [("PRINTER1", "cube.3mf", 6)]
+        assert terminal.error is None
+    finally:
+        await manager.stop()
