@@ -18,6 +18,10 @@ async def app_client(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(settings, "orcaslicer_api_url", "http://stub")
     monkeypatch.setattr(main_mod, "parse_3mf", lambda data: MagicMock(filaments=[]))
 
+    async def _fake_resolve(*a, **kw):
+        return {}, None
+    monkeypatch.setattr(main_mod, "_resolve_slice_filament_payload", _fake_resolve)
+
     main_mod.printer_service = MagicMock()
     main_mod.printer_service.default_printer_id.return_value = "PRINTER1"
     idle_status = MagicMock()
@@ -124,3 +128,23 @@ async def test_clear_terminal_jobs(app_client):
     assert resp.status_code == 200
     assert any(j["job_id"] == job_id for j in resp.json()["jobs"])
     assert (await app_client.get(f"/api/slice-jobs/{job_id}")).status_code == 404
+
+
+async def test_print_stream_wraps_slice_job(app_client):
+    """The rewritten /api/print-stream should still emit SSE events and a result."""
+    resp = await app_client.post(
+        "/api/print-stream",
+        files={"file": ("cube.3mf", b"x", "application/octet-stream")},
+        data={
+            "machine_profile": "GM014",
+            "process_profile": "0.20mm",
+            "filament_profiles": "{}",
+            "preview": "true",  # avoid auto_print path which needs printer wiring
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.text
+    assert "event: result" in body
+    assert "event: done" in body
+    # preview mode includes preview_id alias
+    assert "preview_id" in body

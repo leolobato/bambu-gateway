@@ -115,7 +115,11 @@ async def test_print_preview_returns_base64_estimate_header(monkeypatch):
     }
 
 
-async def test_print_stream_preview_result_includes_estimate(monkeypatch):
+async def test_print_stream_preview_result_includes_estimate(monkeypatch, tmp_path):
+    import asyncio as _asyncio
+    from unittest.mock import MagicMock
+    from app.slice_jobs import SliceJobManager, SliceJobStore
+
     async def stream_events(*args, **kwargs):
         yield {
             "event": "result",
@@ -130,36 +134,60 @@ async def test_print_stream_preview_result_includes_estimate(monkeypatch):
         def slice_stream(self, *args, **kwargs):
             return stream_events()
 
-    monkeypatch.setattr(app_main, "slicer_client", StubSlicer())
+    stub_slicer = StubSlicer()
+    monkeypatch.setattr(app_main, "slicer_client", stub_slicer)
     monkeypatch.setattr(
         app_main,
         "parse_3mf",
         lambda data: SimpleNamespace(filaments=[]),
     )
 
-    upload = UploadFile(filename="demo.3mf", file=BytesIO(b"raw-3mf"))
-    response = await app_main.print_file_stream(
-        file=upload,
-        printer_id="P01",
-        plate_id=1,
-        machine_profile="GM020",
-        process_profile="0.16mm",
-        filament_profiles="",
-        plate_type="",
-        preview=True,
+    async def _fake_resolve(*a, **kw):
+        return {}, None
+    monkeypatch.setattr(app_main, "_resolve_slice_filament_payload", _fake_resolve)
+
+    printer_service = MagicMock()
+    printer_service.default_printer_id.return_value = None
+    monkeypatch.setattr(app_main, "printer_service", printer_service)
+
+    store = SliceJobStore(tmp_path / "slice_jobs.json")
+    manager = SliceJobManager(
+        store=store, slicer=stub_slicer, printer_service=printer_service,
+        notifier=None, max_concurrent=1,
     )
+    await manager.start()
+    monkeypatch.setattr(app_main, "slice_jobs", manager)
 
-    body = b""
-    async for chunk in response.body_iterator:
-        body += chunk.encode() if isinstance(chunk, str) else chunk
+    try:
+        upload = UploadFile(filename="demo.3mf", file=BytesIO(b"raw-3mf"))
+        response = await app_main.print_file_stream(
+            file=upload,
+            printer_id="P01",
+            plate_id=1,
+            machine_profile="GM020",
+            process_profile="0.16mm",
+            filament_profiles="",
+            plate_type="",
+            preview=True,
+        )
 
-    text = body.decode()
-    assert 'event: result' in text
-    assert '"estimate": {"total_seconds": 9356}' in text
-    assert '"preview_id":' in text
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk.encode() if isinstance(chunk, str) else chunk
+
+        text = body.decode()
+        assert 'event: result' in text
+        assert '"total_seconds": 9356' in text
+        assert '"preview_id":' in text
+    finally:
+        await manager.stop()
 
 
-async def test_print_stream_preview_derives_estimate_from_sliced_3mf(monkeypatch):
+async def test_print_stream_preview_derives_estimate_from_sliced_3mf(monkeypatch, tmp_path):
+    import asyncio as _asyncio
+    from unittest.mock import MagicMock
+    from app.slice_jobs import SliceJobManager, SliceJobStore
+
     sliced = _zip_bytes({
         "Metadata/slice_info.config": """<?xml version="1.0" encoding="UTF-8"?>
 <config>
@@ -182,31 +210,51 @@ async def test_print_stream_preview_derives_estimate_from_sliced_3mf(monkeypatch
         def slice_stream(self, *args, **kwargs):
             return stream_events()
 
-    monkeypatch.setattr(app_main, "slicer_client", StubSlicer())
+    stub_slicer = StubSlicer()
+    monkeypatch.setattr(app_main, "slicer_client", stub_slicer)
     monkeypatch.setattr(
         app_main,
         "parse_3mf",
         lambda data: SimpleNamespace(filaments=[]),
     )
 
-    upload = UploadFile(filename="demo.3mf", file=BytesIO(b"raw-3mf"))
-    response = await app_main.print_file_stream(
-        file=upload,
-        printer_id="P01",
-        plate_id=1,
-        machine_profile="GM020",
-        process_profile="0.16mm",
-        filament_profiles="",
-        plate_type="",
-        preview=True,
+    async def _fake_resolve(*a, **kw):
+        return {}, None
+    monkeypatch.setattr(app_main, "_resolve_slice_filament_payload", _fake_resolve)
+
+    printer_service = MagicMock()
+    printer_service.default_printer_id.return_value = None
+    monkeypatch.setattr(app_main, "printer_service", printer_service)
+
+    store = SliceJobStore(tmp_path / "slice_jobs.json")
+    manager = SliceJobManager(
+        store=store, slicer=stub_slicer, printer_service=printer_service,
+        notifier=None, max_concurrent=1,
     )
+    await manager.start()
+    monkeypatch.setattr(app_main, "slice_jobs", manager)
 
-    body = b""
-    async for chunk in response.body_iterator:
-        body += chunk.encode() if isinstance(chunk, str) else chunk
+    try:
+        upload = UploadFile(filename="demo.3mf", file=BytesIO(b"raw-3mf"))
+        response = await app_main.print_file_stream(
+            file=upload,
+            printer_id="P01",
+            plate_id=1,
+            machine_profile="GM020",
+            process_profile="0.16mm",
+            filament_profiles="",
+            plate_type="",
+            preview=True,
+        )
 
-    text = body.decode()
-    assert '"estimate": {' in text
-    assert '"total_filament_millimeters": 3500.0' in text
-    assert '"total_filament_grams": 10.25' in text
-    assert '"total_seconds": 120' in text
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk.encode() if isinstance(chunk, str) else chunk
+
+        text = body.decode()
+        assert '"estimate": {' in text or '"estimate":{' in text
+        assert '"total_filament_millimeters": 3500.0' in text
+        assert '"total_filament_grams": 10.25' in text
+        assert '"total_seconds": 120' in text
+    finally:
+        await manager.stop()

@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from app.filament_selection import build_ams_mapping, validate_selected_trays
 from app.models import PrintEstimate
+from app.print_estimate import extract_print_estimate
 from app.upload_tracker import UploadCancelledError
 
 logger = logging.getLogger(__name__)
@@ -444,6 +445,13 @@ class SliceJobManager:
         if result_bytes is None:
             await self._fail(job, "Slicer produced no output")
             return
+
+        # If the slicer didn't return an estimate, try to extract one from the
+        # sliced 3MF itself (mirrors the old /api/print-stream behavior).
+        if estimate is None:
+            extracted = extract_print_estimate(result_bytes)
+            if extracted is not None:
+                estimate = extracted.model_dump(exclude_none=True)
 
         out_path = self._store.output_path(job.id)
         out_path.write_bytes(result_bytes)

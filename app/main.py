@@ -1270,9 +1270,22 @@ async def print_file_stream(
     slice_only: bool = Form(False),
     preview: bool = Form(False),
 ):
-    """Slice and optionally print a 3MF file, streaming progress via SSE."""
+    """Slice and optionally print a 3MF, streaming progress via SSE.
+
+    Implemented as a thin wrapper over the slice-job manager: creates a job,
+    then tails its progress until terminal. Output bytes for slice_only /
+    preview are read from the job's output blob and base64-encoded into the
+    final `result` SSE event for backward compat with existing clients.
+    """
+    if slice_jobs is None or slicer_client is None:
+        raise HTTPException(status_code=400, detail="Slicing not available")
     if not file.filename or not file.filename.lower().endswith(".3mf"):
         raise HTTPException(status_code=400, detail="File must be a .3mf file")
+    if not machine_profile or not process_profile:
+        raise HTTPException(
+            status_code=400,
+            detail="machine_profile and process_profile are required",
+        )
 
     file_data = await file.read()
     if len(file_data) > MAX_FILE_BYTES:
@@ -1280,18 +1293,6 @@ async def print_file_stream(
             status_code=400,
             detail=f"File exceeds {settings.max_file_size_mb} MB limit",
         )
-
-    if not machine_profile or not process_profile:
-        raise HTTPException(
-            status_code=400,
-            detail="machine_profile and process_profile are required",
-        )
-    if slicer_client is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Slicing not available: ORCASLICER_API_URL not configured",
-        )
-
     try:
         info = parse_3mf(file_data)
     except Exception as e:
@@ -1305,128 +1306,71 @@ async def print_file_stream(
     if filament_error is not None or filament_payload is None:
         raise HTTPException(status_code=400, detail=filament_error)
 
-    filename = file.filename
-
-    pid = printer_id or printer_service.default_printer_id()
-    if not slice_only and not preview and pid is None:
+    auto_print = not slice_only and not preview
+    pid = printer_id or printer_service.default_printer_id() or ""
+    if auto_print and not pid:
         raise HTTPException(status_code=404, detail="No printers configured")
 
+    job = await slice_jobs.submit(
+        file_data=file_data,
+        filename=file.filename,
+        machine_profile=machine_profile,
+        process_profile=process_profile,
+        filament_profiles=filament_payload,
+        plate_id=plate_id,
+        plate_type=plate_type.strip(),
+        project_filament_count=len(info.filaments),
+        printer_id=pid or None,
+        auto_print=auto_print,
+    )
+
     async def generate():
-        result_bytes = None
-        settings_transfer_data = None
-        estimate_data = None
+        last_progress = -1
+        last_status = None
+        while True:
+            cur = await slice_jobs.get(job.id)
+            if cur is None:
+                yield _sse_event("error", {"error": "Job disappeared"})
+                yield _sse_event("done", {})
+                return
 
-        try:
-            async for event in slicer_client.slice_stream(
-                file_data,
-                filename,
-                machine_profile,
-                process_profile,
-                filament_payload,
-                plate_type=plate_type.strip(),
-                plate=plate_id or 1,
-            ):
-                etype = event["event"]
-                edata = event["data"]
+            if cur.progress != last_progress:
+                last_progress = cur.progress
+                yield _sse_event("progress", {"percent": cur.progress})
 
-                if etype == "result":
-                    settings_transfer_data = edata.get("settings_transfer")
-                    estimate_data = edata.get("estimate")
-                    result_bytes = base64.b64decode(edata["file_base64"])
-                    if estimate_data is None:
-                        extracted_estimate = extract_print_estimate(result_bytes)
-                        if extracted_estimate is not None:
-                            estimate_data = extracted_estimate.model_dump(
-                                exclude_none=True
-                            )
-                            edata["estimate"] = estimate_data
+            if cur.status.value != last_status:
+                last_status = cur.status.value
+                yield _sse_event("status", {
+                    "phase": cur.phase or cur.status.value,
+                    "message": cur.status.value,
+                })
 
-                    if preview:
-                        estimate = _estimate_from_preview_meta(estimate_data)
-                        pid_preview = _store_preview(
-                            result_bytes,
-                            filename,
-                            printer_id=printer_id,
-                            plate_id=plate_id,
-                            filament_profiles=filament_payload,
-                            project_filament_count=len(info.filaments),
-                            estimate=estimate,
-                        )
-                        edata["preview_id"] = pid_preview
-                        yield _sse_event("result", edata)
-                    elif slice_only:
-                        yield _sse_event("result", edata)
-                    else:
-                        # upload_id sent so the frontend can cancel
-                        pass  # upload_id added after upload_state is created below
-                elif etype == "done":
-                    if not slice_only and not preview and result_bytes is not None:
-                        try:
-                            tray_error = await validate_selected_trays(filament_payload, pid, printer_service)
-                            if tray_error is not None:
-                                yield _sse_event("error", {"error": tray_error})
-                                yield _sse_event("done", {})
-                                return
-                            ams_mapping, use_ams = build_ams_mapping(
-                                filament_payload,
-                                project_filament_count=len(info.filaments),
-                            )
-                            upload_state = upload_tracker.create(
-                                filename, pid, len(result_bytes),
-                            )
-                            yield _sse_event("status", {
-                                "phase": "uploading",
-                                "message": "Sending to printer...",
-                                "upload_id": upload_state.upload_id,
-                            })
-                            # Sliced files are always single-plate (plate
-                            # extracted before slicing), so gcode is at plate_1.
-                            upload_future = asyncio.get_running_loop().run_in_executor(
-                                None,
-                                lambda: _background_submit(
-                                    upload_state, pid, result_bytes, filename,
-                                    plate_id=1,
-                                    ams_mapping=ams_mapping,
-                                    use_ams=use_ams,
-                                ),
-                            )
-                            # Stream upload progress until done
-                            while not upload_future.done():
-                                await asyncio.sleep(0.3)
-                                info_dict = upload_state.to_dict()
-                                yield _sse_event("upload_progress", {
-                                    "percent": info_dict["progress"],
-                                    "bytes_sent": info_dict["bytes_sent"],
-                                    "total_bytes": info_dict["total_bytes"],
-                                })
-                            # Check final result
-                            await upload_future
-                            if upload_state.status == "cancelled":
-                                yield _sse_event("error", {
-                                    "error": "Upload cancelled",
-                                })
-                            elif upload_state.status == "failed":
-                                yield _sse_event("error", {
-                                    "error": upload_state.error or "Upload failed",
-                                })
-                            else:
-                                yield _sse_event("print_started", {
-                                    "printer_id": pid,
-                                    "file_name": filename,
-                                    "settings_transfer": settings_transfer_data,
-                                    "estimate": estimate_data,
-                                })
-                        except Exception as e:
-                            yield _sse_event("error", {"error": str(e)})
-                    yield _sse_event("done", {})
+            if cur.status.is_terminal:
+                if cur.status.value == "failed":
+                    yield _sse_event("error", {"error": cur.error or "Failed"})
                 else:
-                    yield _sse_event(etype, edata)
-        except SlicingError as e:
-            yield _sse_event("error", {"error": str(e)})
-            yield _sse_event("done", {})
-        except Exception as e:
-            yield _sse_event("error", {"error": f"Unexpected error: {e}"})
-            yield _sse_event("done", {})
+                    payload = {}
+                    if (slice_only or preview) and cur.output_path:
+                        out_bytes = Path(cur.output_path).read_bytes()
+                        payload["file_base64"] = base64.b64encode(out_bytes).decode()
+                        payload["file_size"] = len(out_bytes)
+                    if cur.estimate:
+                        payload["estimate"] = cur.estimate
+                    if cur.settings_transfer:
+                        payload["settings_transfer"] = cur.settings_transfer
+                    if preview:
+                        payload["preview_id"] = cur.id  # backward-compat alias
+                    yield _sse_event("result", payload)
+                    if auto_print and cur.status.value == "printing":
+                        yield _sse_event("print_started", {
+                            "printer_id": cur.printer_id,
+                            "file_name": cur.filename,
+                            "settings_transfer": cur.settings_transfer,
+                            "estimate": cur.estimate,
+                        })
+                yield _sse_event("done", {"job_id": cur.id})
+                return
+            await asyncio.sleep(0.2)
 
     return StreamingResponse(
         generate(),
