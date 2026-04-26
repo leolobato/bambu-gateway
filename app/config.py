@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # Upload limits
     max_file_size_mb: int = 200
 
+    # Slice job concurrency
+    slice_max_concurrent: int = 1
+
     # APNs (optional — missing any field disables push)
     apns_key_path: str = ""
     apns_key_id: str = ""
