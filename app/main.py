@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Query, UploadFile
+from pydantic import BaseModel
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -57,6 +58,8 @@ from app.models import (
     PrintResponse,
     SettingsTransferInfo,
     SlicerFilament,
+    SliceJobListResponse,
+    SliceJobResponse,
     SpeedRequest,
     StartDryingRequest,
     TransferredSetting,
@@ -153,6 +156,24 @@ def _estimate_from_preview_meta(value: object) -> PrintEstimate | None:
         return None
     estimate = PrintEstimate(**value)
     return None if estimate.is_empty else estimate
+
+
+def _slice_job_to_response(job) -> SliceJobResponse:
+    return SliceJobResponse(
+        job_id=job.id,
+        status=job.status.value,
+        progress=job.progress,
+        phase=job.phase,
+        filename=job.filename,
+        printer_id=job.printer_id,
+        auto_print=job.auto_print,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+        estimate=job.estimate,
+        settings_transfer=job.settings_transfer,
+        output_size=job.output_size,
+        error=job.error,
+    )
 
 
 
@@ -1487,6 +1508,134 @@ async def delete_printer_config(serial: str):
         raise HTTPException(status_code=404, detail="Printer not found")
     config_store.save(new_configs)
     printer_service.sync_printers(new_configs)
+
+
+# --- Async slice jobs ---
+
+class _ClearBody(BaseModel):
+    statuses: list[str] | None = None
+
+
+_DEFAULT_CLEAR_STATUSES = {"ready", "printing", "failed", "cancelled"}
+
+
+@app.post("/api/slice-jobs", response_model=SliceJobResponse, status_code=202)
+async def create_slice_job(
+    file: UploadFile,
+    machine_profile: str = Form(...),
+    process_profile: str = Form(...),
+    filament_profiles: str = Form(...),
+    plate_id: int = Form(0),
+    plate_type: str = Form(""),
+    printer_id: str = Form(""),
+    auto_print: bool = Form(False),
+):
+    if slice_jobs is None or slicer_client is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Slicing not available: ORCASLICER_API_URL not configured",
+        )
+    if not file.filename or not file.filename.lower().endswith(".3mf"):
+        raise HTTPException(status_code=400, detail="File must be a .3mf file")
+
+    file_data = await file.read()
+    if len(file_data) > MAX_FILE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File exceeds {settings.max_file_size_mb} MB limit",
+        )
+    try:
+        info = parse_3mf(file_data)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Failed to parse 3MF: {e}")
+
+    try:
+        parsed_filaments = json.loads(filament_profiles)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="filament_profiles must be valid JSON")
+
+    if auto_print and not printer_id:
+        raise HTTPException(
+            status_code=400,
+            detail="printer_id is required when auto_print=true",
+        )
+
+    job = await slice_jobs.submit(
+        file_data=file_data,
+        filename=file.filename,
+        machine_profile=machine_profile,
+        process_profile=process_profile,
+        filament_profiles=parsed_filaments,
+        plate_id=plate_id,
+        plate_type=plate_type.strip(),
+        project_filament_count=len(info.filaments),
+        printer_id=printer_id or None,
+        auto_print=auto_print,
+    )
+    return _slice_job_to_response(job)
+
+
+@app.get("/api/slice-jobs", response_model=SliceJobListResponse)
+async def list_slice_jobs():
+    if slice_jobs is None:
+        return SliceJobListResponse(jobs=[])
+    jobs = await slice_jobs.list()
+    return SliceJobListResponse(
+        jobs=[_slice_job_to_response(j) for j in jobs],
+    )
+
+
+@app.post("/api/slice-jobs/clear", response_model=SliceJobListResponse)
+async def clear_slice_jobs(body: _ClearBody | None = None):
+    if slice_jobs is None:
+        return SliceJobListResponse(jobs=[])
+    targets = set(body.statuses) if body and body.statuses else _DEFAULT_CLEAR_STATUSES
+    deleted = []
+    for job in await slice_jobs.list():
+        if job.status.value in targets and job.status.is_terminal:
+            await slice_jobs._store.delete(job.id)
+            deleted.append(_slice_job_to_response(job))
+    return SliceJobListResponse(jobs=deleted)
+
+
+@app.get("/api/slice-jobs/{job_id}", response_model=SliceJobResponse)
+async def get_slice_job(job_id: str):
+    if slice_jobs is None:
+        raise HTTPException(status_code=404, detail="Slice jobs disabled")
+    job = await slice_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _slice_job_to_response(job)
+
+
+@app.post("/api/slice-jobs/{job_id}/cancel", response_model=SliceJobResponse)
+async def cancel_slice_job(job_id: str):
+    if slice_jobs is None:
+        raise HTTPException(status_code=404, detail="Slice jobs disabled")
+    job = await slice_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    await slice_jobs.cancel(job_id)
+    job = await slice_jobs.get(job_id)
+    return _slice_job_to_response(job)
+
+
+@app.delete("/api/slice-jobs/{job_id}", status_code=204)
+async def delete_slice_job(job_id: str):
+    if slice_jobs is None:
+        raise HTTPException(status_code=404, detail="Slice jobs disabled")
+    job = await slice_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not job.status.is_terminal:
+        await slice_jobs.cancel(job_id)
+    # Wait briefly for cancel to settle
+    for _ in range(20):
+        cur = await slice_jobs.get(job_id)
+        if cur is None or cur.status.is_terminal:
+            break
+        await asyncio.sleep(0.05)
+    await slice_jobs._store.delete(job_id)
 
 
 # --- React SPA catch-all (MUST stay at the END of this file) ---

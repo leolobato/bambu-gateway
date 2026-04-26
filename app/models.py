@@ -440,3 +440,23 @@ class DeviceListResponse(BaseModel):
 class TestPushResponse(BaseModel):
     status: str  # "ok" | "failed"
     detail: str = ""
+
+
+class SliceJobResponse(BaseModel):
+    job_id: str
+    status: str
+    progress: int
+    phase: str | None = None
+    filename: str
+    printer_id: str | None = None
+    auto_print: bool
+    created_at: str
+    updated_at: str
+    estimate: dict | None = None
+    settings_transfer: dict | None = None
+    output_size: int | None = None
+    error: str | None = None
+
+
+class SliceJobListResponse(BaseModel):
+    jobs: list[SliceJobResponse]
