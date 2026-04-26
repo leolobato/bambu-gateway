@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RotateCcw } from 'lucide-react';
@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { DropZoneCard, DropOverlay } from '@/components/print/drop-zone';
 import { PlateCard } from '@/components/print/plate-card';
-import { SlicingSettingsGroup, type SlicingSettings } from '@/components/print/slicing-settings-group';
+import { SlicingSettingsGroup } from '@/components/print/slicing-settings-group';
 import type { SettingOption } from '@/components/print/setting-row';
 import { FilamentsGroup, type FilamentMapping } from '@/components/print/filaments-group';
 import { InfoBanner } from '@/components/print/info-banner';
@@ -32,68 +32,34 @@ import {
 } from '@/lib/api/slice-jobs';
 import { useDropZone } from '@/lib/use-drop-zone';
 import { usePrinterContext } from '@/lib/printer-context';
+import { usePrintContext, type BannerData } from '@/lib/print-context';
 import type {
   AMSTray,
   PrintEstimate,
-  SettingsTransferInfo,
   ThreeMFInfo,
 } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
 import { hasPrintEstimate } from '@/lib/print-estimate';
 
-type PrintState =
-  | { kind: 'empty' }
-  | {
-      kind: 'imported';
-      file: File;
-      info: ThreeMFInfo;
-      banner?: BannerData;
-    }
-  | {
-      kind: 'slicing';
-      file: File;
-      info: ThreeMFInfo;
-      jobId: string;
-      percent: number | null;
-      statusLine: string;
-      isPreview: boolean;
-    }
-  | {
-      kind: 'previewReady';
-      file: File;
-      info: ThreeMFInfo;
-      jobId: string;
-      transfer: SettingsTransferInfo | null;
-      estimate: PrintEstimate | null;
-    }
-  | {
-      kind: 'uploading';
-      file: File;
-      info: ThreeMFInfo;
-      uploadId: string;
-      percent: number;
-    }
-  | { kind: 'sent'; printerName: string | null; estimate: PrintEstimate | null };
-
-interface BannerData {
-  variant: 'info' | 'warn' | 'success' | 'error';
-  title: string;
-  message?: string;
-  details?: string;
-}
+// PrintState and BannerData live in `lib/print-context.tsx` so the state
+// machine and any in-flight slice/upload polling survive navigation away
+// from /print (e.g. flipping to /jobs and back).
 
 export default function PrintRoute() {
   const { activePrinterId } = usePrinterContext();
   const navigate = useNavigate();
 
-  const [state, setState] = useState<PrintState>({ kind: 'empty' });
-  const [settings, setSettings] = useState<SlicingSettings>({
-    machine: '',
-    process: '',
-    plateType: '',
-  });
-  const [selectedPlateId, setSelectedPlateId] = useState<number>(1);
-  const [filamentMapping, setFilamentMapping] = useState<FilamentMapping>({});
+  const {
+    state,
+    setState,
+    settings,
+    setSettings,
+    selectedPlateId,
+    setSelectedPlateId,
+    filamentMapping,
+    setFilamentMapping,
+    sliceAbortRef,
+  } = usePrintContext();
 
   // Slicer catalogs — load once, don't refetch automatically.
   const machinesQuery = useQuery({
@@ -137,9 +103,7 @@ export default function PrintRoute() {
     return list;
   }, [amsQuery.data]);
 
-  // SSE consumer.
   const queryClient = useQueryClient();
-  const sliceAbortRef = useRef<AbortController | null>(null);
 
   // The 3MF stores the slicer profile *name* in `printer_settings_id` /
   // `print_settings_id` (e.g. "Bambu Lab A1 mini 0.4 nozzle"), but the

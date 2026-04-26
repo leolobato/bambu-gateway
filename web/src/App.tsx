@@ -7,6 +7,7 @@ import JobsRoute from '@/routes/jobs';
 import SettingsRoute from '@/routes/settings';
 import { Toaster } from '@/components/ui/sonner';
 import { PrinterProvider } from '@/lib/printer-context';
+import { PrintProvider } from '@/lib/print-context';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -34,8 +35,10 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <PrinterProvider>
-        <RouterProvider router={router} />
-        <Toaster />
+        <PrintProvider>
+          <RouterProvider router={router} />
+          <Toaster />
+        </PrintProvider>
       </PrinterProvider>
     </QueryClientProvider>
   );
