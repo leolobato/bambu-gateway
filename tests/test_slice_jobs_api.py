@@ -164,3 +164,53 @@ async def test_print_preview_returns_sliced_bytes_and_headers(app_client):
     assert resp.content == b"sliced"
     assert resp.headers["x-preview-id"]
     assert resp.headers["x-job-id"] == resp.headers["x-preview-id"]
+
+
+async def test_print_with_job_id_starts_upload_and_marks_printing(
+    app_client, monkeypatch
+):
+    """Submitting `/api/print` with a job_id should upload the sliced bytes."""
+    import app.main as main_mod
+
+    # Create a slice job and wait for ready
+    create = await app_client.post(
+        "/api/slice-jobs",
+        files={"file": ("cube.3mf", b"x", "application/octet-stream")},
+        data={
+            "machine_profile": "GM014",
+            "process_profile": "0.20mm",
+            "filament_profiles": "{}",
+        },
+    )
+    job_id = create.json()["job_id"]
+    for _ in range(40):
+        cur = await app_client.get(f"/api/slice-jobs/{job_id}")
+        if cur.json()["status"] == "ready":
+            break
+        await asyncio.sleep(0.05)
+
+    # Stub printer client + background submit so we don't hit real printer
+    fake_client = MagicMock()
+    fake_client.ensure_connected = MagicMock()
+    fake_client.get_status = MagicMock(return_value=MagicMock(online=True))
+    main_mod.printer_service.get_client = MagicMock(return_value=fake_client)
+    monkeypatch.setattr(main_mod, "_background_submit", lambda *a, **kw: None)
+
+    resp = await app_client.post(
+        "/api/print",
+        data={"job_id": job_id, "printer_id": "PRINTER1"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "uploading"
+
+    # Slice job should now be in PRINTING status
+    job_after = await app_client.get(f"/api/slice-jobs/{job_id}")
+    assert job_after.json()["status"] == "printing"
+
+
+async def test_print_with_unknown_job_id_404(app_client):
+    resp = await app_client.post(
+        "/api/print",
+        data={"job_id": "deadbeef"},
+    )
+    assert resp.status_code == 404

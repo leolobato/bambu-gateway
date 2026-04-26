@@ -6,8 +6,6 @@ import asyncio
 import base64
 import json
 import logging
-import tempfile
-import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -93,69 +91,11 @@ DEFAULT_PLATE_TYPES = [
     {"value": "supertack_plate", "label": "Supertack Plate"},
 ]
 
-_PREVIEW_DIR = Path(tempfile.gettempdir()) / "bambu-gateway-previews"
-_PREVIEW_DIR.mkdir(exist_ok=True)
-
-
-def _store_preview(
-    file_data: bytes,
-    filename: str,
-    printer_id: str = "",
-    plate_id: int = 0,
-    filament_profiles: list[str] | dict | None = None,
-    project_filament_count: int | None = None,
-    estimate: PrintEstimate | None = None,
-) -> str:
-    preview_id = uuid.uuid4().hex[:12]
-    meta = {"filename": filename, "printer_id": printer_id, "plate_id": plate_id}
-    if filament_profiles is not None:
-        meta["filament_profiles"] = filament_profiles
-    if project_filament_count is not None:
-        meta["project_filament_count"] = project_filament_count
-    if estimate is not None and not estimate.is_empty:
-        meta["estimate"] = estimate.model_dump(exclude_none=True)
-    (_PREVIEW_DIR / f"{preview_id}.3mf").write_bytes(file_data)
-    (_PREVIEW_DIR / f"{preview_id}.json").write_text(json.dumps(meta))
-    return preview_id
-
-
-def _pop_preview(preview_id: str) -> dict | None:
-    """Return preview dict with keys: file_data, filename, printer_id, plate_id."""
-    data_path = _PREVIEW_DIR / f"{preview_id}.3mf"
-    meta_path = _PREVIEW_DIR / f"{preview_id}.json"
-    if not data_path.exists():
-        return None
-    file_data = data_path.read_bytes()
-    meta = {
-        "filename": preview_id + ".3mf",
-        "printer_id": "",
-        "plate_id": 0,
-        "filament_profiles": None,
-        "project_filament_count": None,
-        "estimate": None,
-    }
-    if meta_path.exists():
-        try:
-            meta.update(json.loads(meta_path.read_text()))
-        except (json.JSONDecodeError, OSError):
-            pass
-        meta_path.unlink(missing_ok=True)
-    data_path.unlink(missing_ok=True)
-    return {"file_data": file_data, **meta}
-
-
 def _estimate_response_header(estimate: PrintEstimate | None) -> str | None:
     if estimate is None or estimate.is_empty:
         return None
     payload = json.dumps(estimate.model_dump(exclude_none=True)).encode()
     return base64.b64encode(payload).decode()
-
-
-def _estimate_from_preview_meta(value: object) -> PrintEstimate | None:
-    if not isinstance(value, dict):
-        return None
-    estimate = PrintEstimate(**value)
-    return None if estimate.is_empty else estimate
 
 
 def _slice_job_to_response(job) -> SliceJobResponse:
@@ -913,33 +853,30 @@ async def print_file(
     file: UploadFile = None,
     printer_id: str = Form(""),
     plate_id: int = Form(0),
-    preview_id: str = Form(""),
+    job_id: str = Form(""),
+    preview_id: str = Form(""),       # deprecated alias for job_id
     machine_profile: str = Form(""),
     process_profile: str = Form(""),
     filament_profiles: str = Form(""),
     plate_type: str = Form(""),
     slice_only: bool = Form(False),
 ):
-    # --- Fast path: print from a stored preview ---
-    if preview_id:
-        preview = _pop_preview(preview_id)
-        if preview is None:
-            raise HTTPException(status_code=404, detail="Preview not found or expired")
+    effective_job_id = job_id or preview_id
 
-        pid = printer_id or preview["printer_id"] or printer_service.default_printer_id()
+    # --- Fast path: print from a sliced job ---
+    if effective_job_id and slice_jobs is not None:
+        job = await slice_jobs.get(effective_job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.status.value != "ready":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Job is {job.status.value}, not ready",
+            )
+        pid = printer_id or job.printer_id or printer_service.default_printer_id()
         if pid is None:
             raise HTTPException(status_code=404, detail="No printers configured")
 
-        # Sliced files are always single-plate (plate extracted before slicing).
-        pplate = 1
-        tray_error = await validate_selected_trays(preview.get("filament_profiles"), pid, printer_service)
-        if tray_error is not None:
-            raise HTTPException(status_code=409, detail=tray_error)
-        ams_mapping, use_ams = build_ams_mapping(
-            preview.get("filament_profiles"),
-            project_filament_count=preview.get("project_filament_count"),
-        )
-        # Validate printer is reachable before starting background upload
         client = printer_service.get_client(pid)
         if client is None:
             raise HTTPException(status_code=404, detail=f"Printer {pid} not found")
@@ -950,21 +887,34 @@ async def print_file(
         except ConnectionError as e:
             raise HTTPException(status_code=409, detail=str(e))
 
-        file_data_preview = preview["file_data"]
-        fname_preview = preview["filename"]
-        state = upload_tracker.create(fname_preview, pid, len(file_data_preview))
+        tray_error = await validate_selected_trays(
+            job.filament_profiles, pid, printer_service,
+        )
+        if tray_error is not None:
+            raise HTTPException(status_code=409, detail=tray_error)
+        ams_mapping, use_ams = build_ams_mapping(
+            job.filament_profiles,
+            project_filament_count=job.project_filament_count,
+        )
+
+        file_data_job = Path(job.output_path).read_bytes()
+        upload_state = upload_tracker.create(job.filename, pid, len(file_data_job))
         asyncio.get_running_loop().run_in_executor(None, lambda: _background_submit(
-            state, pid, file_data_preview, fname_preview,
-            plate_id=pplate, ams_mapping=ams_mapping, use_ams=use_ams,
+            upload_state, pid, file_data_job, job.filename,
+            plate_id=1, ams_mapping=ams_mapping, use_ams=use_ams,
         ))
+
+        # Mark the slice job as printing (terminal from its own perspective)
+        job.status = SliceJobStatus.PRINTING
+        await slice_jobs._store.upsert(job)
 
         return PrintResponse(
             status="uploading",
-            file_name=preview["filename"],
+            file_name=job.filename,
             printer_id=pid,
             was_sliced=True,
-            upload_id=state.upload_id,
-            estimate=_estimate_from_preview_meta(preview.get("estimate")),
+            upload_id=upload_state.upload_id,
+            estimate=PrintEstimate(**job.estimate) if job.estimate else None,
         )
 
     # --- Normal path ---
