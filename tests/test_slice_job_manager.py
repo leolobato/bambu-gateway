@@ -188,3 +188,73 @@ async def test_max_concurrent_limits_parallel_slices(tmp_jobs_dir: Path):
     finally:
         gate.set()
         await manager.stop()
+
+
+async def test_cancel_queued_job_skips_slicer(tmp_jobs_dir: Path):
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+
+    # First job blocks the worker behind a gate; second job sits queued.
+    gate = asyncio.Event()
+
+    async def gated_stream(*a, **kw):
+        await gate.wait()
+        yield {"event": "done", "data": {}}
+
+    slicer = MagicMock()
+    slicer.slice_stream = gated_stream
+
+    manager = SliceJobManager(
+        store=store, slicer=slicer, printer_service=MagicMock(),
+        notifier=None, max_concurrent=1,
+    )
+    await manager.start()
+    try:
+        first = await manager.submit(
+            file_data=b"x", filename="a.3mf", machine_profile="GM014",
+            process_profile="0.20mm", filament_profiles={}, plate_id=1,
+            plate_type="", project_filament_count=0, printer_id=None,
+            auto_print=False,
+        )
+        second = await manager.submit(
+            file_data=b"x", filename="b.3mf", machine_profile="GM014",
+            process_profile="0.20mm", filament_profiles={}, plate_id=1,
+            plate_type="", project_filament_count=0, printer_id=None,
+            auto_print=False,
+        )
+        await asyncio.sleep(0.05)
+        assert await manager.cancel(second.id) is True
+        gate.set()
+        cancelled = await _wait_for_status(store, second.id, SliceJobStatus.CANCELLED)
+        assert cancelled.error is None
+        # First job still completes naturally
+        await _wait_for_status(store, first.id, SliceJobStatus.FAILED)
+    finally:
+        gate.set()
+        await manager.stop()
+
+
+async def test_cancel_terminal_job_returns_false(tmp_jobs_dir: Path):
+    import base64
+
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    slicer = make_slicer([
+        {"event": "result",
+         "data": {"file_base64": base64.b64encode(b"x").decode(), "file_size": 1}},
+        {"event": "done", "data": {}},
+    ])
+    manager = SliceJobManager(
+        store=store, slicer=slicer, printer_service=MagicMock(),
+        notifier=None, max_concurrent=1,
+    )
+    await manager.start()
+    try:
+        job = await manager.submit(
+            file_data=b"x", filename="c.3mf", machine_profile="GM014",
+            process_profile="0.20mm", filament_profiles={}, plate_id=1,
+            plate_type="", project_filament_count=0, printer_id=None,
+            auto_print=False,
+        )
+        await _wait_for_status(store, job.id, SliceJobStatus.READY)
+        assert await manager.cancel(job.id) is False
+    finally:
+        await manager.stop()

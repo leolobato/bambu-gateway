@@ -310,6 +310,20 @@ class SliceJobManager:
     async def list(self) -> list[SliceJob]:
         return await self._store.list_all()
 
+    async def cancel(self, job_id: str) -> bool:
+        """Request cancellation of a queued or in-flight job.
+
+        Returns True if the job existed and was non-terminal at the moment
+        cancel was requested; False otherwise.
+        """
+        job = await self._store.get(job_id)
+        if job is None or job.status.is_terminal:
+            return False
+        ev = self._cancel_events.get(job_id)
+        if ev is not None:
+            ev.set()
+        return True
+
     async def _worker_loop(self) -> None:
         while True:
             job_id = await self._queue.get()
