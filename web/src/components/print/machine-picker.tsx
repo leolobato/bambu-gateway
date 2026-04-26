@@ -55,7 +55,10 @@ export function MachinePicker({
             disabled={disabled}
             aria-label={label}
             className={cn(
-              'flex items-center gap-1 max-w-[60%] py-1 px-2 rounded-md text-text-1 text-sm',
+              // Mirrors SelectTrigger's layout (justify-between, max-w-[60%])
+              // so the Machine value left-aligns with Process and Plate type
+              // values on the same card.
+              'flex items-center justify-between gap-2 w-[60%] max-w-[60%] py-1 px-2 rounded-md text-text-1 text-sm',
               'hover:text-white hover:bg-surface-2 transition-colors duration-fast',
               'disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent',
             )}

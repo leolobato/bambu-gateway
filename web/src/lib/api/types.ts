@@ -134,6 +134,13 @@ export interface FilamentInfo {
   /** "RRGGBB" hex (no #), or "" for unset. */
   color: string;
   setting_id: string;
+  /**
+   * True if any object/part in the 3MF references this extruder. Files
+   * commonly declare more filaments than they actually print, so the UI
+   * should filter to `used: true` to avoid asking users to map slots that
+   * don't matter.
+   */
+  used: boolean;
 }
 
 export interface PrinterInfo {

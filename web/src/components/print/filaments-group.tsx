@@ -19,7 +19,16 @@ export function FilamentsGroup({
   onChange: (next: FilamentMapping) => void;
   disabled?: boolean;
 }) {
-  if (projectFilaments.length === 0) return null;
+  // 3MFs commonly declare more filaments than any object actually prints.
+  // The slicer doesn't care about unused slots (the gateway pads them with
+  // a benign profile), so don't ask the user to map them.
+  // Fallback: if no filament reports `used`, show everything — covers old
+  // gateways that pre-date the parser change.
+  const visibleFilaments = projectFilaments.some((f) => f.used)
+    ? projectFilaments.filter((f) => f.used)
+    : projectFilaments;
+
+  if (visibleFilaments.length === 0) return null;
 
   return (
     <section className="flex flex-col gap-1">
@@ -27,7 +36,7 @@ export function FilamentsGroup({
         Filaments
       </div>
       <Card className="px-4 bg-card border-border">
-        {projectFilaments.map((filament, idx) => (
+        {visibleFilaments.map((filament, idx) => (
           <div key={filament.index}>
             <FilamentMappingRow
               filament={filament}
@@ -36,7 +45,7 @@ export function FilamentsGroup({
               onChange={(slot) => onChange({ ...mapping, [filament.index]: slot })}
               disabled={disabled}
             />
-            {idx < projectFilaments.length - 1 && <Separator className="bg-border" />}
+            {idx < visibleFilaments.length - 1 && <Separator className="bg-border" />}
           </div>
         ))}
       </Card>

@@ -11,7 +11,6 @@ import type { SettingOption } from '@/components/print/setting-row';
 import { FilamentsGroup, type FilamentMapping } from '@/components/print/filaments-group';
 import { InfoBanner } from '@/components/print/info-banner';
 import { SlicingProgressCard } from '@/components/print/slicing-progress-card';
-import { SliceJobsList } from '@/components/print/slice-jobs-list';
 import { SettingsTransferNote } from '@/components/print/settings-transfer-note';
 import { PrintEstimationCard } from '@/components/print/print-estimation-card';
 import { parse3mf } from '@/lib/api/3mf';
@@ -183,11 +182,16 @@ export default function PrintRoute() {
         process: prev.process || info.print_profile.print_settings_id || '',
         plateType: prev.plateType,
       }));
-      // Filament-tray defaults via backend matcher.
+      // Filament-tray defaults via backend matcher. Only ask about filaments
+      // any object actually references — declared-but-unused slots get padded
+      // server-side when the slice is submitted.
+      const usedFilaments = info.filaments.some((f) => f.used)
+        ? info.filaments.filter((f) => f.used)
+        : info.filaments;
       const initialMapping: FilamentMapping = {};
       if (activePrinterId) {
         try {
-          const matches = await getFilamentMatches(activePrinterId, info.filaments);
+          const matches = await getFilamentMatches(activePrinterId, usedFilaments);
           for (const m of matches.matches) {
             initialMapping[m.index] = m.preferred_tray_slot ?? -1;
           }
@@ -223,7 +227,12 @@ export default function PrintRoute() {
     info: ThreeMFInfo,
   ): Record<string, { profile_setting_id: string; tray_slot: number }> {
     const out: Record<string, { profile_setting_id: string; tray_slot: number }> = {};
-    for (const filament of info.filaments) {
+    // Only forward overrides for filaments actually referenced by the project;
+    // the gateway pads unused slots server-side using the chosen profile.
+    const usedFilaments = info.filaments.some((f) => f.used)
+      ? info.filaments.filter((f) => f.used)
+      : info.filaments;
+    for (const filament of usedFilaments) {
       const slot = filamentMapping[filament.index];
       if (slot == null || slot < 0) continue;
       const tray = trays.find((t) => t.slot === slot);
@@ -725,8 +734,6 @@ export default function PrintRoute() {
           />
         </div>
       )}
-
-      <SliceJobsList />
     </div>
   );
 }
