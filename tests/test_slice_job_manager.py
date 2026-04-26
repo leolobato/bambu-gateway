@@ -258,3 +258,45 @@ async def test_cancel_terminal_job_returns_false(tmp_jobs_dir: Path):
         assert await manager.cancel(job.id) is False
     finally:
         await manager.stop()
+
+
+async def test_cancel_during_slicing_aborts(tmp_jobs_dir: Path):
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    started = asyncio.Event()
+    finished_naturally = False
+
+    async def slow_stream(*a, **kw):
+        nonlocal finished_naturally
+        started.set()
+        try:
+            await asyncio.sleep(5)  # would block past the test timeout
+            yield {"event": "result", "data": {"file_base64": "", "file_size": 0}}
+            yield {"event": "done", "data": {}}
+            finished_naturally = True
+        except asyncio.CancelledError:
+            raise
+
+    slicer = MagicMock()
+    slicer.slice_stream = slow_stream
+
+    manager = SliceJobManager(
+        store=store, slicer=slicer, printer_service=MagicMock(),
+        notifier=None, max_concurrent=1,
+    )
+    await manager.start()
+    try:
+        job = await manager.submit(
+            file_data=b"x", filename="a.3mf", machine_profile="GM014",
+            process_profile="0.20mm", filament_profiles={}, plate_id=1,
+            plate_type="", project_filament_count=0, printer_id=None,
+            auto_print=False,
+        )
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        await manager.cancel(job.id)
+        cancelled = await _wait_for_status(
+            store, job.id, SliceJobStatus.CANCELLED, timeout=2.0,
+        )
+        assert cancelled.output_path is None
+        assert not finished_naturally
+    finally:
+        await manager.stop()

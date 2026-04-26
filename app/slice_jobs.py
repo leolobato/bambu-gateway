@@ -354,26 +354,56 @@ class SliceJobManager:
         last_write = 0.0
 
         try:
-            async for event in self._slicer.slice_stream(
+            agen = self._slicer.slice_stream(
                 file_data, job.filename, job.machine_profile, job.process_profile,
                 job.filament_profiles, plate_type=job.plate_type,
                 plate=job.plate_id or 1,
-            ):
-                etype = event.get("event")
-                edata = event.get("data") or {}
-                if etype == "progress":
-                    pct = int(edata.get("percent", 0))
-                    job.progress = pct
-                    now = time.monotonic()
-                    if now - last_write >= self.PROGRESS_WRITE_INTERVAL_SECONDS:
-                        await self._store.upsert(job)
-                        last_write = now
-                elif etype == "result":
-                    result_bytes = base64.b64decode(edata["file_base64"])
-                    estimate = edata.get("estimate")
-                    settings_transfer = edata.get("settings_transfer")
-                elif etype == "done":
-                    break
+            )
+            try:
+                while True:
+                    next_task = asyncio.ensure_future(agen.__anext__())
+                    waitables: list[asyncio.Future] = [next_task]
+                    cancel_task: asyncio.Task | None = None
+                    if cancel is not None:
+                        cancel_task = asyncio.ensure_future(cancel.wait())
+                        waitables.append(cancel_task)
+                    done, _pending = await asyncio.wait(
+                        waitables, return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if cancel_task is not None and cancel_task in done:
+                        next_task.cancel()
+                        try:
+                            await agen.aclose()
+                        except Exception:
+                            pass
+                        await self._set_status(job, SliceJobStatus.CANCELLED)
+                        return
+                    if cancel_task is not None:
+                        cancel_task.cancel()
+                    try:
+                        event = next_task.result()
+                    except StopAsyncIteration:
+                        break
+                    etype = event.get("event")
+                    edata = event.get("data") or {}
+                    if etype == "progress":
+                        pct = int(edata.get("percent", 0))
+                        job.progress = pct
+                        now = time.monotonic()
+                        if now - last_write >= self.PROGRESS_WRITE_INTERVAL_SECONDS:
+                            await self._store.upsert(job)
+                            last_write = now
+                    elif etype == "result":
+                        result_bytes = base64.b64decode(edata["file_base64"])
+                        estimate = edata.get("estimate")
+                        settings_transfer = edata.get("settings_transfer")
+                    elif etype == "done":
+                        break
+            finally:
+                try:
+                    await agen.aclose()
+                except Exception:
+                    pass
         except Exception as e:
             await self._fail(job, f"Slicing failed: {e}")
             return
