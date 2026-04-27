@@ -8,6 +8,8 @@ import logging
 
 from PIL import Image
 
+from app.slice_jobs import SliceJobStore
+
 logger = logging.getLogger(__name__)
 
 _PUSH_BUDGET_BYTES = 2400  # safety margin under Apple's 2.5 KB iOS-side cap
@@ -73,12 +75,18 @@ def _compress_for_push(data_url: str) -> str | None:
     return None
 
 
-from app.slice_jobs import SliceJobStore
-
-
 def _normalize_filename(name: str) -> str:
-    """Lowercase and strip Bambu's `.gcode.3mf` / `.3mf` suffixes."""
-    n = (name or "").lower().strip()
+    """Lowercase, basename, and strip Bambu's `.gcode.3mf` / `.3mf` suffixes.
+
+    Only the documented Bambu suffix shapes are normalized — filenames with
+    other extensions (e.g. `foo.gcode`) are returned lowercased-and-basename
+    only, which means they will only match a stored job whose filename has
+    the same extension.
+    """
+    n = (name or "").strip().lower()
+    # Strip Unix and Windows path components — Bambu has been known to report
+    # `subtask_name` as `Metadata/plate_1.gcode.3mf` on some firmware paths.
+    n = n.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
     for suffix in (".gcode.3mf", ".3mf"):
         if n.endswith(suffix):
             return n[: -len(suffix)]

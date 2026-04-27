@@ -85,7 +85,6 @@ async def _seed_job(
     *,
     filename: str,
     thumbnail: str | None,
-    updated_at: str | None = None,
 ) -> SliceJob:
     job = SliceJob.new(
         filename=filename,
@@ -101,11 +100,6 @@ async def _seed_job(
     )
     job.thumbnail = thumbnail
     await store.upsert(job)
-    # `upsert` calls `job.touch()` which resets `updated_at`. The store
-    # caches the same instance, so mutating it here also affects what
-    # `list_all` later returns. Set the override after upsert.
-    if updated_at is not None:
-        job.updated_at = updated_at
     return job
 
 
@@ -144,25 +138,34 @@ async def test_lookup_is_case_insensitive(tmp_jobs_dir: Path):
     assert out is not None
 
 
-async def test_lookup_picks_most_recently_updated_match(tmp_jobs_dir: Path):
+async def test_lookup_strips_path_components_from_subtask_name(
+    tmp_jobs_dir: Path,
+):
     store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
-    older = await _seed_job(
-        store, filename="cube.3mf",
-        thumbnail=_make_png_data_url((128, 128)),
-        updated_at="2026-04-26T10:00:00+00:00",
-    )
-    newer = await _seed_job(
-        store, filename="cube.3mf",
-        thumbnail=_make_png_data_url((256, 256)),
-        updated_at="2026-04-27T10:00:00+00:00",
-    )
+    await _seed_job(store, filename="cube.3mf", thumbnail=_make_png_data_url())
+    # Some Bambu firmware paths report `subtask_name` with a directory prefix.
+    out = await lookup_push_thumbnail(store, "Metadata/cube.gcode.3mf")
+    assert out is not None
+
+
+async def test_lookup_picks_most_recently_updated_match(tmp_jobs_dir: Path):
+    from freezegun import freeze_time
+
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    with freeze_time("2026-04-26T10:00:00Z"):
+        older = await _seed_job(
+            store, filename="cube.3mf",
+            thumbnail=_make_png_data_url((128, 128)),
+        )
+    with freeze_time("2026-04-27T10:00:00Z"):
+        newer = await _seed_job(
+            store, filename="cube.3mf",
+            thumbnail=_make_png_data_url((256, 256)),
+        )
     out = await lookup_push_thumbnail(store, "cube.3mf")
     assert out is not None
-    # We can't compare to the source PNGs directly (they get re-compressed),
-    # but we can confirm it's the larger-source match by checking dimensions
-    # via PIL after decode.
-    decoded = Image.open(io.BytesIO(base64.b64decode(out)))
     # The 256-source thumbnails to (192, 192); the 128 stays at 128.
+    decoded = Image.open(io.BytesIO(base64.b64decode(out)))
     assert max(decoded.size) > 128
     assert older.id != newer.id  # sanity: distinct jobs
 
@@ -189,7 +192,7 @@ async def test_lookup_returns_none_for_empty_filename(tmp_jobs_dir: Path):
     assert await lookup_push_thumbnail(store, "") is None
 
 
-async def test_lookup_swallows_compression_failure(tmp_jobs_dir: Path):
+async def test_lookup_does_not_fallback_when_top_match_fails_to_compress(tmp_jobs_dir: Path):
     store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
     await _seed_job(
         store, filename="cube.3mf",
