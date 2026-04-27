@@ -185,6 +185,21 @@ The app communicates with Bambu Lab printers using their LAN protocol:
 When you submit a print, the file is uploaded to the printer via FTPS, then an
 MQTT command triggers the print. Status updates flow back continuously over MQTT.
 
+## Related Projects
+
+Bambu Gateway is the **printer control plane and slicing web app** in a suite of self-hosted projects that together replace the Bambu Handy app for printers in **Developer Mode** — keeping everything on your LAN, with no Bambu cloud.
+
+**Self-hosted services**
+
+- **Bambu Gateway** — this project.
+- **[orcaslicer-cli](https://github.com/leolobato/orcaslicer-cli)** — Headless OrcaSlicer wrapped in a REST API. Owns the filament/process/machine profile catalog (including custom user profiles) and does the actual slicing. Other services in the suite call it for slicing and profile data.
+- **[bambu-spool-helper](https://github.com/leolobato/bambu-spool-helper)** — Bridge between [Spoolman](https://github.com/Donkie/Spoolman) and the printer's AMS. Links real spools to Bambu filament profiles (via `orcaslicer-cli`) and pushes the settings to a chosen tray over MQTT.
+
+**iOS apps**
+
+- **[bambu-gateway-ios](https://github.com/leolobato/bambu-gateway-ios)** — Phone client for `bambu-gateway`. Browse printers, import 3MF files (including from MakerWorld), preview G-code, and start prints. Live Activities and push notifications for print state changes.
+- **[spool-browser](https://github.com/leolobato/spool-browser)** — Phone client for `bambu-spool-helper` and Spoolman. Browse the spool inventory, link Bambu profiles to spools, activate filaments on the AMS, and print physical spool labels over Bluetooth.
+
 ## License
 
 Bambu Gateway is available under the MIT License. See [LICENSE](LICENSE) for details.
