@@ -71,3 +71,34 @@ def _compress_for_push(data_url: str) -> str | None:
         "thumbnail compress: cannot fit budget; final size=%d", final_size,
     )
     return None
+
+
+from app.slice_jobs import SliceJobStore
+
+
+def _normalize_filename(name: str) -> str:
+    """Lowercase and strip Bambu's `.gcode.3mf` / `.3mf` suffixes."""
+    n = (name or "").lower().strip()
+    for suffix in (".gcode.3mf", ".3mf"):
+        if n.endswith(suffix):
+            return n[: -len(suffix)]
+    return n
+
+
+async def lookup_push_thumbnail(
+    slice_store: SliceJobStore, file_name: str,
+) -> str | None:
+    """Find a matching SliceJob and return its thumbnail compressed for
+    the Live Activity push payload, or None if no usable match exists."""
+    target = _normalize_filename(file_name)
+    if not target:
+        return None
+    jobs = await slice_store.list_all()
+    candidates = [
+        j for j in jobs
+        if j.thumbnail and _normalize_filename(j.filename) == target
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda j: j.updated_at, reverse=True)
+    return _compress_for_push(candidates[0].thumbnail)
