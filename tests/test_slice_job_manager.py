@@ -451,6 +451,118 @@ async def test_slicer_exception_marks_job_failed(tmp_jobs_dir: Path):
         await manager.stop()
 
 
+async def test_error_event_surfaces_orca_error_string(tmp_jobs_dir: Path):
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    orca_output = (
+        "[2026-04-27 13:08:32.439340] [0x00007f0e9a97d300] [error]   "
+        "load_from_json: parse /tmp/x/filament_0.json error, invalid json array for hot_plate_temp\n"
+        "run found error, return -5, exit...\n"
+        "\n=== result.json ===\n"
+        '{"error_string": "The input preset file is invalid and can not be parsed.",'
+        ' "return_code": -5}\n'
+    )
+    slicer = make_slicer([
+        {"event": "error", "data": {
+            "error": "OrcaSlicer exited with code 251",
+            "orca_output": orca_output,
+            "critical_warnings": [],
+        }},
+    ])
+    manager = SliceJobManager(
+        store=store, slicer=slicer, printer_service=MagicMock(),
+        notifier=None, max_concurrent=1,
+    )
+    await manager.start()
+    try:
+        job = await manager.submit(
+            file_data=b"x", filename="c.3mf",
+            machine_profile="GM014", process_profile="0.20mm",
+            filament_profiles={}, plate_id=1, plate_type="",
+            project_filament_count=0, printer_id=None, auto_print=False,
+        )
+        failed = await _wait_for_status(store, job.id, SliceJobStatus.FAILED)
+        msg = failed.error or ""
+        assert "OrcaSlicer exited with code 251" in msg
+        assert "The input preset file is invalid and can not be parsed." in msg
+    finally:
+        await manager.stop()
+
+
+async def test_error_event_surfaces_bare_cerr_line(tmp_jobs_dir: Path):
+    """Orca writes some critical errors via cerr (no boost-log prefix). The
+    flush-volumes export-time check is one — its result.json `error_string`
+    is the generic 'Failed slicing the model…' catchall, so the real cause
+    only lives on the bare line."""
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    orca_output = (
+        "[2026-04-27 13:36:17.323294] [0x00007f] [error]   "
+        "found slicing or export error for partplate 1\n"
+        "Flush volumes matrix do not match to the correct size!\n"
+        "[2026-04-27 13:36:17.323503] [0x00007f] [info]    "
+        "record_exit_reson:449, saved config to /tmp/x/result.json\n"
+        "run found error, return -100, exit...\n"
+        "\n=== result.json ===\n"
+        '{"error_string": "Failed slicing the model. Please verify the '
+        'slicing of all plates on Orca Slicer before uploading.",'
+        ' "return_code": -100}\n'
+    )
+    slicer = make_slicer([
+        {"event": "error", "data": {
+            "error": "OrcaSlicer exited with code 156",
+            "orca_output": orca_output,
+        }},
+    ])
+    manager = SliceJobManager(
+        store=store, slicer=slicer, printer_service=MagicMock(),
+        notifier=None, max_concurrent=1,
+    )
+    await manager.start()
+    try:
+        job = await manager.submit(
+            file_data=b"x", filename="c.3mf",
+            machine_profile="GM014", process_profile="0.20mm",
+            filament_profiles={}, plate_id=1, plate_type="",
+            project_filament_count=0, printer_id=None, auto_print=False,
+        )
+        failed = await _wait_for_status(store, job.id, SliceJobStatus.FAILED)
+        msg = failed.error or ""
+        assert "OrcaSlicer exited with code 156" in msg
+        assert "Failed slicing the model" in msg
+        assert "Flush volumes matrix do not match to the correct size!" in msg
+    finally:
+        await manager.stop()
+
+
+async def test_error_event_falls_back_to_orca_error_line(tmp_jobs_dir: Path):
+    store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
+    orca_output = (
+        "[2026-04-27 13:08:32.111] [0x00007f0] [info]    starting\n"
+        "[2026-04-27 13:08:32.222] [0x00007f0] [error]   bad mesh at object 3\n"
+    )
+    slicer = make_slicer([
+        {"event": "error", "data": {
+            "error": "OrcaSlicer exited with code 1",
+            "orca_output": orca_output,
+        }},
+    ])
+    manager = SliceJobManager(
+        store=store, slicer=slicer, printer_service=MagicMock(),
+        notifier=None, max_concurrent=1,
+    )
+    await manager.start()
+    try:
+        job = await manager.submit(
+            file_data=b"x", filename="c.3mf",
+            machine_profile="GM014", process_profile="0.20mm",
+            filament_profiles={}, plate_id=1, plate_type="",
+            project_filament_count=0, printer_id=None, auto_print=False,
+        )
+        failed = await _wait_for_status(store, job.id, SliceJobStatus.FAILED)
+        assert "bad mesh at object 3" in (failed.error or "")
+    finally:
+        await manager.stop()
+
+
 async def test_no_result_event_marks_job_failed(tmp_jobs_dir: Path):
     store = SliceJobStore(tmp_jobs_dir / "slice_jobs.json")
     slicer = make_slicer([{"event": "done", "data": {}}])

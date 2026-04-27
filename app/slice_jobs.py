@@ -298,6 +298,109 @@ def _parse_orca_progress(line: str) -> tuple[int | None, str | None]:
     return pct, message
 
 
+_RESULT_JSON_MARKER = "=== result.json ==="
+_ORCA_ERROR_LINE_RE = re.compile(r"\[error\]\s*(.+?)\s*$", re.IGNORECASE)
+# Boost log prefix at the start of a line: `[2026-04-27 13:08:32.439340] [0x...] `.
+_BOOST_LOG_PREFIX_RE = re.compile(r"^\[\d{4}-\d{2}-\d{2}[ T]\d")
+# Embedded boost log prefix mid-line — orca sometimes flushes a `cerr` write
+# without a trailing newline, so the next info-level log line concatenates onto
+# the same physical line. We split at the embedded `[YYYY-MM-DD ` to recover
+# the bare-cerr prefix.
+_EMBEDDED_BOOST_RE = re.compile(r"\[\d{4}-\d{2}-\d{2}[ T]\d")
+_NOISE_BARE_PREFIXES = ("run found error", "=== ")
+
+
+def _extract_orca_bare_error_lines(output: str) -> list[str]:
+    """Return non-boost-log lines from the orca output (Orca's `cerr` writes).
+
+    These lines carry critical errors that don't go through the `[YYYY-...]
+    [0x...] [error]` log channel — e.g. ``Flush volumes matrix do not match to
+    the correct size!`` — and are otherwise lost when result.json's
+    ``error_string`` is one of Orca's generic catchalls.
+    """
+    marker = output.find(_RESULT_JSON_MARKER)
+    body = output[:marker] if marker != -1 else output
+
+    bare: list[str] = []
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or _BOOST_LOG_PREFIX_RE.match(line):
+            continue
+        m = _EMBEDDED_BOOST_RE.search(line)
+        if m and m.start() > 0:
+            line = line[: m.start()].rstrip()
+        if not line:
+            continue
+        if any(line.startswith(p) for p in _NOISE_BARE_PREFIXES):
+            continue
+        bare.append(line)
+    return bare
+
+
+def _parse_orca_result_error_string(output: str) -> str | None:
+    """Extract `error_string` from the trailing ``=== result.json ===`` block."""
+    idx = output.rfind(_RESULT_JSON_MARKER)
+    if idx == -1:
+        return None
+    tail = output[idx + len(_RESULT_JSON_MARKER):]
+    brace_start = tail.find("{")
+    brace_end = tail.rfind("}")
+    if brace_start == -1 or brace_end <= brace_start:
+        return None
+    try:
+        parsed = json.loads(tail[brace_start : brace_end + 1])
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, dict):
+        err_str = parsed.get("error_string")
+        if isinstance(err_str, str) and err_str.strip():
+            return err_str.strip()
+    return None
+
+
+def _last_orca_error_log_line(output: str) -> str | None:
+    """Last `[error]` boost-log line, with the timestamp/thread prefix stripped."""
+    for line in reversed(output.splitlines()):
+        if "[error]" not in line.lower():
+            continue
+        m = _ORCA_ERROR_LINE_RE.search(line)
+        return ((m.group(1) if m else line).strip()) or None
+    return None
+
+
+def _extract_slicer_error_detail(edata: Any) -> str | None:
+    """Pull a user-facing detail string out of an orcaslicer-cli error payload.
+
+    Combines (in order, deduped):
+      1. ``result.json``'s ``error_string`` — Orca's intended user message.
+      2. Bare ``cerr`` lines from the output (e.g. matrix-size mismatch),
+         which are the only signal when Orca's ``error_string`` is the
+         generic "Failed slicing the model. Please verify…" catchall.
+      3. The last ``[error]`` boost-log line as a final fallback when neither
+         of the above produced anything.
+    """
+    if not isinstance(edata, dict):
+        return None
+    output = edata.get("orca_output")
+    if not isinstance(output, str) or not output:
+        return None
+
+    parts: list[str] = []
+    error_string = _parse_orca_result_error_string(output)
+    if error_string:
+        parts.append(error_string)
+
+    for line in _extract_orca_bare_error_lines(output):
+        if any(line in p or p in line for p in parts):
+            continue
+        parts.append(line)
+
+    if parts:
+        return "; ".join(parts)
+
+    return _last_orca_error_log_line(output)
+
+
 class SliceJobManager:
     """Owns the asyncio queue and worker tasks for slice jobs."""
 
@@ -534,13 +637,14 @@ class SliceJobManager:
                         estimate = edata.get("estimate")
                         settings_transfer = edata.get("settings_transfer")
                     elif etype == "error":
-                        msg = (
+                        base = (
                             (isinstance(edata, dict) and (
                                 edata.get("error") or edata.get("message")
                             ))
                             or "Slicer reported an error"
                         )
-                        raise RuntimeError(msg)
+                        detail = _extract_slicer_error_detail(edata)
+                        raise RuntimeError(f"{base}: {detail}" if detail else base)
                     elif etype == "done":
                         break
             finally:
