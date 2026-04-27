@@ -57,8 +57,13 @@ matching the encoding the iOS local-start path produces for
 ### Wiring
 
 `NotificationHub.__init__` gains a `slice_store: SliceJobStore` parameter.
-`app/main.py` already constructs both objects in the lifespan startup; pass the
-existing slice store into the hub constructor.
+The lifespan in `app/main.py` originally constructed `SliceJobStore` *inside*
+the `slicer_client is not None` branch, so the hub couldn't reach it. The
+fix is to hoist the store construction to before the hub is built and reuse
+the same instance in `SliceJobManager`. Two consumers, one store, one
+`asyncio.Lock`, one in-memory cache. When no slicer is configured the store
+is still constructed (cheap — only `mkdir`) and stays empty, which makes
+the hub's lookup gracefully return `None` thumbnails.
 
 ### Call site
 
