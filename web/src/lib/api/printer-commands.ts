@@ -61,3 +61,34 @@ export async function stopDrying(printerId: string, amsId: number): Promise<void
     { method: 'POST' },
   );
 }
+
+export interface SetAmsFilamentParams {
+  /** Slicer profile setting_id (e.g. "GFSA00"). The gateway resolves the rest. */
+  settingId: string;
+  /** 8-char "RRGGBBAA" hex (no leading "#"). Optional — gateway falls back to the profile default. */
+  trayColor?: string;
+}
+
+/**
+ * Assign a filament profile to one AMS tray. `trayId` is the per-AMS slot
+ * index 0..3 (NOT the global slot). For the external spool, pass amsId=255
+ * and trayId=254 — Bambu's reserved values.
+ */
+export async function setAmsFilament(
+  printerId: string,
+  amsId: number,
+  trayId: number,
+  params: SetAmsFilamentParams,
+): Promise<void> {
+  await fetchJson<unknown>(
+    `/api/printers/${encodeURIComponent(printerId)}/ams/${amsId}/tray/${trayId}/filament`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        setting_id: params.settingId,
+        tray_color: params.trayColor ?? null,
+      }),
+    },
+  );
+}

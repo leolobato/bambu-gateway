@@ -264,3 +264,28 @@ class SlicerClient:
             return []
 
         return resp.json()
+
+    async def get_filament_detail(self, setting_id: str) -> dict | None:
+        """Fetch one filament profile with its full resolved field set.
+
+        Wraps the slicer's `/profiles/filaments/{setting_id}` endpoint, which
+        returns `{setting_id, name, vendor, resolved: {...}, inheritance_chain}`.
+        Returns None when the slicer reports 404 / is unreachable.
+        """
+        url = f"{self._base_url}/profiles/filaments/{setting_id}"
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(url)
+        except httpx.HTTPError as e:
+            logger.error("Failed to fetch filament %s from slicer: %s", setting_id, e)
+            return None
+
+        if resp.status_code == 404:
+            return None
+        if resp.status_code != 200:
+            logger.error(
+                "Slicer /profiles/filaments/%s returned %d",
+                setting_id, resp.status_code,
+            )
+            return None
+        return resp.json()

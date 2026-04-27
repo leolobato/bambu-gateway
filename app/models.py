@@ -394,6 +394,20 @@ class LightRequest(BaseModel):
     node: str = "chamber_light"
 
 
+class SetAmsFilamentRequest(BaseModel):
+    """Request body for assigning a filament profile to one AMS tray.
+
+    The slicer `setting_id` is the only required field; the gateway resolves
+    the rest (filament_id, type, temperature range, default colour) from the
+    slicer's profile detail. `tray_color` overrides the resolved default —
+    useful for keeping the spool's actual on-screen colour when the user is
+    only changing the *profile* and not the physical filament.
+    """
+
+    setting_id: str
+    tray_color: str | None = None  # 8-char "RRGGBBAA" hex, no leading "#"
+
+
 # --- Push / Live Activity models ---
 
 

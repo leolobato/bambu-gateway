@@ -314,6 +314,48 @@ class PrinterService:
         client.send_stop_drying(ams_id)
         logger.info("Drying stopped on printer %s AMS %d", printer_id, ams_id)
 
+    def set_ams_filament(
+        self,
+        printer_id: str,
+        ams_id: int,
+        tray_id: int,
+        *,
+        tray_info_idx: str,
+        tray_color: str,
+        tray_type: str,
+        nozzle_temp_min: int,
+        nozzle_temp_max: int,
+        setting_id: str,
+    ) -> None:
+        """Assign a filament profile to one AMS tray via MQTT.
+
+        Pre-validates the printer is connected, then publishes
+        `ams_filament_setting`. The printer echoes the new tray state back
+        over MQTT and `_apply_ams_status` propagates it into the cached
+        PrinterStatus, so the dashboard reflects the change on its next poll.
+        """
+        client = self._clients.get(printer_id)
+        if client is None:
+            raise ValueError(f"Printer {printer_id} not found")
+        client.ensure_connected()
+        status = client.get_status()
+        if not status.online:
+            raise ConnectionError(f"Printer {printer_id} is offline")
+        client.send_ams_filament_setting(
+            ams_id=ams_id,
+            tray_id=tray_id,
+            tray_info_idx=tray_info_idx,
+            tray_color=tray_color,
+            tray_type=tray_type,
+            nozzle_temp_min=nozzle_temp_min,
+            nozzle_temp_max=nozzle_temp_max,
+            setting_id=setting_id,
+        )
+        logger.info(
+            "AMS filament set on printer %s AMS %d tray %d: %s (%s)",
+            printer_id, ams_id, tray_id, tray_info_idx, setting_id,
+        )
+
     def submit_print(
         self,
         printer_id: str,

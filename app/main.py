@@ -54,6 +54,7 @@ from app.models import (
     PrinterListResponse,
     PrintEstimate,
     PrintResponse,
+    SetAmsFilamentRequest,
     SettingsTransferInfo,
     SlicerFilament,
     SliceJobListResponse,
@@ -465,6 +466,106 @@ async def stop_drying(printer_id: str, ams_id: int):
     except ConnectionError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return CommandResponse(printer_id=pid, command=f"stop_drying:ams{ams_id}")
+
+
+def _first_str(value: object) -> str:
+    """Pull a scalar string out of an OrcaSlicer config option that may be a
+    list-of-strings, a bare string, or missing entirely. Returns "" on miss."""
+    if isinstance(value, list):
+        return str(value[0]).strip() if value else ""
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _first_int(value: object, default: int) -> int:
+    raw = _first_str(value)
+    if not raw:
+        return default
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+@app.post(
+    "/api/printers/{printer_id}/ams/{ams_id}/tray/{tray_id}/filament",
+    response_model=CommandResponse,
+)
+async def set_ams_filament(
+    printer_id: str,
+    ams_id: int,
+    tray_id: int,
+    body: SetAmsFilamentRequest,
+):
+    """Assign a filament profile to one AMS tray.
+
+    Resolves the slicer profile's `filament_id`, type, default colour, and
+    nozzle temperature range, then publishes `ams_filament_setting` over MQTT.
+    The printer echoes the new state back over its `pushall` report and the
+    cached PrinterStatus picks up the change automatically — clients should
+    invalidate their AMS query on success and re-poll.
+
+    `tray_id` is the per-AMS slot index 0..3 (NOT the global slot). Pass
+    ams_id=255 / tray_id=254 for the external spool.
+    """
+    pid = _resolve_printer_id(printer_id)
+
+    if slicer_client is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Slicer not configured — ORCASLICER_API_URL is unset.",
+        )
+
+    setting_id = body.setting_id.strip()
+    if not setting_id:
+        raise HTTPException(status_code=400, detail="setting_id is required")
+
+    detail = await slicer_client.get_filament_detail(setting_id)
+    if detail is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Filament profile {setting_id!r} not found in slicer catalog",
+        )
+    resolved = detail.get("resolved") or {}
+
+    filament_id = _first_str(resolved.get("filament_id"))
+    if not filament_id:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Filament profile {setting_id!r} has no filament_id; can't assign to AMS",
+        )
+    tray_type = _first_str(resolved.get("filament_type")) or "PLA"
+    temp_min = _first_int(resolved.get("nozzle_temperature_range_low"), 190)
+    temp_max = _first_int(resolved.get("nozzle_temperature_range_high"), 240)
+
+    # Body color wins (caller may want to keep the current spool's colour);
+    # otherwise fall back to the profile's default.
+    raw_color = (body.tray_color or _first_str(resolved.get("default_filament_colour"))).strip()
+    raw_color = raw_color.lstrip("#").upper()
+    if len(raw_color) == 6:
+        raw_color += "FF"
+    if len(raw_color) != 8 or any(c not in "0123456789ABCDEF" for c in raw_color):
+        raw_color = "000000FF"
+
+    try:
+        printer_service.set_ams_filament(
+            pid, ams_id, tray_id,
+            tray_info_idx=filament_id,
+            tray_color=raw_color,
+            tray_type=tray_type,
+            nozzle_temp_min=temp_min,
+            nozzle_temp_max=temp_max,
+            setting_id=setting_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ConnectionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return CommandResponse(
+        printer_id=pid,
+        command=f"set_ams_filament:ams{ams_id}:tray{tray_id}:{filament_id}",
+    )
 
 
 def _normalize_filament_id(value: str) -> str:

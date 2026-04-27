@@ -308,6 +308,46 @@ class BambuMQTTClient:
             }
         })
 
+    def send_ams_filament_setting(
+        self,
+        ams_id: int,
+        tray_id: int,
+        tray_info_idx: str,
+        tray_color: str,
+        tray_type: str,
+        nozzle_temp_min: int,
+        nozzle_temp_max: int,
+        setting_id: str,
+    ) -> None:
+        """Assign a filament profile to one AMS tray.
+
+        Mirrors what the printer's own RFID-scan flow does when a Bambu spool
+        is loaded: writes `tray_info_idx` (the BBL filament_id, e.g. "GFA00"),
+        the slicer `setting_id`, and the temp/color/type defaults so the
+        printer can drive matching pre-print conditioning. The printer echoes
+        the new state back over MQTT, which `_apply_ams_status` picks up so
+        the gateway's AMS view reflects the change without further work.
+
+        `ams_id` is the AMS unit index; `tray_id` is the per-AMS slot 0..3
+        (NOT the global slot index). For the external spool, callers pass
+        ams_id=255 / tray_id=254 — Bambu uses those reserved values.
+        `tray_color` is the 8-char hex "RRGGBBAA" (no leading "#").
+        """
+        self.publish({
+            "print": {
+                "sequence_id": "0",
+                "command": "ams_filament_setting",
+                "ams_id": ams_id,
+                "tray_id": tray_id,
+                "tray_info_idx": tray_info_idx,
+                "tray_color": tray_color,
+                "tray_type": tray_type,
+                "nozzle_temp_min": nozzle_temp_min,
+                "nozzle_temp_max": nozzle_temp_max,
+                "setting_id": setting_id,
+            }
+        })
+
     def send_print_command(
         self,
         filename: str,
