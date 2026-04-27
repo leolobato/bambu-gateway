@@ -127,6 +127,13 @@ async def lifespan(app: FastAPI):
     device_store_path = config_store._config_path.parent / "devices.json"
     device_store = DeviceStore(device_store_path)
 
+    # Slice-job store is also a thumbnail source for Live Activity pushes, so
+    # construct it before the notification hub even when no slicer is wired
+    # up — an empty store just yields no thumbnails, which is the correct
+    # graceful-degradation behavior.
+    slice_store_path = config_store._config_path.parent / "slice_jobs.json"
+    slice_store = SliceJobStore(slice_store_path)
+
     apns_client: ApnsClient | None = None
     notification_hub: NotificationHub | None = None
     status_change_callback = None
@@ -141,7 +148,11 @@ async def lifespan(app: FastAPI):
             bundle_id=settings.apns_bundle_id,
             environment=settings.apns_environment,
         )
-        notification_hub = NotificationHub(apns=apns_client, device_store=device_store)
+        notification_hub = NotificationHub(
+            apns=apns_client,
+            device_store=device_store,
+            slice_store=slice_store,
+        )
         notification_hub.start()
         status_change_callback = notification_hub.on_status_change
         logger.info("APNs push enabled")
@@ -156,9 +167,8 @@ async def lifespan(app: FastAPI):
         slicer_client = SlicerClient(settings.orcaslicer_api_url)
 
     if slicer_client is not None:
-        store_path = config_store._config_path.parent / "slice_jobs.json"
         slice_jobs = SliceJobManager(
-            store=SliceJobStore(store_path),
+            store=slice_store,
             slicer=slicer_client,
             printer_service=printer_service,
             notifier=(
