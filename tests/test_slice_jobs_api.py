@@ -216,6 +216,50 @@ async def test_print_with_unknown_job_id_404(app_client):
     assert resp.status_code == 404
 
 
+async def test_get_input_returns_uploaded_bytes(app_client):
+    create = await app_client.post(
+        "/api/slice-jobs",
+        files={"file": ("cube.3mf", b"original-bytes", "application/octet-stream")},
+        data={
+            "machine_profile": "GM014",
+            "process_profile": "0.20mm",
+            "filament_profiles": "{}",
+        },
+    )
+    job_id = create.json()["job_id"]
+
+    resp = await app_client.get(f"/api/slice-jobs/{job_id}/input")
+    assert resp.status_code == 200
+    assert resp.content == b"original-bytes"
+    assert resp.headers["x-job-id"] == job_id
+    assert "cube.3mf" in resp.headers["content-disposition"]
+
+
+async def test_get_input_404_unknown_job(app_client):
+    resp = await app_client.get("/api/slice-jobs/deadbeef/input")
+    assert resp.status_code == 404
+
+
+async def test_get_input_410_when_blob_missing(app_client):
+    """If the input file has been removed but the job entry still exists,
+    the endpoint reports 410 rather than crashing."""
+    import app.main as main_mod
+    from app.slice_jobs import SliceJob
+
+    seed = SliceJob.new(
+        filename="x.3mf", machine_profile="GM014", process_profile="0.20mm",
+        filament_profiles={}, plate_id=1, plate_type="",
+        project_filament_count=0, printer_id=None, auto_print=False,
+        input_path=main_mod.slice_jobs._store.input_path("gonejob"),
+    )
+    seed.id = "gonejob"
+    # Deliberately do not write the input blob.
+    await main_mod.slice_jobs._store.upsert(seed)
+
+    resp = await app_client.get(f"/api/slice-jobs/{seed.id}/input")
+    assert resp.status_code == 410
+
+
 async def test_get_output_returns_sliced_bytes(app_client):
     create = await app_client.post(
         "/api/slice-jobs",

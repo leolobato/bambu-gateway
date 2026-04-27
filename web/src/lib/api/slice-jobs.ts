@@ -80,6 +80,10 @@ export async function clearSliceJobs(
   return res.jobs;
 }
 
+export function sliceJobInputUrl(jobId: string): string {
+  return `/api/slice-jobs/${encodeURIComponent(jobId)}/input`;
+}
+
 export function sliceJobOutputUrl(jobId: string): string {
   return `/api/slice-jobs/${encodeURIComponent(jobId)}/output`;
 }

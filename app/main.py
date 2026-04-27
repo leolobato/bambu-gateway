@@ -1570,6 +1570,27 @@ async def get_slice_job_thumbnail(job_id: str):
     )
 
 
+@app.get("/api/slice-jobs/{job_id}/input")
+async def get_slice_job_input(job_id: str):
+    """Download the original (pre-slice) 3MF bytes the user uploaded."""
+    if slice_jobs is None:
+        raise HTTPException(status_code=404, detail="Slice jobs disabled")
+    job = await slice_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not job.input_path or not Path(job.input_path).exists():
+        raise HTTPException(status_code=410, detail="Input blob is gone")
+    input_bytes = Path(job.input_path).read_bytes()
+    return Response(
+        content=input_bytes,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{job.filename}"',
+            "X-Job-Id": job.id,
+        },
+    )
+
+
 @app.get("/api/slice-jobs/{job_id}/output")
 async def get_slice_job_output(job_id: str):
     """Download the sliced 3MF bytes for a job in `ready` or `printing` state."""

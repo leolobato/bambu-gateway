@@ -1,7 +1,15 @@
 import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Download, Info, Loader2, Printer, Trash2, X } from 'lucide-react';
+import {
+  Download,
+  FileDown,
+  Info,
+  Loader2,
+  Printer,
+  Trash2,
+  X,
+} from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,6 +36,7 @@ import {
   clearSliceJobs,
   deleteSliceJob,
   listSliceJobs,
+  sliceJobInputUrl,
   sliceJobOutputUrl,
   sliceJobThumbnailUrl,
 } from '@/lib/api/slice-jobs';
@@ -232,9 +241,8 @@ function SliceJobRow({
   const canDownload = job.status === 'ready' || job.status === 'printing';
   const rowBusy = isCancelling || isDeleting || isPrinting;
 
-  const showThumbnail =
-    job.has_thumbnail && (job.status === 'ready' || job.status === 'printing');
-  const showSummary = canPrint && hasPrintEstimate(job.estimate);
+  const showThumbnail = job.has_thumbnail;
+  const showSummary = hasPrintEstimate(job.estimate);
 
   return (
     <li className="rounded-lg border border-line bg-surface-0 p-3 flex flex-col gap-2">
@@ -334,6 +342,19 @@ function SliceJobRow({
               )}
             </Button>
           )}
+          <a
+            href={sliceJobInputUrl(job.job_id)}
+            download
+            aria-label={`Download original 3MF for ${job.filename}`}
+            title="Download original 3MF"
+            className={cn(
+              'inline-flex h-10 w-10 items-center justify-center rounded-md text-text-1 hover:text-text-0',
+              rowBusy && 'pointer-events-none opacity-50',
+            )}
+            tabIndex={rowBusy ? -1 : 0}
+          >
+            <FileDown className="h-4 w-4" aria-hidden />
+          </a>
           {canDownload && (
             <a
               href={sliceJobOutputUrl(job.job_id)}
