@@ -37,6 +37,42 @@ def test_no_callback_works_fine():
     assert client._status.temperatures.nozzle_temp == 1.0
 
 
+def test_ams_lite_humidity_is_scrubbed_to_unknown():
+    """AMS Lite has no sensor; the firmware's placeholder value must not leak through."""
+    client = _make_client()
+    client._update_status({
+        "ams": {
+            "ams": [{
+                "id": 0,
+                "humidity": "5",  # firmware placeholder on AMS Lite
+                "temp": "0.0",
+                "hw_ver": "AMS_F1.00.00.00",
+                "tray": [],
+            }],
+        },
+    })
+    assert client._ams_units[0]["ams_type"] == "lite"
+    assert client._ams_units[0]["humidity"] == -1
+
+
+def test_real_ams_humidity_passes_through():
+    """A standard AMS reports a real humidity code (1-5); preserve it."""
+    client = _make_client()
+    client._update_status({
+        "ams": {
+            "ams": [{
+                "id": 0,
+                "humidity": "3",
+                "temp": "24.5",
+                "hw_ver": "AMS08",
+                "tray": [],
+            }],
+        },
+    })
+    assert client._ams_units[0]["ams_type"] == "standard"
+    assert client._ams_units[0]["humidity"] == 3
+
+
 def test_consecutive_updates_have_consistent_prev_new_chain():
     """Call N+1's prev snapshot must equal call N's new snapshot."""
     client = _make_client()

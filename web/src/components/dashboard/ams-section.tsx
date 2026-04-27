@@ -6,6 +6,10 @@ import { TraySheet, type TraySheetSelection } from '@/components/dashboard/tray-
 import { normalizeTrayColor } from '@/lib/filament-color';
 import type { AMSResponse, AMSTray, AMSUnit } from '@/lib/api/types';
 
+// Bambu reports AMS humidity as a 1-5 code (1 = driest, 5 = wettest), not a
+// percentage. AMS Lite has no sensor; the gateway scrubs that to -1.
+const HUMIDITY_LABELS = ['', 'Very dry', 'Dry', 'Normal', 'Humid', 'Very humid'];
+
 export function AmsSection({
   printerId,
   ams,
@@ -99,9 +103,12 @@ function AmsUnitGroup({
           )}
           {headerLabel}
         </button>
-        {unit.humidity >= 0 && (
-          <span className="text-xs text-text-1 font-mono tabular-nums">
-            {unit.humidity}% RH
+        {unit.humidity >= 1 && unit.humidity <= 5 && (
+          <span
+            className="text-xs text-text-1"
+            title={`Humidity level ${unit.humidity} of 5`}
+          >
+            {HUMIDITY_LABELS[unit.humidity]}
           </span>
         )}
       </header>
@@ -130,12 +137,43 @@ function ExternalSpoolGroup({
   activeTrayId: number | null;
   onSelect: (tray: AMSTray) => void;
 }) {
+  const storageKey = 'bg.external-spool.collapsed';
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(storageKey) === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(storageKey, collapsed ? '1' : '0');
+    } catch {
+      // ignore
+    }
+  }, [collapsed]);
+
   return (
     <div className="flex flex-col gap-2">
       <header className="flex items-center justify-between">
-        <span className="text-base font-semibold text-white">External Spool</span>
+        <button
+          type="button"
+          onClick={() => setCollapsed((v) => !v)}
+          className="flex items-center gap-1.5 text-base font-semibold text-white"
+          aria-expanded={!collapsed}
+        >
+          {collapsed ? (
+            <ChevronRight className="w-4 h-4 text-text-1" aria-hidden />
+          ) : (
+            <ChevronDown className="w-4 h-4 text-text-1" aria-hidden />
+          )}
+          External Spool
+        </button>
       </header>
-      <AmsTrayRow tray={tray} activeTrayId={activeTrayId} onSelect={() => onSelect(tray)} />
+      {!collapsed && (
+        <AmsTrayRow tray={tray} activeTrayId={activeTrayId} onSelect={() => onSelect(tray)} />
+      )}
     </div>
   );
 }

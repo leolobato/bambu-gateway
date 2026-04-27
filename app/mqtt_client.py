@@ -640,6 +640,11 @@ class BambuMQTTClient:
                     ams_type = self._ams_module_types.get(ams_id)
                     if ams_type is None and hw_version:
                         ams_type = AMSType.from_hw_version(hw_version)
+                    # AMS Lite has no humidity sensor; firmware still emits a
+                    # placeholder value in the field. Scrub it so the API and
+                    # UI can detect "no reading available".
+                    if ams_type is not None and not ams_type.has_humidity_sensor:
+                        humidity = -1
                     # Drying state
                     dry_time = 0
                     try:
