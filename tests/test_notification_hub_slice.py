@@ -27,7 +27,7 @@ async def test_notify_ready_pushes_to_subscribers():
         SimpleNamespace(device_token="tok-A"),
         SimpleNamespace(device_token="tok-B"),
     ]
-    hub = NotificationHub(apns=apns, device_store=store)
+    hub = NotificationHub(apns=apns, device_store=store, slice_store=MagicMock())
 
     await hub.notify_slice_terminal(_job(), "ready")
 
@@ -43,7 +43,7 @@ async def test_notify_failed_pushes_with_error():
     store.subscribers_for_printer.return_value = [
         SimpleNamespace(device_token="tok-A"),
     ]
-    hub = NotificationHub(apns=apns, device_store=store)
+    hub = NotificationHub(apns=apns, device_store=store, slice_store=MagicMock())
     job = _job(status=SliceJobStatus.FAILED)
     job.error = "slicer unreachable"
 
@@ -62,7 +62,7 @@ async def test_notify_with_no_printer_id_broadcasts_to_all():
         SimpleNamespace(device_token="tok-A"),
         SimpleNamespace(device_token="tok-B"),
     ]
-    hub = NotificationHub(apns=apns, device_store=store)
+    hub = NotificationHub(apns=apns, device_store=store, slice_store=MagicMock())
 
     await hub.notify_slice_terminal(_job(printer_id=None), "ready")
 
@@ -77,7 +77,7 @@ async def test_notify_unknown_kind_is_noop():
     store.subscribers_for_printer.return_value = [
         SimpleNamespace(device_token="tok-A"),
     ]
-    hub = NotificationHub(apns=apns, device_store=store)
+    hub = NotificationHub(apns=apns, device_store=store, slice_store=MagicMock())
 
     await hub.notify_slice_terminal(_job(), "unknown")
     apns.send_alert.assert_not_awaited()

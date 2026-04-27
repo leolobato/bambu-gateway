@@ -12,8 +12,10 @@ from typing import Protocol
 from app.apns_client import ApnsResult
 from app.device_store import DeviceStore
 from app.hms_codes import pause_reason
+from app.live_activity_thumbnail import lookup_push_thumbnail
 from app.models import PrinterState, PrinterStatus
 from app.notification_events import EventType, NotificationEvent
+from app.slice_jobs import SliceJobStore
 
 logger = logging.getLogger(__name__)
 
@@ -158,9 +160,15 @@ def _content_state_from(status: PrinterStatus) -> dict:
 class NotificationHub:
     """Serialises event detection + APNs dispatch on a background thread."""
 
-    def __init__(self, apns: _ApnsProtocol, device_store: DeviceStore) -> None:
+    def __init__(
+        self,
+        apns: _ApnsProtocol,
+        device_store: DeviceStore,
+        slice_store: SliceJobStore,
+    ) -> None:
         self._apns = apns
         self._store = device_store
+        self._slice_store = slice_store
         self._queue: queue.Queue[NotificationEvent | None] = queue.Queue()
         self._dedupe: dict[tuple[str, str], float] = {}
         self._last_progress: dict[str, float] = {}
@@ -341,11 +349,15 @@ class NotificationHub:
             a.device_id
             for a in self._store.list_activities_for_printer(event.printer_id)
         }
+        file_name = snapshot.job.file_name if snapshot.job else ""
+        thumbnail_data = await lookup_push_thumbnail(
+            self._slice_store, file_name,
+        )
         attributes = {
             "printerId": snapshot.id,
             "printerName": snapshot.name,
-            "fileName": snapshot.job.file_name if snapshot.job else "",
-            "thumbnailData": None,
+            "fileName": file_name,
+            "thumbnailData": thumbnail_data,
         }
         content = _content_state_from(snapshot)
         for dev in subscribers:
