@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
-from pathlib import Path
 
-import pytest
 from PIL import Image
 
 from app.live_activity_thumbnail import _compress_for_push
@@ -76,5 +74,5 @@ def test_compress_handles_rgba_input_by_dropping_alpha():
     data_url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
     out = _compress_for_push(data_url)
     assert out is not None
-    raw = base64.b64decode(out)
-    assert raw[:3] == b"\xff\xd8\xff"
+    decoded = Image.open(io.BytesIO(base64.b64decode(out)))
+    assert decoded.mode == "RGB"

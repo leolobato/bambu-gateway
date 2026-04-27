@@ -6,7 +6,7 @@ import base64
 import io
 import logging
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ def _strip_data_url(data_url: str) -> bytes | None:
     if idx < 0:
         return None
     try:
-        return base64.b64decode(data_url[idx + len(marker):], validate=False)
+        return base64.b64decode(data_url[idx + len(marker):], validate=True)
     except (ValueError, base64.binascii.Error):
         return None
 
@@ -53,7 +53,7 @@ def _compress_for_push(data_url: str) -> str | None:
         with Image.open(io.BytesIO(raw)) as img:
             img.load()
             rgb = img.convert("RGB")
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+    except Exception as exc:
         logger.warning("thumbnail compress: cannot decode image: %s", exc)
         return None
 
