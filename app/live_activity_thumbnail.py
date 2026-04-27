@@ -14,18 +14,11 @@ _PUSH_BUDGET_BYTES = 2400  # safety margin under Apple's 2.5 KB iOS-side cap
 
 # Each rung is (max_dimension, jpeg_quality). We try in order; first one
 # whose base64 length fits the budget wins.
-# Real plate thumbnails (sparse content on transparent background) typically
-# fit on the first rung.  Pathologically dense images fall through to the
-# smaller/lower-quality rungs at the bottom of the ladder.
 _COMPRESSION_LADDER: tuple[tuple[int, int], ...] = (
     (192, 60),
     (192, 40),
     (192, 25),
     (128, 40),
-    (128, 25),
-    (96, 40),
-    (96, 25),
-    (64, 40),
 )
 
 

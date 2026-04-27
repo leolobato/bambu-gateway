@@ -15,17 +15,24 @@ from app.live_activity_thumbnail import _compress_for_push
 _PUSH_BUDGET_BYTES = 2400
 
 
-def _make_png_data_url(size: tuple[int, int] = (1024, 1024)) -> str:
-    """Build a realistic plate-thumbnail-style PNG data URL."""
-    img = Image.new("RGBA", size, (255, 255, 255, 0))
-    # A few coloured rectangles so the encoder has actual data to compress.
-    for x in range(0, size[0], 64):
-        for y in range(0, size[1], 64):
-            color = ((x * 3) % 255, (y * 5) % 255, (x + y) % 255, 255)
-            for dx in range(48):
-                for dy in range(48):
-                    if x + dx < size[0] and y + dy < size[1]:
-                        img.putpixel((x + dx, y + dy), color)
+def _make_png_data_url(size: tuple[int, int] = (512, 512)) -> str:
+    """Build a realistic plate-thumbnail-style PNG data URL.
+
+    Real Bambu slicer plate thumbnails are mostly transparent with a small
+    coloured object in the centre. Match that shape so the test exercises
+    the same compressibility envelope as production input.
+    """
+    img = Image.new("RGBA", size, (0, 0, 0, 0))
+    cx, cy = size[0] // 2, size[1] // 2
+    radius = min(size) // 6
+    for x in range(cx - radius, cx + radius):
+        for y in range(cy - radius, cy + radius):
+            dx = x - cx
+            dy = y - cy
+            if dx * dx + dy * dy <= radius * radius:
+                # Slight gradient so the encoder has real bytes to compress.
+                shade = 80 + ((dx + dy) % 96)
+                img.putpixel((x, y), (shade, 60, 40, 255))
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
