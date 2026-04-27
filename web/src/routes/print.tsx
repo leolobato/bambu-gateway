@@ -33,6 +33,7 @@ import {
 import { useDropZone } from '@/lib/use-drop-zone';
 import { usePrinterContext } from '@/lib/printer-context';
 import { usePrintContext, type BannerData } from '@/lib/print-context';
+import { getTrayProfileOverride } from '@/lib/tray-profile-overrides';
 import type {
   AMSTray,
   PrintEstimate,
@@ -200,7 +201,12 @@ export default function PrintRoute() {
       const slot = filamentMapping[filament.index];
       if (slot == null || slot < 0) continue;
       const tray = trays.find((t) => t.slot === slot);
-      const settingId = tray?.matched_filament?.setting_id ?? '';
+      // The dashboard's tray sheet lets the user pin a sticky filament
+      // profile per AMS slot (see TrayProfilePicker). When set, that
+      // override wins over the AMS auto-match — mirrors the iOS app's
+      // `trayProfileBySlot` behaviour at AppViewModel.swift:1532.
+      const overrideId = getTrayProfileOverride(activePrinterId, slot);
+      const settingId = overrideId || tray?.matched_filament?.setting_id || '';
       if (!settingId) continue;
       out[String(filament.index)] = { profile_setting_id: settingId, tray_slot: slot };
     }

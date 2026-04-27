@@ -10,6 +10,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
+import { TrayProfilePicker } from '@/components/dashboard/tray-profile-picker';
 import { startDrying, stopDrying } from '@/lib/api/printer-commands';
 import { normalizeTrayColor } from '@/lib/filament-color';
 import { formatRemaining } from '@/lib/format';
@@ -105,6 +106,8 @@ function TraySheetBody({
           )}
         </div>
       </section>
+
+      <TrayProfilePicker printerId={printerId} tray={tray} trayLabel={label} />
 
       {unit?.supports_drying ? (
         <DryingControls printerId={printerId} unit={unit} />
