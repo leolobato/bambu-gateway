@@ -177,6 +177,15 @@ export function SliceJobsList() {
     onError: (e: Error) => toast.error(`Couldn't clear jobs: ${e.message}`),
   });
 
+  const clearFailedMut = useMutation({
+    mutationFn: () => clearSliceJobs(['failed']),
+    onSuccess: (jobs) => {
+      toast.success(`Cleared ${jobs.length} failed job${jobs.length === 1 ? '' : 's'}`);
+      queryClient.invalidateQueries({ queryKey: ['slice-jobs'] });
+    },
+    onError: (e: Error) => toast.error(`Couldn't clear failed jobs: ${e.message}`),
+  });
+
   const jobs = jobsQuery.data ?? [];
   const sortedJobs = useMemo(
     () =>
@@ -186,23 +195,38 @@ export function SliceJobsList() {
     [jobs],
   );
   const terminalCount = sortedJobs.filter((j) => isTerminal(j.status)).length;
+  const failedCount = sortedJobs.filter((j) => j.status === 'failed').length;
 
   return (
     <Card className="p-4 bg-card border border-line flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-[14px] font-semibold text-text-0">Slice jobs</h2>
-        <Button
-          type="button"
-          variant="ghost"
-          onClick={() => clearMut.mutate()}
-          disabled={terminalCount === 0 || clearMut.isPending}
-          className="h-auto py-1 px-2 text-text-1 text-[12px] font-semibold hover:text-text-0"
-        >
-          {clearMut.isPending ? (
-            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" aria-hidden />
-          ) : null}
-          Clear completed{terminalCount > 0 ? ` (${terminalCount})` : ''}
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => clearFailedMut.mutate()}
+            disabled={failedCount === 0 || clearFailedMut.isPending}
+            className="h-auto py-1 px-2 text-text-1 text-[12px] font-semibold hover:text-danger"
+          >
+            {clearFailedMut.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" aria-hidden />
+            ) : null}
+            Clear failed{failedCount > 0 ? ` (${failedCount})` : ''}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => clearMut.mutate()}
+            disabled={terminalCount === 0 || clearMut.isPending}
+            className="h-auto py-1 px-2 text-text-1 text-[12px] font-semibold hover:text-text-0"
+          >
+            {clearMut.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" aria-hidden />
+            ) : null}
+            Clear completed{terminalCount > 0 ? ` (${terminalCount})` : ''}
+          </Button>
+        </div>
       </div>
 
       {jobsQuery.isLoading ? (
