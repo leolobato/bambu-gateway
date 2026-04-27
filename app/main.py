@@ -881,10 +881,21 @@ async def print_file(
         job = await slice_jobs.get(effective_job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
-        if job.status.value != "ready":
+        # Allow `ready` (first print) and the slice-job terminal states
+        # `failed` / `cancelled` (reprint). `printing` is intentionally
+        # excluded: the slice-job state machine has no FINISHED status, so a
+        # `printing`-state job may be either live on the printer or a stale
+        # artefact of a long-completed print, and we can't tell from the
+        # slice job alone.
+        if job.status.value not in ("ready", "failed", "cancelled"):
             raise HTTPException(
                 status_code=409,
-                detail=f"Job is {job.status.value}, not ready",
+                detail=f"Job is {job.status.value}, not printable",
+            )
+        if not job.output_path or not Path(job.output_path).exists():
+            raise HTTPException(
+                status_code=410,
+                detail="Sliced output is gone; re-slice the file",
             )
         pid = printer_id or job.printer_id or printer_service.default_printer_id()
         if pid is None:

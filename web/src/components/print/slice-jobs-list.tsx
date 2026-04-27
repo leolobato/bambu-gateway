@@ -237,7 +237,16 @@ function SliceJobRow({
     job.status === 'slicing' ||
     job.status === 'uploading' ||
     job.status === 'queued';
-  const canPrint = job.status === 'ready';
+  // Reprint is allowed when the slice job is in one of the slice-job-side
+  // terminal states with the sliced blob still on disk. `printing` is
+  // excluded because the slice-job state machine never advances to a
+  // dedicated FINISHED status — a `printing` row may be either live on the
+  // printer or a stale leftover from a long-completed print, and we can't
+  // tell which from the slice job alone.
+  const hasOutput = (job.output_size ?? 0) > 0;
+  const isReprintable =
+    job.status === 'failed' || job.status === 'cancelled';
+  const canPrint = (job.status === 'ready' || isReprintable) && hasOutput;
   const canDownload = job.status === 'ready' || job.status === 'printing';
   const rowBusy = isCancelling || isDeleting || isPrinting;
 
@@ -331,8 +340,8 @@ function SliceJobRow({
               variant="ghost"
               onClick={onPrint}
               disabled={rowBusy}
-              aria-label={`Print ${job.filename}`}
-              title="Print"
+              aria-label={`${isReprintable ? 'Reprint' : 'Print'} ${job.filename}`}
+              title={isReprintable ? 'Reprint' : 'Print'}
               className="h-10 w-10 text-accent hover:text-accent"
             >
               {isPrinting ? (

@@ -208,6 +208,72 @@ async def test_print_with_job_id_starts_upload_and_marks_printing(
     assert job_after.json()["status"] == "printing"
 
 
+async def test_print_reprints_a_failed_job(app_client, monkeypatch):
+    """A failed slice job whose sliced output is still on disk can be reprinted."""
+    import app.main as main_mod
+    from app.slice_jobs import SliceJobStatus
+
+    create = await app_client.post(
+        "/api/slice-jobs",
+        files={"file": ("cube.3mf", b"x", "application/octet-stream")},
+        data={
+            "machine_profile": "GM014",
+            "process_profile": "0.20mm",
+            "filament_profiles": "{}",
+        },
+    )
+    job_id = create.json()["job_id"]
+    for _ in range(40):
+        cur = await app_client.get(f"/api/slice-jobs/{job_id}")
+        if cur.json()["status"] == "ready":
+            break
+        await asyncio.sleep(0.05)
+
+    # Pretend a previous print attempt for this slice failed (e.g. the
+    # printer rejected the upload). The sliced output blob is still on disk.
+    job = await main_mod.slice_jobs._store.get(job_id)
+    job.status = SliceJobStatus.FAILED
+    await main_mod.slice_jobs._store.upsert(job)
+
+    fake_client = MagicMock()
+    fake_client.ensure_connected = MagicMock()
+    fake_client.get_status = MagicMock(return_value=MagicMock(online=True))
+    main_mod.printer_service.get_client = MagicMock(return_value=fake_client)
+    monkeypatch.setattr(main_mod, "_background_submit", lambda *a, **kw: None)
+
+    resp = await app_client.post(
+        "/api/print",
+        data={"job_id": job_id, "printer_id": "PRINTER1"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "uploading"
+    after = await app_client.get(f"/api/slice-jobs/{job_id}")
+    assert after.json()["status"] == "printing"
+
+
+async def test_print_rejects_in_flight_job(app_client):
+    """A job that is currently slicing or printing cannot be printed again."""
+    import app.main as main_mod
+    from app.slice_jobs import SliceJob, SliceJobStatus
+
+    seed = SliceJob.new(
+        filename="x.3mf", machine_profile="GM014", process_profile="0.20mm",
+        filament_profiles={}, plate_id=1, plate_type="",
+        project_filament_count=0, printer_id=None, auto_print=False,
+        input_path=main_mod.slice_jobs._store.input_path("printingjob"),
+    )
+    seed.id = "printingjob"
+    seed.status = SliceJobStatus.PRINTING
+    Path(seed.input_path).write_bytes(b"x")
+    await main_mod.slice_jobs._store.upsert(seed)
+
+    resp = await app_client.post(
+        "/api/print",
+        data={"job_id": seed.id, "printer_id": "PRINTER1"},
+    )
+    assert resp.status_code == 409
+
+
 async def test_print_with_unknown_job_id_404(app_client):
     resp = await app_client.post(
         "/api/print",
