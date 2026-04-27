@@ -43,7 +43,7 @@ import {
 import { printFromJob } from '@/lib/api/print';
 import { listPrinters } from '@/lib/api/printers';
 import { usePrinterContext } from '@/lib/printer-context';
-import type { SliceJob, SliceJobStatus } from '@/lib/api/types';
+import type { PrinterStatus, SliceJob, SliceJobStatus } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
 
 const TERMINAL_STATUSES: SliceJobStatus[] = [
@@ -55,6 +55,22 @@ const TERMINAL_STATUSES: SliceJobStatus[] = [
 
 function isTerminal(status: SliceJobStatus): boolean {
   return TERMINAL_STATUSES.includes(status);
+}
+
+// Bambu's `subtask_name` may include or omit the `.gcode.3mf` / `.3mf`
+// suffix and is sometimes case-mangled. Mirror the gateway's normalizer
+// in `app/live_activity_thumbnail.py::_normalize_filename`.
+function normalizeFilename(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/^.*[\\\/]/, '')
+    .replace(/\.gcode\.3mf$/, '')
+    .replace(/\.3mf$/, '');
+}
+
+function filenamesMatch(a: string | undefined, b: string): boolean {
+  if (!a) return false;
+  return normalizeFilename(a) === normalizeFilename(b);
 }
 
 const STATUS_LABEL: Record<SliceJobStatus, string> = {
@@ -105,17 +121,27 @@ export function SliceJobsList() {
     },
   });
 
-  // Resolve printer ids → names so rows can show "Printer A" instead of a serial.
+  // Resolve printer ids → names + live status so rows can show "Printer A"
+  // instead of a serial and the reprint heuristic can tell when a `printing`
+  // slice job is actually a stale leftover of a long-completed print.
   const printersQuery = useQuery({
     queryKey: ['printers'],
     queryFn: listPrinters,
-    staleTime: 30_000,
+    refetchInterval: 4_000,
   });
 
   const printerNameById = useMemo(() => {
     const map = new Map<string, string>();
     for (const p of printersQuery.data?.printers ?? []) {
       map.set(p.id, p.name || p.id);
+    }
+    return map;
+  }, [printersQuery.data]);
+
+  const printerStatusById = useMemo(() => {
+    const map = new Map<string, PrinterStatus>();
+    for (const p of printersQuery.data?.printers ?? []) {
+      map.set(p.id, p);
     }
     return map;
   }, [printersQuery.data]);
@@ -194,6 +220,9 @@ export function SliceJobsList() {
               printerName={
                 job.printer_id ? printerNameById.get(job.printer_id) ?? job.printer_id : null
               }
+              printerStatus={
+                job.printer_id ? printerStatusById.get(job.printer_id) ?? null : null
+              }
               onCancel={() => cancelMut.mutate(job.job_id)}
               onDelete={() => deleteMut.mutate(job.job_id)}
               onPrint={() =>
@@ -216,6 +245,7 @@ export function SliceJobsList() {
 function SliceJobRow({
   job,
   printerName,
+  printerStatus,
   onCancel,
   onDelete,
   onPrint,
@@ -225,6 +255,7 @@ function SliceJobRow({
 }: {
   job: SliceJob;
   printerName: string | null;
+  printerStatus: PrinterStatus | null;
   onCancel: () => void;
   onDelete: () => void;
   onPrint: () => void;
@@ -237,15 +268,24 @@ function SliceJobRow({
     job.status === 'slicing' ||
     job.status === 'uploading' ||
     job.status === 'queued';
-  // Reprint is allowed when the slice job is in one of the slice-job-side
-  // terminal states with the sliced blob still on disk. `printing` is
-  // excluded because the slice-job state machine never advances to a
-  // dedicated FINISHED status — a `printing` row may be either live on the
-  // printer or a stale leftover from a long-completed print, and we can't
-  // tell which from the slice job alone.
+  // The slice-job state machine has no FINISHED status, so a `printing`
+  // row may be either live on the printer or a stale leftover from a
+  // long-completed print. Decide which by cross-referencing the printer's
+  // current state: if the printer isn't running this slice's file, the
+  // previous print is over and a Reprint is safe to offer.
   const hasOutput = (job.output_size ?? 0) > 0;
+  const looksFinished =
+    job.status === 'printing' &&
+    printerStatus != null &&
+    printerStatus.online &&
+    (
+      printerStatus.state !== 'printing' ||
+      !filenamesMatch(printerStatus.job?.file_name, job.filename)
+    );
   const isReprintable =
-    job.status === 'failed' || job.status === 'cancelled';
+    job.status === 'failed' ||
+    job.status === 'cancelled' ||
+    looksFinished;
   const canPrint = (job.status === 'ready' || isReprintable) && hasOutput;
   const canDownload = job.status === 'ready' || job.status === 'printing';
   const rowBusy = isCancelling || isDeleting || isPrinting;

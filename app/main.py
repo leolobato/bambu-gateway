@@ -881,13 +881,17 @@ async def print_file(
         job = await slice_jobs.get(effective_job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
-        # Allow `ready` (first print) and the slice-job terminal states
-        # `failed` / `cancelled` (reprint). `printing` is intentionally
-        # excluded: the slice-job state machine has no FINISHED status, so a
-        # `printing`-state job may be either live on the printer or a stale
-        # artefact of a long-completed print, and we can't tell from the
-        # slice job alone.
-        if job.status.value not in ("ready", "failed", "cancelled"):
+        # Allow `ready` (first print), the slice-job terminal states
+        # `failed` / `cancelled` (reprint), and `printing` (which the slice
+        # job stays in forever once dispatched — there is no FINISHED
+        # status). The frontend gates the `printing` reprint behind a
+        # printer-state heuristic so it only fires when the live print
+        # really is done; the gateway trusts that signal and lets the
+        # printer itself reject duplicate uploads if the heuristic
+        # misfires.
+        if job.status.value not in (
+            "ready", "failed", "cancelled", "printing",
+        ):
             raise HTTPException(
                 status_code=409,
                 detail=f"Job is {job.status.value}, not printable",

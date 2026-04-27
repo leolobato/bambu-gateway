@@ -251,8 +251,11 @@ async def test_print_reprints_a_failed_job(app_client, monkeypatch):
     assert after.json()["status"] == "printing"
 
 
-async def test_print_rejects_in_flight_job(app_client):
-    """A job that is currently slicing or printing cannot be printed again."""
+async def test_print_rejects_in_flight_slicing_job(app_client):
+    """A slice job that is still being processed (slicing/uploading/queued)
+    cannot be printed. `printing` is allowed because the slice-job state
+    machine never advances to FINISHED — the frontend heuristic decides
+    when a `printing` row is safe to reprint."""
     import app.main as main_mod
     from app.slice_jobs import SliceJob, SliceJobStatus
 
@@ -260,10 +263,10 @@ async def test_print_rejects_in_flight_job(app_client):
         filename="x.3mf", machine_profile="GM014", process_profile="0.20mm",
         filament_profiles={}, plate_id=1, plate_type="",
         project_filament_count=0, printer_id=None, auto_print=False,
-        input_path=main_mod.slice_jobs._store.input_path("printingjob"),
+        input_path=main_mod.slice_jobs._store.input_path("slicingjob"),
     )
-    seed.id = "printingjob"
-    seed.status = SliceJobStatus.PRINTING
+    seed.id = "slicingjob"
+    seed.status = SliceJobStatus.SLICING
     Path(seed.input_path).write_bytes(b"x")
     await main_mod.slice_jobs._store.upsert(seed)
 
