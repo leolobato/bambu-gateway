@@ -280,13 +280,15 @@ export function TrayProfilePicker({
                 value={f.setting_id}
                 onSelect={() => pickFilament(f)}
                 aria-current={selected}
-                className="gap-2"
+                className="gap-2 items-start"
               >
-                <CheckMark visible={selected} />
-                <span className="flex-1 truncate text-[13px]">{f.name}</span>
-                <span className="ml-auto pl-2 font-mono text-[10px] text-text-2 shrink-0">
-                  {f.setting_id}
-                </span>
+                <CheckMark visible={selected} className="mt-0.5" />
+                <div className="flex flex-col min-w-0 flex-1">
+                  <span className="text-[13px] truncate">{f.name}</span>
+                  <span className="font-mono text-[10px] text-text-2 truncate">
+                    {f.setting_id}
+                  </span>
+                </div>
               </CommandItem>
             );
           })}
@@ -307,12 +309,19 @@ export function TrayProfilePicker({
   );
 }
 
-function CheckMark({ visible }: { visible: boolean }) {
+function CheckMark({
+  visible,
+  className,
+}: {
+  visible: boolean;
+  className?: string;
+}) {
   return (
     <span
       className={cn(
         'flex h-4 w-4 items-center justify-center shrink-0',
         visible ? 'text-accent' : 'text-transparent',
+        className,
       )}
       aria-hidden
     >
