@@ -16,7 +16,7 @@ export function CameraFeed({ printer }: { printer: PrinterStatus }) {
       <Placeholder
         text={
           transport === 'rtsps'
-            ? 'RTSPS cameras (X1 family) aren't supported in the web UI yet.'
+            ? "RTSPS cameras (X1 family) aren't supported in the web UI yet."
             : 'Camera not available for this printer.'
         }
       />
