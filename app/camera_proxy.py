@@ -216,6 +216,10 @@ class CameraProxy:
         self._drain_task = asyncio.create_task(self._drain_after_grace())
 
     def _cancel_drain(self) -> None:
+        # Sync cancel is safe even if drain has already started: drain calls
+        # `_upstream_task.cancel()` BEFORE awaiting it, so the upstream task is
+        # cancelled regardless of when this cancel lands. New subscribers then
+        # create a fresh upstream task via _ensure_upstream.
         if self._drain_task is not None and not self._drain_task.done():
             self._drain_task.cancel()
         self._drain_task = None
@@ -272,6 +276,7 @@ class CameraProxy:
         if self._use_tls:
             ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
+            # Bambu printers serve self-signed certs — no CA chain to verify against.
             ssl_context.verify_mode = ssl.CERT_NONE
 
         reader, writer = await asyncio.open_connection(
