@@ -82,7 +82,10 @@ class PrinterService:
         logger.info("Initialized %d printer client(s) in lazy-connect mode", len(self._clients))
 
     def stop(self) -> None:
-        """Disconnect from all printers."""
+        """Disconnect MQTT clients. Does not stop camera proxies — async callers
+        should use :meth:`stop_async` instead. Kept for backward compatibility with
+        any synchronous teardown paths.
+        """
         logger.info("Stopping all printer connections")
         for client in self._clients.values():
             client.stop()

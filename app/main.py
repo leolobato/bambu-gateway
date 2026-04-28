@@ -188,7 +188,7 @@ async def lifespan(app: FastAPI):
     yield
     if slice_jobs is not None:
         await slice_jobs.stop()
-    printer_service.stop()
+    await printer_service.stop_async()
     if notification_hub is not None:
         notification_hub.stop()
     if apns_client is not None:
