@@ -14,8 +14,8 @@ placeholder.
 - New `Camera` tab in the web UI, placed between `Dashboard` and `Print`.
 - The tab shows: printer picker (when >1 printer), chamber light toggle, and a
   16:9 feed tile with status dot, error overlay + retry, and tap-to-fullscreen.
-- Reuses the existing `POST /api/printers/{id}/chamber-light` endpoint —
-  no backend changes for chamber light.
+- Reuses the existing `POST /api/printers/{id}/light` endpoint — no backend
+  changes for chamber light.
 
 ## Non-goals
 
@@ -111,8 +111,8 @@ Upstream loop (`_run_upstream`):
 
 ### Chamber light — no backend changes
 
-`POST /api/printers/{pid}/chamber-light` exists at `app/main.py:425`. The web
-UI consumes it directly.
+`POST /api/printers/{pid}/light` exists at `app/main.py:421` (body
+`{on: bool, node?: "chamber_light"}`). The web UI consumes it directly.
 
 ## Frontend
 
@@ -144,8 +144,9 @@ Mirrors `ChamberLightToggle.swift`:
 - Visible only when `printer.camera?.chamber_light?.supported` is true.
 - Reads `printer.camera.chamber_light.on` for the current state.
 - Pill button — accent fill when on, surface fill when off; lightbulb icon.
-- `onClick`: `POST /api/printers/{id}/chamber-light` with `{on: !current}`,
-  optimistic update, invalidate the printers query on response.
+- `onClick`: `POST /api/printers/{id}/light` with
+  `{on: !current, node: "chamber_light"}`, optimistic update, invalidate the
+  printers query on response.
 - Disabled while pending or while `printer.online` is false.
 
 ### `web/src/components/camera/camera-feed.tsx` (new)
