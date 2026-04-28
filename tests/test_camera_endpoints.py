@@ -158,7 +158,7 @@ def test_cameraStream_mjpegEndpoint_emitsTwoParts(monkeypatch):
         app_module.app,
         host="127.0.0.1",
         port=server_port,
-        lifespan="off",  # lifespan already ran via the module-level import
+        lifespan="off",  # avoid clobbering the monkeypatched printer_service
         log_level="error",
     )
     uv_server = uvicorn.Server(config)
@@ -172,6 +172,8 @@ def test_cameraStream_mjpegEndpoint_emitsTwoParts(monkeypatch):
             break
         except Exception:
             time.sleep(0.1)
+    else:
+        pytest.fail("uvicorn did not become ready in time")
 
     try:
         with httpx.stream("GET", f"http://127.0.0.1:{server_port}/api/printers/01PXXX/camera/stream.mjpg", timeout=10) as res:
