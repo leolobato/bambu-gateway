@@ -97,3 +97,76 @@ def test_parse3mf_genericModelSettings_falls_back_to_all_used():
     info = parse_3mf(data)
 
     assert all(f.used for f in info.filaments)
+
+
+def test_parse3mf_paintColor_marksAllDeclaredFilamentsUsed():
+    """MMU face-painting (paint_color) drives extruders beyond the declared
+    object/part metadata, so every declared filament must be marked used."""
+    project_settings = (
+        '{"filament_type": ["PLA", "PLA", "PLA", "PLA"], '
+        '"filament_settings_id": ["a", "b", "c", "d"]}'
+    )
+    model_settings = """\
+<config>
+  <object id="2">
+    <metadata key="name" value="bird"/>
+    <metadata key="extruder" value="4"/>
+    <part id="1" subtype="normal_part"/>
+  </object>
+  <plate>
+    <metadata key="plater_id" value="1"/>
+    <model_instance>
+      <metadata key="object_id" value="2"/>
+    </model_instance>
+  </plate>
+</config>
+"""
+    model_xml = (
+        '<model><resources><object id="1" type="model"><mesh><triangles>'
+        '<triangle v1="0" v2="1" v3="2" paint_color="8"/>'
+        '</triangles></mesh></object></resources></model>'
+    )
+    data = _zip_bytes({
+        "3D/3dmodel.model": model_xml,
+        "Metadata/project_settings.config": project_settings,
+        "Metadata/model_settings.config": model_settings,
+    })
+
+    info = parse_3mf(data)
+
+    assert {f.index for f in info.filaments if f.used} == {0, 1, 2, 3}
+
+
+def test_parse3mf_paintColor_streamingAcrossChunkBoundary_isDetected():
+    """The chunked scanner must catch a `paint_color=` token that straddles
+    a 1 MiB read boundary."""
+    project_settings = (
+        '{"filament_type": ["PLA", "PLA"], '
+        '"filament_settings_id": ["a", "b"]}'
+    )
+    model_settings = """\
+<config>
+  <object id="2">
+    <metadata key="extruder" value="2"/>
+  </object>
+  <plate>
+    <metadata key="plater_id" value="1"/>
+    <model_instance>
+      <metadata key="object_id" value="2"/>
+    </model_instance>
+  </plate>
+</config>
+"""
+    chunk = 1 << 20
+    needle = 'paint_color="4"'
+    prefix = "<model>" + ("x" * (chunk - 5))  # places the needle straddling the 1 MiB boundary
+    model_xml = prefix + needle + "</model>"
+    data = _zip_bytes({
+        "3D/3dmodel.model": model_xml,
+        "Metadata/project_settings.config": project_settings,
+        "Metadata/model_settings.config": model_settings,
+    })
+
+    info = parse_3mf(data)
+
+    assert {f.index for f in info.filaments if f.used} == {0, 1}

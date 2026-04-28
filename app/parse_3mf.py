@@ -150,6 +150,31 @@ def _has_gcode(zf: zipfile.ZipFile) -> bool:
     )
 
 
+_PAINT_COLOR_NEEDLE = b'paint_color="'
+_PAINT_COLOR_CHUNK = 1 << 20  # 1 MiB; 3D model files routinely run 100+ MB
+
+
+def _has_face_painting(zf: zipfile.ZipFile) -> bool:
+    """Detect MMU face-painting in `3D/3dmodel.model`.
+
+    Decoding OrcaSlicer's bit-packed `paint_color` triangle tree to recover
+    the exact extruder set is non-trivial, so we treat any presence of the
+    attribute as "all declared filaments are in play". Streaming avoids
+    loading the (often very large) model XML into memory.
+    """
+    if "3D/3dmodel.model" not in zf.namelist():
+        return False
+    tail = b""
+    with zf.open("3D/3dmodel.model") as fp:
+        while True:
+            chunk = fp.read(_PAINT_COLOR_CHUNK)
+            if not chunk:
+                return False
+            if _PAINT_COLOR_NEEDLE in tail + chunk:
+                return True
+            tail = chunk[-len(_PAINT_COLOR_NEEDLE):]
+
+
 def _extract_thumbnails(zf: zipfile.ZipFile, plates: list[PlateInfo]) -> None:
     """Attach base64-encoded plate thumbnails to PlateInfo objects in-place."""
     for plate in plates:
@@ -166,6 +191,15 @@ def parse_3mf(data: bytes) -> ThreeMFInfo:
         filaments, print_profile, printer = _parse_project_settings(zf)
         has_gcode = _has_gcode(zf)
         _extract_thumbnails(zf, plates)
+        # Face-painted multi-color (single object, paint_color triangles)
+        # references extruders the object/part metadata never declares. Only
+        # scan the (large) model XML when there are declared filaments not
+        # yet accounted for — most files won't pay this cost.
+        face_painted = (
+            bool(used_indices)
+            and any(f.index not in used_indices for f in filaments)
+            and _has_face_painting(zf)
+        )
 
     # Mark each filament `used` based on which extruders any object/part
     # references. If `used_indices` is empty (generic 3MF without Bambu
@@ -173,7 +207,7 @@ def parse_3mf(data: bytes) -> ThreeMFInfo:
     # declared filament to used so behavior is unchanged for that case.
     if used_indices:
         for f in filaments:
-            f.used = f.index in used_indices
+            f.used = True if face_painted else (f.index in used_indices)
 
     return ThreeMFInfo(
         plates=plates,
