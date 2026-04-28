@@ -103,6 +103,7 @@ async def test_cameraProxy_subscribePublish_deliversFrames():
     proxy._publish(b"frame-B")
     await asyncio.wait_for(task, timeout=1.0)
     assert received == [b"frame-A", b"frame-B"]
+    await proxy.stop()
 
 
 @pytest.mark.asyncio
@@ -120,6 +121,7 @@ async def test_cameraProxy_secondSubscriber_getsCachedLatestFrame():
     task = asyncio.create_task(consumer())
     await asyncio.wait_for(task, timeout=1.0)
     assert received == [b"latest"]
+    await proxy.stop()
 
 
 @pytest.mark.asyncio
@@ -142,3 +144,164 @@ async def test_cameraProxy_slowConsumer_dropsOldFramesNotNewest():
     await asyncio.wait_for(task, timeout=1.0)
     assert received[-1] == b"f9"
     assert len(received) == 3
+    await proxy.stop()
+
+
+class _FakeCameraServer:
+    """Fake Bambu camera TCP server for tests.
+
+    Reads (and ignores) an 80-byte auth packet, then writes each frame in
+    `frames` framed with the 16-byte length header.  Keeps the connection
+    open afterwards so the proxy stays in `streaming`.
+
+    Call :meth:`close` in test teardown — it cancels all handler tasks so
+    ``server.wait_closed()`` does not hang.
+    """
+
+    def __init__(self, server: asyncio.AbstractServer, port: int, handler_tasks: list) -> None:
+        self._server = server
+        self.port = port
+        self._handler_tasks = handler_tasks
+
+    async def close(self) -> None:
+        self._server.close()
+        for t in self._handler_tasks:
+            if not t.done():
+                t.cancel()
+        for t in self._handler_tasks:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        await self._server.wait_closed()
+
+
+async def _start_fake_camera_server(
+    frames: list[bytes],
+    *,
+    expect_auth: bool = True,
+) -> _FakeCameraServer:
+    """Start a localhost TCP server that mimics the Bambu camera handshake."""
+    handler_tasks: list[asyncio.Task] = []
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        try:
+            if expect_auth:
+                await reader.readexactly(80)
+            for jpeg in frames:
+                n = len(jpeg)
+                header = bytes([n & 0xFF, (n >> 8) & 0xFF, (n >> 16) & 0xFF, (n >> 24) & 0xFF]) + bytes(12)
+                writer.write(header + jpeg)
+                await writer.drain()
+            # Keep the connection open so the proxy stays in `streaming` until torn down.
+            while True:
+                await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    async def handle_and_track(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        task = asyncio.current_task()
+        if task is not None:
+            handler_tasks.append(task)
+        await handle(reader, writer)
+
+    server = await asyncio.start_server(handle_and_track, host="127.0.0.1", port=0)
+    port = server.sockets[0].getsockname()[1]
+    return _FakeCameraServer(server, port, handler_tasks)
+
+
+@pytest.mark.asyncio
+async def test_cameraProxy_subscribe_startsUpstream_yieldsFrames():
+    jpeg_a = b"\xff\xd8frame-A\xff\xd9"
+    jpeg_b = b"\xff\xd8frame-B\xff\xd9"
+    fake = await _start_fake_camera_server([jpeg_a, jpeg_b])
+
+    proxy = CameraProxy(
+        ip="127.0.0.1",
+        access_code="abcd",
+        port=fake.port,
+        use_tls=False,  # plain TCP for the fake server
+        retry_delay=0.05,
+    )
+    try:
+        received: list[bytes] = []
+
+        async def consumer():
+            async for frame in proxy.subscribe():
+                received.append(frame)
+                if len(received) == 2:
+                    break
+
+        await asyncio.wait_for(consumer(), timeout=2.0)
+        assert received == [jpeg_a, jpeg_b]
+        assert proxy.state == "streaming"
+        assert proxy.status()["last_frame_at"] is not None
+    finally:
+        await proxy.stop()
+        await fake.close()
+
+
+@pytest.mark.asyncio
+async def test_cameraProxy_lastSubscriberLeaves_drainsAndStopsUpstream():
+    jpeg = b"\xff\xd8x\xff\xd9"
+    fake = await _start_fake_camera_server([jpeg])
+
+    proxy = CameraProxy(
+        ip="127.0.0.1",
+        access_code="abcd",
+        port=fake.port,
+        use_tls=False,
+        drain_grace=0.1,  # short grace for fast tests
+        retry_delay=0.05,
+    )
+    try:
+        async def quick_consumer():
+            async for _ in proxy.subscribe():
+                return
+
+        await asyncio.wait_for(quick_consumer(), timeout=2.0)
+        # Subscriber set is now empty; drain should fire after grace.
+        await asyncio.sleep(0.3)
+        assert proxy.state in {"idle", "stopped"}
+        assert proxy._upstream_task is None or proxy._upstream_task.done()
+    finally:
+        await proxy.stop()
+        await fake.close()
+
+
+@pytest.mark.asyncio
+async def test_cameraProxy_unreachable_setsFailed():
+    # Pick a port that nothing is listening on.
+    proxy = CameraProxy(
+        ip="127.0.0.1",
+        access_code="abcd",
+        port=1,  # almost certainly closed
+        use_tls=False,
+        retry_delay=0.05,
+    )
+
+    received: list[bytes] = []
+
+    async def consumer():
+        async for frame in proxy.subscribe():
+            received.append(frame)
+
+    task = asyncio.create_task(consumer())
+    # Wait long enough for at least one connect attempt to fail.
+    await asyncio.sleep(0.3)
+    assert proxy.state == "failed"
+    assert proxy.status()["error"] is not None
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    await proxy.stop()
