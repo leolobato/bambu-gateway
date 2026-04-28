@@ -8,6 +8,10 @@ gateway is required when more than one browser tab is watching.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
+from typing import Literal
+
 
 def build_auth_packet(access_code: str) -> bytes:
     """Build the 80-byte LAN binary auth packet.
@@ -68,3 +72,83 @@ class FrameParser:
             self._expected_len = None
             out.append(jpeg)
         return out
+
+
+CameraState = Literal["idle", "connecting", "streaming", "failed"]
+
+
+class CameraProxy:
+    """One-per-printer fan-out from a single upstream TCP-JPEG connection.
+
+    Subscribers attach via :meth:`subscribe` and receive every JPEG frame
+    delivered after they attached. New subscribers also receive the most
+    recent cached frame immediately so the UI doesn't see a black tile
+    while waiting for the next decode.
+
+    The upstream connection is started lazily on the first subscriber and
+    stopped 5s after the last subscriber leaves (Task 4).
+    """
+
+    def __init__(
+        self,
+        ip: str,
+        access_code: str,
+        queue_maxsize: int = 2,
+    ) -> None:
+        self._ip = ip
+        self._access_code = access_code
+        self._queue_maxsize = queue_maxsize
+
+        self._subscribers: set[asyncio.Queue[bytes]] = set()
+        self._latest_frame: bytes | None = None
+
+        self._state: CameraState = "idle"
+        self._error: str | None = None
+        self._last_frame_at: float | None = None
+
+    # ------------------------------------------------------------------
+    # Public surface
+
+    @property
+    def state(self) -> CameraState:
+        return self._state
+
+    def status(self) -> dict:
+        return {
+            "state": self._state,
+            "error": self._error,
+            "last_frame_at": self._last_frame_at,
+        }
+
+    async def subscribe(self) -> AsyncIterator[bytes]:
+        """Yield JPEG frames as they arrive. Cleans up on cancellation/exit."""
+        queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=self._queue_maxsize)
+        self._subscribers.add(queue)
+        try:
+            if self._latest_frame is not None:
+                queue.put_nowait(self._latest_frame)
+            while True:
+                frame = await queue.get()
+                yield frame
+        finally:
+            self._subscribers.discard(queue)
+
+    # ------------------------------------------------------------------
+    # Internal — used by the upstream loop (Task 4) and unit tests.
+
+    def _publish(self, frame: bytes) -> None:
+        """Cache the frame as latest and push to all subscribers.
+
+        If a subscriber's queue is full, drop its oldest pending frame so
+        a slow client can't stall the upstream loop or other subscribers.
+        """
+        self._latest_frame = frame
+        loop = asyncio.get_event_loop()
+        self._last_frame_at = loop.time()
+        for q in self._subscribers:
+            if q.full():
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            q.put_nowait(frame)

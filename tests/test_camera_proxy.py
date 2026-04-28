@@ -77,3 +77,68 @@ def test_frameParser_partialThenComplete_emitsOnceComplete():
     assert parser.feed(payload[:-1]) == []
     # Feed the last byte; now it should emit.
     assert parser.feed(payload[-1:]) == [jpeg]
+
+
+import asyncio
+import pytest
+
+from app.camera_proxy import CameraProxy
+
+
+@pytest.mark.asyncio
+async def test_cameraProxy_subscribePublish_deliversFrames():
+    proxy = CameraProxy(ip="127.0.0.1", access_code="x")
+    received: list[bytes] = []
+
+    async def consumer():
+        async for frame in proxy.subscribe():
+            received.append(frame)
+            if len(received) == 2:
+                break
+
+    task = asyncio.create_task(consumer())
+    # Let consumer subscribe.
+    await asyncio.sleep(0)
+    proxy._publish(b"frame-A")
+    proxy._publish(b"frame-B")
+    await asyncio.wait_for(task, timeout=1.0)
+    assert received == [b"frame-A", b"frame-B"]
+
+
+@pytest.mark.asyncio
+async def test_cameraProxy_secondSubscriber_getsCachedLatestFrame():
+    proxy = CameraProxy(ip="127.0.0.1", access_code="x")
+    proxy._publish(b"latest")
+
+    received: list[bytes] = []
+
+    async def consumer():
+        async for frame in proxy.subscribe():
+            received.append(frame)
+            break
+
+    task = asyncio.create_task(consumer())
+    await asyncio.wait_for(task, timeout=1.0)
+    assert received == [b"latest"]
+
+
+@pytest.mark.asyncio
+async def test_cameraProxy_slowConsumer_dropsOldFramesNotNewest():
+    proxy = CameraProxy(ip="127.0.0.1", access_code="x", queue_maxsize=3)
+    received: list[bytes] = []
+
+    async def slow_consumer():
+        # Read three frames, but with no awaits between publishes the queue
+        # fills and old frames must be dropped — the newest frame must arrive.
+        async for frame in proxy.subscribe():
+            received.append(frame)
+            if len(received) == 3:
+                break
+
+    task = asyncio.create_task(slow_consumer())
+    await asyncio.sleep(0)  # let it subscribe
+    for i in range(10):
+        proxy._publish(f"f{i}".encode())
+    await asyncio.wait_for(task, timeout=1.0)
+    assert received[-1] == b"f9"
+    assert len(received) == 3
