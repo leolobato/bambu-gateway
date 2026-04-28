@@ -270,8 +270,44 @@ async def test_cameraProxy_lastSubscriberLeaves_drainsAndStopsUpstream():
         await asyncio.wait_for(quick_consumer(), timeout=2.0)
         # Subscriber set is now empty; drain should fire after grace.
         await asyncio.sleep(0.3)
-        assert proxy.state in {"idle", "stopped"}
+        assert proxy.state == "idle"
         assert proxy._upstream_task is None or proxy._upstream_task.done()
+    finally:
+        await proxy.stop()
+        await fake.close()
+
+
+@pytest.mark.asyncio
+async def test_cameraProxy_twoSubscribers_bothReceiveSameFrames():
+    jpeg_a = b"\xff\xd8frame-A\xff\xd9"
+    jpeg_b = b"\xff\xd8frame-B\xff\xd9"
+    fake = await _start_fake_camera_server([jpeg_a, jpeg_b])
+
+    try:
+        proxy = CameraProxy(
+            ip="127.0.0.1",
+            access_code="abcd",
+            port=fake.port,
+            use_tls=False,
+            retry_delay=0.05,
+        )
+
+        received_a: list[bytes] = []
+        received_b: list[bytes] = []
+
+        async def consumer(target: list[bytes]) -> None:
+            async for frame in proxy.subscribe():
+                target.append(frame)
+                if len(target) == 2:
+                    return
+
+        await asyncio.gather(
+            asyncio.wait_for(consumer(received_a), timeout=2.0),
+            asyncio.wait_for(consumer(received_b), timeout=2.0),
+        )
+
+        assert received_a == [jpeg_a, jpeg_b]
+        assert received_b == [jpeg_a, jpeg_b]
     finally:
         await proxy.stop()
         await fake.close()

@@ -82,7 +82,7 @@ class FrameParser:
         return out
 
 
-CameraState = Literal["idle", "connecting", "streaming", "failed", "stopped"]
+CameraState = Literal["idle", "connecting", "streaming", "failed"]
 
 
 class CameraProxy:
