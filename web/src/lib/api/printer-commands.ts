@@ -92,3 +92,11 @@ export async function setAmsFilament(
     },
   );
 }
+
+export async function setChamberLight(printerId: string, on: boolean): Promise<void> {
+  await fetchJson<unknown>(`/api/printers/${encodeURIComponent(printerId)}/light`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ on, node: 'chamber_light' }),
+  });
+}

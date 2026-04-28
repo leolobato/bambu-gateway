@@ -23,6 +23,7 @@ export function AppShell() {
           )}
         >
           <TabLink to="/">Dashboard</TabLink>
+          <TabLink to="/camera">Camera</TabLink>
           <TabLink to="/print">Print</TabLink>
           <TabLink to="/jobs">Jobs</TabLink>
         </nav>

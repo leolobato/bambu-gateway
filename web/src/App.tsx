@@ -2,6 +2,7 @@ import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppShell } from '@/components/app-shell';
 import DashboardRoute from '@/routes/dashboard';
+import CameraRoute from '@/routes/camera';
 import PrintRoute from '@/routes/print';
 import JobsRoute from '@/routes/jobs';
 import SettingsRoute from '@/routes/settings';
@@ -24,6 +25,7 @@ const router = createBrowserRouter([
     element: <AppShell />,
     children: [
       { index: true, element: <DashboardRoute /> },
+      { path: 'camera', element: <CameraRoute /> },
       { path: 'print', element: <PrintRoute /> },
       { path: 'jobs', element: <JobsRoute /> },
       { path: 'settings', element: <SettingsRoute /> },
