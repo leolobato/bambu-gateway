@@ -1,44 +1,58 @@
 """Human-readable descriptions for Bambu Health Monitoring System codes.
 
-HMS codes are 4-group hex strings like ``0300_0C00_0002_0002``. Bambu does not
-publish an official machine-readable mapping; entries below come from community
-observation of printer behaviour. Codes not present here fall through to a
-generic "unknown error" label — the gateway logs the raw code at INFO level so
-this table can be expanded as new codes are seen in the wild.
+The mapping data ships in ``app/data/bambu_hms_en.json`` and is sourced from
+the community ha-bambulab project, which extracts the strings Bambu Studio
+itself uses (https://github.com/greghesp/ha-bambulab — see
+``scripts/hms_error_text/hms_en.json``). The file groups codes into:
+
+* ``device_hms`` — keyed by the 16-char hex ``attr`` field reported in the
+  ``hms`` MQTT array.
+* ``device_error`` — keyed by 8-char hex matching the ``print_error`` int.
+
+Both lookups normalise the input (strip underscores, uppercase) so callers
+can pass either ``"0300_2003_0002_0001"`` or ``"0300200300020001"``. Codes
+not present in the bundled mapping fall through to a generic "unknown error"
+label carrying the raw code so the owner still has something actionable.
 """
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from app.models import HMSCode
 
 
-HMS_CODE_DESCRIPTIONS: dict[str, str] = {
-    # Filament runout / AMS-side filament issues
-    "0300_0C00_0002_0001": "AMS filament is missing",
-    "0300_0C00_0002_0002": "AMS filament is missing",
-    "0300_0D00_0002_0003": "External spool has run out",
-    "0300_0F00_0002_0001": "Filament has run out",
-    # Filament path / extrusion problems
-    "0300_2003_0002_0001": "Filament is broken or tangled",
-    "0300_2006_0002_0002": "Filament is tangled in the AMS",
-    # Enclosure
-    "07FF_2000_0002_000D": "Front cover is open",
-    "07FF_2000_0002_0008": "Printer enclosure is open",
-}
+_DATA_PATH = Path(__file__).parent / "data" / "bambu_hms_en.json"
 
 
-# Some Bambu errors are reported only via ``print_error`` (a 32-bit int),
-# without a parallel HMS entry — AMS spool-stuck is one example. Codes here
-# are keyed by their integer value; forums reference them in hex (0x........).
-PRINT_ERROR_DESCRIPTIONS: dict[int, str] = {
-    0x12008010: "AMS cannot load filament — spool may be stuck",  # 302022672
-    0x12008007: "AMS filament load failed",  # 302022663
-}
+def _load_descriptions() -> tuple[dict[str, str], dict[int, str]]:
+    with _DATA_PATH.open(encoding="utf-8") as f:
+        data = json.load(f)
+
+    def first_description(entry: dict) -> str:
+        # entry is {description: [printer_models, ...]} — take the first key.
+        return next(iter(entry), "")
+
+    hms_codes = {
+        key.upper(): first_description(value)
+        for key, value in data.get("device_hms", {}).items()
+        if isinstance(value, dict) and value
+    }
+    print_errors = {
+        int(key, 16): first_description(value)
+        for key, value in data.get("device_error", {}).items()
+        if isinstance(value, dict) and value
+    }
+    return hms_codes, print_errors
+
+
+HMS_CODE_DESCRIPTIONS, PRINT_ERROR_DESCRIPTIONS = _load_descriptions()
 
 
 def describe_hms_code(attr: str) -> str | None:
     """Return a human description for an HMS code, or None if unknown."""
-    return HMS_CODE_DESCRIPTIONS.get(attr)
+    return HMS_CODE_DESCRIPTIONS.get(attr.replace("_", "").upper())
 
 
 def describe_print_error(code: int) -> str | None:
