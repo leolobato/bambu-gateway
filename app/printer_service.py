@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 
+from app.camera_proxy import CameraProxy
 from app.config import PrinterConfig
 from app.models import CameraInfo, ChamberLightInfo, PrinterStatus
 from app.mqtt_client import BambuMQTTClient
@@ -62,6 +64,7 @@ class PrinterService:
     ) -> None:
         self._configs: dict[str, PrinterConfig] = {}
         self._clients: dict[str, BambuMQTTClient] = {}
+        self._proxies: dict[str, CameraProxy] = {}
         self._status_change_callback = status_change_callback
         for cfg in printer_configs:
             self._configs[cfg.serial] = cfg
@@ -108,6 +111,9 @@ class PrinterService:
             self._clients[serial].stop()
             del self._clients[serial]
             del self._configs[serial]
+            proxy = self._proxies.pop(serial, None)
+            if proxy is not None:
+                asyncio.create_task(proxy.stop())
 
         for serial in to_check:
             old = self._configs[serial]
@@ -120,6 +126,9 @@ class PrinterService:
                 if self._status_change_callback is not None:
                     new_client.set_status_change_callback(self._status_change_callback)
                 self._clients[serial] = new_client
+                proxy = self._proxies.pop(serial, None)
+                if proxy is not None:
+                    asyncio.create_task(proxy.stop())
             else:
                 # Non-connection fields changed (name, machine_model, etc.)
                 self._configs[serial] = new
@@ -180,6 +189,33 @@ class PrinterService:
     def get_client(self, printer_id: str) -> BambuMQTTClient | None:
         """Return the MQTT client for a printer, or None if not found."""
         return self._clients.get(printer_id)
+
+    def get_camera_proxy(self, printer_id: str) -> CameraProxy | None:
+        """Return (and lazily create) the camera proxy for a printer.
+
+        Returns None when the printer is unknown, has no IP/access code, or
+        its transport isn't `tcp_jpeg`. RTSPS-family printers always return
+        None — those are handled by a separate transcode pipeline (future).
+        """
+        if printer_id in self._proxies:
+            return self._proxies[printer_id]
+        config = self._configs.get(printer_id)
+        if config is None or not config.ip or not config.access_code:
+            return None
+        transport = _classify_camera_transport(config.machine_model)
+        if transport != "tcp_jpeg":
+            return None
+        proxy = CameraProxy(ip=config.ip, access_code=config.access_code)
+        self._proxies[printer_id] = proxy
+        return proxy
+
+    async def stop_async(self) -> None:
+        """Stop all MQTT clients and camera proxies. Safe to call from async code."""
+        self.stop()
+        proxies = list(self._proxies.values())
+        self._proxies.clear()
+        for proxy in proxies:
+            await proxy.stop()
 
     def default_printer_id(self) -> str | None:
         """Return the serial of the first configured printer."""

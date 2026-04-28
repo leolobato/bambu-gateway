@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.config import PrinterConfig
@@ -187,3 +189,76 @@ def test_lightEndpoint_missingBody_returns422(tmp_path, monkeypatch):
         res = c.post("/api/printers/x/light", json={})
         # `on` is required — pydantic rejects the body.
         assert res.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# CameraProxy wiring into PrinterService
+
+
+@pytest.mark.asyncio
+async def test_getCameraProxy_tcpJpegPrinter_returnsProxy():
+    cfg = PrinterConfig(
+        serial="01PXXX",
+        ip="10.0.0.99",
+        access_code="abcd",
+        name="A1 Mini",
+        machine_model="GM020",  # A1 Mini = tcp_jpeg
+    )
+    svc = PrinterService([cfg])
+    try:
+        proxy = svc.get_camera_proxy("01PXXX")
+        assert proxy is not None
+        # Same instance returned on repeat calls.
+        assert svc.get_camera_proxy("01PXXX") is proxy
+    finally:
+        await svc.stop_async()
+
+
+@pytest.mark.asyncio
+async def test_getCameraProxy_rtspsPrinter_returnsNone():
+    cfg = PrinterConfig(
+        serial="X1S001",
+        ip="10.0.0.50",
+        access_code="abcd",
+        name="X1C",
+        machine_model="GM001",  # X1C = rtsps
+    )
+    svc = PrinterService([cfg])
+    try:
+        assert svc.get_camera_proxy("X1S001") is None
+    finally:
+        await svc.stop_async()
+
+
+@pytest.mark.asyncio
+async def test_getCameraProxy_unknownPrinter_returnsNone():
+    svc = PrinterService([])
+    try:
+        assert svc.get_camera_proxy("MISSING") is None
+    finally:
+        await svc.stop_async()
+
+
+@pytest.mark.asyncio
+async def test_syncPrinters_ipChange_recreatesProxy():
+    cfg = PrinterConfig(
+        serial="01PXXX", ip="10.0.0.99", access_code="abcd",
+        name="A1", machine_model="GM021",
+    )
+    svc = PrinterService([cfg])
+    try:
+        old = svc.get_camera_proxy("01PXXX")
+        assert old is not None
+
+        new_cfg = PrinterConfig(
+            serial="01PXXX", ip="10.0.0.100", access_code="abcd",
+            name="A1", machine_model="GM021",
+        )
+        svc.sync_printers([new_cfg])
+        # Allow stop_async to run on the proxy.
+        await asyncio.sleep(0)
+        new = svc.get_camera_proxy("01PXXX")
+        assert new is not None
+        assert new is not old
+    finally:
+        await svc.stop_async()
