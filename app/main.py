@@ -32,6 +32,7 @@ from app.models import (
     AMSResponse,
     AMSTray,
     AMSUnit,
+    CameraStatusResponse,
     CapabilitiesResponse,
     CommandResponse,
     DeviceInfo,
@@ -429,6 +430,47 @@ async def set_printer_light(printer_id: str, body: LightRequest):
         raise HTTPException(status_code=409, detail=str(e))
     return CommandResponse(
         printer_id=pid, command=f"light:{body.node}:{'on' if body.on else 'off'}",
+    )
+
+
+@app.get("/api/printers/{printer_id}/camera/status", response_model=CameraStatusResponse)
+async def get_camera_status(printer_id: str):
+    pid = _resolve_printer_id(printer_id)
+    if printer_service.get_status(pid) is None:
+        raise HTTPException(status_code=404, detail=f"Printer {pid} not found")
+    proxy = printer_service.get_camera_proxy(pid)
+    if proxy is None:
+        return CameraStatusResponse(state="unsupported", error=None, last_frame_at=None)
+    return CameraStatusResponse(**proxy.status())
+
+
+@app.get("/api/printers/{printer_id}/camera/stream.mjpg")
+async def get_camera_stream(printer_id: str):
+    pid = _resolve_printer_id(printer_id)
+    if printer_service.get_status(pid) is None:
+        raise HTTPException(status_code=404, detail=f"Printer {pid} not found")
+    proxy = printer_service.get_camera_proxy(pid)
+    if proxy is None:
+        raise HTTPException(status_code=404, detail="Camera not available for this printer")
+
+    boundary = b"--frame\r\n"
+
+    async def generator():
+        try:
+            async for jpeg in proxy.subscribe():
+                yield (
+                    boundary
+                    + b"Content-Type: image/jpeg\r\n"
+                    + f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii")
+                    + jpeg
+                    + b"\r\n"
+                )
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(
+        generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
 

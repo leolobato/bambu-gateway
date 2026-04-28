@@ -144,6 +144,20 @@ class PrinterStatus(BaseModel):
     camera: CameraInfo | None = None
 
 
+class CameraStatusResponse(BaseModel):
+    """State of a printer's camera proxy.
+
+    `state` is one of: ``unsupported``, ``idle``, ``connecting``,
+    ``streaming``, ``failed``. ``unsupported`` is returned for printers
+    without a camera or with the ``rtsps`` transport (no proxy is created
+    for those, so there is no internal state to report).
+    """
+
+    state: str
+    error: str | None = None
+    last_frame_at: float | None = None
+
+
 # --- API response models ---
 
 
