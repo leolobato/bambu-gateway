@@ -143,7 +143,7 @@ class CameraProxy:
         a slow client can't stall the upstream loop or other subscribers.
         """
         self._latest_frame = frame
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         self._last_frame_at = loop.time()
         for q in self._subscribers:
             if q.full():
