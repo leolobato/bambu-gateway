@@ -30,3 +30,50 @@ def test_buildAuthPacket_truncatesLongAccessCodeTo32Bytes():
     packet = build_auth_packet(access_code=long_code)
     assert len(packet) == 80
     assert packet[48:80] == b"x" * 32  # truncated to 32 bytes
+
+
+from app.camera_proxy import FrameParser
+
+
+def _frame(jpeg: bytes) -> bytes:
+    """Wrap a JPEG payload in the printer's 16-byte frame header."""
+    n = len(jpeg)
+    header = bytes([n & 0xFF, (n >> 8) & 0xFF, (n >> 16) & 0xFF, (n >> 24) & 0xFF])
+    header += bytes(12)  # unused
+    return header + jpeg
+
+
+def test_frameParser_singleChunkSingleFrame_emitsJpeg():
+    parser = FrameParser()
+    jpeg = b"\xff\xd8" + b"A" * 100 + b"\xff\xd9"
+    out = parser.feed(_frame(jpeg))
+    assert out == [jpeg]
+
+
+def test_frameParser_splitAcrossChunks_reassembles():
+    parser = FrameParser()
+    jpeg = b"\xff\xd8" + b"B" * 50 + b"\xff\xd9"
+    payload = _frame(jpeg)
+    # Feed 5 bytes at a time.
+    out: list[bytes] = []
+    for i in range(0, len(payload), 5):
+        out.extend(parser.feed(payload[i:i + 5]))
+    assert out == [jpeg]
+
+
+def test_frameParser_multipleFramesInOneChunk_emitsAll():
+    parser = FrameParser()
+    a = b"\xff\xd8" + b"A" * 10 + b"\xff\xd9"
+    b_ = b"\xff\xd8" + b"B" * 20 + b"\xff\xd9"
+    out = parser.feed(_frame(a) + _frame(b_))
+    assert out == [a, b_]
+
+
+def test_frameParser_partialThenComplete_emitsOnceComplete():
+    parser = FrameParser()
+    jpeg = b"\xff\xd8" + b"C" * 30 + b"\xff\xd9"
+    payload = _frame(jpeg)
+    # Feed everything except the last byte first.
+    assert parser.feed(payload[:-1]) == []
+    # Feed the last byte; now it should emit.
+    assert parser.feed(payload[-1:]) == [jpeg]

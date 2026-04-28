@@ -27,3 +27,44 @@ def build_auth_packet(access_code: str) -> bytes:
     code_bytes = access_code.encode("utf-8")[:32]
     packet[48:48 + len(code_bytes)] = code_bytes
     return bytes(packet)
+
+
+HEADER_SIZE = 16
+"""Bambu TCP-JPEG frame header is fixed-size: 4 bytes LE length + 12 unused."""
+
+
+class FrameParser:
+    """Streaming parser for Bambu's `[16-byte header][JPEG]` framing.
+
+    Accepts arbitrary byte chunks (TCP doesn't preserve message boundaries)
+    and returns the list of complete JPEG payloads decoded so far.
+    """
+
+    def __init__(self) -> None:
+        self._buffer = bytearray()
+        self._expected_len: int | None = None
+
+    def feed(self, data: bytes) -> list[bytes]:
+        """Append `data` and return any whole JPEG payloads now available."""
+        self._buffer += data
+        out: list[bytes] = []
+        while True:
+            if self._expected_len is None:
+                if len(self._buffer) < HEADER_SIZE:
+                    break
+                length = (
+                    self._buffer[0]
+                    | (self._buffer[1] << 8)
+                    | (self._buffer[2] << 16)
+                    | (self._buffer[3] << 24)
+                )
+                self._expected_len = length
+                del self._buffer[:HEADER_SIZE]
+            assert self._expected_len is not None
+            if len(self._buffer) < self._expected_len:
+                break
+            jpeg = bytes(self._buffer[:self._expected_len])
+            del self._buffer[:self._expected_len]
+            self._expected_len = None
+            out.append(jpeg)
+        return out
