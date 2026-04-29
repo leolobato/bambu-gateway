@@ -166,7 +166,7 @@ async def test_print_preview_returns_sliced_bytes_and_headers(app_client):
     assert resp.headers["x-job-id"] == resp.headers["x-preview-id"]
 
 
-async def test_print_with_job_id_starts_upload_and_marks_printing(
+async def test_print_with_job_id_starts_upload_and_marks_printed(
     app_client, monkeypatch
 ):
     """Submitting `/api/print` with a job_id should upload the sliced bytes."""
@@ -203,9 +203,12 @@ async def test_print_with_job_id_starts_upload_and_marks_printing(
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "uploading"
 
-    # Slice job should now be in PRINTING status
+    # Slice job stays in READY (the only success terminal) but is flagged
+    # as `printed` so the UI / SSE can tell it apart from a slice that's
+    # still waiting for the user to start it.
     job_after = await app_client.get(f"/api/slice-jobs/{job_id}")
-    assert job_after.json()["status"] == "printing"
+    assert job_after.json()["status"] == "ready"
+    assert job_after.json()["printed"] is True
 
 
 async def test_print_reprints_a_failed_job(app_client, monkeypatch):
@@ -248,14 +251,13 @@ async def test_print_reprints_a_failed_job(app_client, monkeypatch):
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "uploading"
     after = await app_client.get(f"/api/slice-jobs/{job_id}")
-    assert after.json()["status"] == "printing"
+    assert after.json()["status"] == "ready"
+    assert after.json()["printed"] is True
 
 
 async def test_print_rejects_in_flight_slicing_job(app_client):
     """A slice job that is still being processed (slicing/uploading/queued)
-    cannot be printed. `printing` is allowed because the slice-job state
-    machine never advances to FINISHED — the frontend heuristic decides
-    when a `printing` row is safe to reprint."""
+    cannot be printed."""
     import app.main as main_mod
     from app.slice_jobs import SliceJob, SliceJobStatus
 

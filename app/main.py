@@ -117,6 +117,7 @@ def _slice_job_to_response(job) -> SliceJobResponse:
         output_size=job.output_size,
         error=job.error,
         has_thumbnail=bool(job.thumbnail),
+        printed=job.printed,
     )
 
 
@@ -166,6 +167,8 @@ async def lifespan(app: FastAPI):
         configs, status_change_callback=status_change_callback,
     )
     printer_service.start()
+    if notification_hub is not None:
+        notification_hub.set_printer_service(printer_service)
     if settings.orcaslicer_api_url:
         slicer_client = SlicerClient(settings.orcaslicer_api_url)
 
@@ -1025,17 +1028,10 @@ async def print_file(
         job = await slice_jobs.get(effective_job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
-        # Allow `ready` (first print), the slice-job terminal states
-        # `failed` / `cancelled` (reprint), and `printing` (which the slice
-        # job stays in forever once dispatched — there is no FINISHED
-        # status). The frontend gates the `printing` reprint behind a
-        # printer-state heuristic so it only fires when the live print
-        # really is done; the gateway trusts that signal and lets the
-        # printer itself reject duplicate uploads if the heuristic
-        # misfires.
-        if job.status.value not in (
-            "ready", "failed", "cancelled", "printing",
-        ):
+        # Allow `ready` (first print or reprint after a successful auto-print)
+        # and the failure terminals `failed` / `cancelled` (reprint after a
+        # botched run). Anything mid-flight is rejected.
+        if job.status.value not in ("ready", "failed", "cancelled"):
             raise HTTPException(
                 status_code=409,
                 detail=f"Job is {job.status.value}, not printable",
@@ -1076,8 +1072,9 @@ async def print_file(
             plate_id=1, ams_mapping=ams_mapping, use_ams=use_ams,
         ))
 
-        # Mark the slice job as printing (terminal from its own perspective)
-        job.status = SliceJobStatus.PRINTING
+        # Slice-job perspective: handed off to the printer, work is done.
+        job.status = SliceJobStatus.READY
+        job.printed = True
         await slice_jobs._store.upsert(job)
 
         return PrintResponse(
@@ -1499,7 +1496,7 @@ async def print_file_stream(
                     if preview:
                         payload["preview_id"] = cur.id  # backward-compat alias
                     yield _sse_event("result", payload)
-                    if auto_print and cur.status.value == "printing":
+                    if auto_print and cur.printed:
                         yield _sse_event("print_started", {
                             "printer_id": cur.printer_id,
                             "file_name": cur.filename,
@@ -1598,7 +1595,7 @@ class _ClearBody(BaseModel):
     statuses: list[str] | None = None
 
 
-_DEFAULT_CLEAR_STATUSES = {"ready", "printing", "failed", "cancelled"}
+_DEFAULT_CLEAR_STATUSES = {"ready", "failed", "cancelled"}
 
 
 @app.post("/api/slice-jobs", response_model=SliceJobResponse, status_code=202)
@@ -1761,13 +1758,13 @@ async def get_slice_job_input(job_id: str):
 
 @app.get("/api/slice-jobs/{job_id}/output")
 async def get_slice_job_output(job_id: str):
-    """Download the sliced 3MF bytes for a job in `ready` or `printing` state."""
+    """Download the sliced 3MF bytes for a job in `ready` state."""
     if slice_jobs is None:
         raise HTTPException(status_code=404, detail="Slice jobs disabled")
     job = await slice_jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.status.value not in ("ready", "printing"):
+    if job.status.value != "ready":
         raise HTTPException(
             status_code=409,
             detail=f"Job is {job.status.value}, no output available",

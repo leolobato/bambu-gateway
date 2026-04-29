@@ -29,7 +29,6 @@ class SliceJobStatus(str, enum.Enum):
     QUEUED = "queued"
     SLICING = "slicing"
     UPLOADING = "uploading"
-    PRINTING = "printing"
     READY = "ready"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -38,7 +37,6 @@ class SliceJobStatus(str, enum.Enum):
     def is_terminal(self) -> bool:
         return self in {
             SliceJobStatus.READY,
-            SliceJobStatus.PRINTING,
             SliceJobStatus.FAILED,
             SliceJobStatus.CANCELLED,
         }
@@ -75,6 +73,11 @@ class SliceJob:
     status: SliceJobStatus = SliceJobStatus.QUEUED
     progress: int = 0
     phase: str | None = None
+    # True once the gateway has handed the sliced file to the printer (either
+    # via auto_print or a manual /api/print call). The job's status itself
+    # collapses to READY in both cases, so this flag is the only signal that
+    # disambiguates "sliced and waiting for the user" from "already running."
+    printed: bool = False
 
     # result
     estimate: dict | None = None  # PrintEstimate.model_dump
@@ -130,6 +133,9 @@ class SliceJob:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SliceJob":
         data = dict(data)
+        # Legacy: jobs persisted before PRINTING was collapsed into READY.
+        if data.get("status") == "printing":
+            data["status"] = "ready"
         data["status"] = SliceJobStatus(data["status"])
         return cls(**data)
 
@@ -226,7 +232,8 @@ class _SlicerLike(Protocol):
     ): ...
 
 
-# Optional callback signature: notifier(job, kind) where kind is "ready" or "failed".
+# Optional callback signature: notifier(job, kind) where kind is "ready",
+# "printing", or "failed".
 TerminalCallback = Callable[[SliceJob, str], Awaitable[None]]
 
 _PRINTER_BUSY_STATES = {"RUNNING", "PAUSE", "PREPARE"}
@@ -779,4 +786,6 @@ class SliceJobManager:
 
         job.progress = 100
         job.phase = None
-        await self._set_status(job, SliceJobStatus.PRINTING)
+        job.printed = True
+        await self._set_status(job, SliceJobStatus.READY)
+        await self._notify(job, "printing")

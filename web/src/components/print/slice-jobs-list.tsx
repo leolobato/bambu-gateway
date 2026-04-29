@@ -43,12 +43,11 @@ import {
 import { printFromJob } from '@/lib/api/print';
 import { listPrinters } from '@/lib/api/printers';
 import { usePrinterContext } from '@/lib/printer-context';
-import type { PrinterStatus, SliceJob, SliceJobStatus } from '@/lib/api/types';
+import type { SliceJob, SliceJobStatus } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
 
 const TERMINAL_STATUSES: SliceJobStatus[] = [
   'ready',
-  'printing',
   'failed',
   'cancelled',
 ];
@@ -57,38 +56,18 @@ function isTerminal(status: SliceJobStatus): boolean {
   return TERMINAL_STATUSES.includes(status);
 }
 
-// Bambu's `subtask_name` may include or omit the `.gcode.3mf` / `.3mf`
-// suffix and is sometimes case-mangled. Mirror the gateway's normalizer
-// in `app/live_activity_thumbnail.py::_normalize_filename`.
-function normalizeFilename(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/^.*[\\\/]/, '')
-    .replace(/\.gcode\.3mf$/, '')
-    .replace(/\.3mf$/, '');
-}
-
-function filenamesMatch(a: string | undefined, b: string): boolean {
-  if (!a) return false;
-  return normalizeFilename(a) === normalizeFilename(b);
-}
-
-const STATUS_LABEL: Record<SliceJobStatus, string> = {
+const STATUS_LABEL: Record<Exclude<SliceJobStatus, 'ready'>, string> = {
   queued: 'Queued',
   slicing: 'Slicing',
   uploading: 'Uploading',
-  printing: 'Printing',
-  ready: 'Ready',
   failed: 'Failed',
   cancelled: 'Cancelled',
 };
 
-const STATUS_CLASSES: Record<SliceJobStatus, string> = {
+const STATUS_CLASSES: Record<Exclude<SliceJobStatus, 'ready'>, string> = {
   queued: 'bg-bg-1 text-text-1 border border-line',
   slicing: 'bg-accent/15 text-accent border border-accent/40',
   uploading: 'bg-accent/15 text-accent border border-accent/40',
-  printing: 'bg-success/15 text-success border border-success/40',
-  ready: 'bg-success/15 text-success border border-success/40',
   failed: 'bg-danger/15 text-danger border border-danger/40',
   cancelled: 'bg-bg-1 text-text-1/70 border border-line line-through',
 };
@@ -121,9 +100,8 @@ export function SliceJobsList() {
     },
   });
 
-  // Resolve printer ids → names + live status so rows can show "Printer A"
-  // instead of a serial and the reprint heuristic can tell when a `printing`
-  // slice job is actually a stale leftover of a long-completed print.
+  // Resolve printer ids → names so rows can show "Printer A" instead of a
+  // serial.
   const printersQuery = useQuery({
     queryKey: ['printers'],
     queryFn: listPrinters,
@@ -134,14 +112,6 @@ export function SliceJobsList() {
     const map = new Map<string, string>();
     for (const p of printersQuery.data?.printers ?? []) {
       map.set(p.id, p.name || p.id);
-    }
-    return map;
-  }, [printersQuery.data]);
-
-  const printerStatusById = useMemo(() => {
-    const map = new Map<string, PrinterStatus>();
-    for (const p of printersQuery.data?.printers ?? []) {
-      map.set(p.id, p);
     }
     return map;
   }, [printersQuery.data]);
@@ -244,9 +214,6 @@ export function SliceJobsList() {
               printerName={
                 job.printer_id ? printerNameById.get(job.printer_id) ?? job.printer_id : null
               }
-              printerStatus={
-                job.printer_id ? printerStatusById.get(job.printer_id) ?? null : null
-              }
               onCancel={() => cancelMut.mutate(job.job_id)}
               onDelete={() => deleteMut.mutate(job.job_id)}
               onPrint={() =>
@@ -269,7 +236,6 @@ export function SliceJobsList() {
 function SliceJobRow({
   job,
   printerName,
-  printerStatus,
   onCancel,
   onDelete,
   onPrint,
@@ -279,7 +245,6 @@ function SliceJobRow({
 }: {
   job: SliceJob;
   printerName: string | null;
-  printerStatus: PrinterStatus | null;
   onCancel: () => void;
   onDelete: () => void;
   onPrint: () => void;
@@ -292,26 +257,11 @@ function SliceJobRow({
     job.status === 'slicing' ||
     job.status === 'uploading' ||
     job.status === 'queued';
-  // The slice-job state machine has no FINISHED status, so a `printing`
-  // row may be either live on the printer or a stale leftover from a
-  // long-completed print. Decide which by cross-referencing the printer's
-  // current state: if the printer isn't running this slice's file, the
-  // previous print is over and a Reprint is safe to offer.
   const hasOutput = (job.output_size ?? 0) > 0;
-  const looksFinished =
-    job.status === 'printing' &&
-    printerStatus != null &&
-    printerStatus.online &&
-    (
-      printerStatus.state !== 'printing' ||
-      !filenamesMatch(printerStatus.job?.file_name, job.filename)
-    );
   const isReprintable =
-    job.status === 'failed' ||
-    job.status === 'cancelled' ||
-    looksFinished;
+    job.status === 'failed' || job.status === 'cancelled';
   const canPrint = (job.status === 'ready' || isReprintable) && hasOutput;
-  const canDownload = job.status === 'ready' || job.status === 'printing';
+  const canDownload = job.status === 'ready';
   const rowBusy = isCancelling || isDeleting || isPrinting;
 
   const showThumbnail = job.has_thumbnail;
@@ -337,15 +287,17 @@ function SliceJobRow({
             >
               {job.filename}
             </span>
-            <span
-              className={cn(
-                'rounded-full px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap',
-                STATUS_CLASSES[job.status],
-              )}
-            >
-              {STATUS_LABEL[job.status]}
-              {showProgress ? ` ${job.progress}%` : ''}
-            </span>
+            {job.status !== 'ready' && (
+              <span
+                className={cn(
+                  'rounded-full px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap',
+                  STATUS_CLASSES[job.status],
+                )}
+              >
+                {STATUS_LABEL[job.status]}
+                {showProgress ? ` ${job.progress}%` : ''}
+              </span>
+            )}
             {job.auto_print && (
               <span className="rounded-full px-2 py-0.5 text-[11px] font-semibold bg-bg-1 text-text-1 border border-line">
                 Auto-print

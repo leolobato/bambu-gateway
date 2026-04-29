@@ -315,7 +315,6 @@ export type SliceJobStatus =
   | 'queued'
   | 'slicing'
   | 'uploading'
-  | 'printing'
   | 'ready'
   | 'failed'
   | 'cancelled';
@@ -336,6 +335,8 @@ export interface SliceJob {
   error: string | null;
   /** True when `GET /api/slice-jobs/{id}/thumbnail` will return a PNG. */
   has_thumbnail: boolean;
+  /** True once the sliced file has been handed off to the printer. */
+  printed: boolean;
 }
 
 export interface SliceJobListResponse {

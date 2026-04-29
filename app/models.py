@@ -490,6 +490,11 @@ class SliceJobResponse(BaseModel):
     error: str | None = None
     # True when a plate thumbnail is available for `GET /api/slice-jobs/{id}/thumbnail`.
     has_thumbnail: bool = False
+    # True once the sliced file has been handed off to the printer (auto-print
+    # success or a manual /api/print). Job status itself collapses to `ready`
+    # in both the "waiting on user" and "already running" cases; this flag is
+    # the differentiator.
+    printed: bool = False
 
 
 class SliceJobListResponse(BaseModel):

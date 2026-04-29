@@ -342,9 +342,10 @@ async def test_auto_print_uploads_when_printer_idle(tmp_jobs_dir: Path):
             project_filament_count=0, printer_id="PRINTER1",
             auto_print=True,
         )
-        terminal = await _wait_for_status(store, job.id, SliceJobStatus.PRINTING)
+        terminal = await _wait_for_status(store, job.id, SliceJobStatus.READY)
         assert submit_calls == [("PRINTER1", "cube.3mf", 6)]
         assert terminal.error is None
+        assert terminal.printed is True
     finally:
         await manager.stop()
 
@@ -381,6 +382,7 @@ async def test_auto_print_degrades_to_ready_when_printer_busy(tmp_jobs_dir: Path
         )
         ready = await _wait_for_status(store, job.id, SliceJobStatus.READY)
         assert ready.output_path is not None
+        assert ready.printed is False
         printer_service.submit_print.assert_not_called()
     finally:
         await manager.stop()

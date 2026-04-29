@@ -169,6 +169,9 @@ class NotificationHub:
         self._apns = apns
         self._store = device_store
         self._slice_store = slice_store
+        # Set after construction (printer_service is built later in lifespan).
+        # Used to resolve printer_id → display name in slice notifications.
+        self._printer_service = None
         self._queue: queue.Queue[NotificationEvent | None] = queue.Queue()
         self._dedupe: dict[tuple[str, str], float] = {}
         self._last_progress: dict[str, float] = {}
@@ -179,6 +182,15 @@ class NotificationHub:
         # notifications on startup (e.g. leftover "finished" state from a
         # previous session being "discovered" as a transition).
         self._seen_printers: set[str] = set()
+
+    def set_printer_service(self, printer_service) -> None:
+        self._printer_service = printer_service
+
+    def _resolve_printer_name(self, printer_id: str | None) -> str | None:
+        if not printer_id or self._printer_service is None:
+            return None
+        cfg = self._printer_service.get_config(printer_id)
+        return getattr(cfg, "name", None) if cfg is not None else None
 
     def start(self) -> None:
         if self._running:
@@ -275,7 +287,7 @@ class NotificationHub:
             await self._dispatch_live_activity_update(event)
 
     async def notify_slice_terminal(self, job, kind: str) -> None:
-        """Push a slice_ready / slice_failed alert.
+        """Push a slice_ready / slice_printing / slice_failed alert.
 
         Scoped to subscribers of `job.printer_id` if set; otherwise broadcasts
         to all known devices. Safe no-op if the device store is empty or the
@@ -285,6 +297,14 @@ class NotificationHub:
             event_type = "slice_ready"
             title = "Slice ready"
             body = f"{job.filename} is ready to print"
+        elif kind == "printing":
+            event_type = "slice_printing"
+            title = "Print started"
+            printer_name = self._resolve_printer_name(job.printer_id)
+            if printer_name:
+                body = f"Started printing {job.filename} on {printer_name}"
+            else:
+                body = f"Started printing {job.filename}"
         elif kind == "failed":
             event_type = "slice_failed"
             title = "Slice failed"
