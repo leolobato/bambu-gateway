@@ -8,6 +8,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
@@ -1210,7 +1211,7 @@ async def print_file(
     # If slice_only, return the sliced file as a download
     if slice_only:
         headers = {
-            "Content-Disposition": f'attachment; filename="{file.filename}"',
+            "Content-Disposition": _attachment_disposition(file.filename),
         }
         estimate_header = _estimate_response_header(
             slice_result.estimate if slice_result else None
@@ -1362,7 +1363,7 @@ async def print_preview(
 
     output_bytes = Path(cur.output_path).read_bytes()
     headers = {
-        "Content-Disposition": f'attachment; filename="{file.filename}"',
+        "Content-Disposition": _attachment_disposition(file.filename),
         "X-Preview-Id": cur.id,           # backward compat
         "X-Job-Id": cur.id,
     }
@@ -1728,6 +1729,15 @@ async def get_slice_job_thumbnail(job_id: str):
     )
 
 
+def _attachment_disposition(filename: str) -> str:
+    """Build an RFC 5987 `Content-Disposition` so non-ASCII filenames don't
+    blow up Starlette's latin-1 header encoder. Old clients fall back to the
+    `_`-substituted ASCII form; modern ones read the UTF-8 `filename*` field."""
+    ascii_fallback = filename.encode("ascii", "replace").decode("ascii").replace("?", "_")
+    encoded = quote(filename, safe="")
+    return f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{encoded}'
+
+
 @app.get("/api/slice-jobs/{job_id}/input")
 async def get_slice_job_input(job_id: str):
     """Download the original (pre-slice) 3MF bytes the user uploaded."""
@@ -1743,7 +1753,7 @@ async def get_slice_job_input(job_id: str):
         content=input_bytes,
         media_type="application/octet-stream",
         headers={
-            "Content-Disposition": f'attachment; filename="{job.filename}"',
+            "Content-Disposition": _attachment_disposition(job.filename),
             "X-Job-Id": job.id,
         },
     )
@@ -1767,7 +1777,7 @@ async def get_slice_job_output(job_id: str):
 
     output_bytes = Path(job.output_path).read_bytes()
     headers = {
-        "Content-Disposition": f'attachment; filename="{job.filename}"',
+        "Content-Disposition": _attachment_disposition(job.filename),
         "X-Job-Id": job.id,
         "X-Preview-Id": job.id,
     }

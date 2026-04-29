@@ -304,6 +304,40 @@ async def test_get_input_returns_uploaded_bytes(app_client):
     assert "cube.3mf" in resp.headers["content-disposition"]
 
 
+async def test_get_input_handles_non_ascii_filename(app_client):
+    """Non-ASCII filenames must serialize via RFC 5987 instead of crashing
+    Starlette's latin-1 header encoder with a 500. Regression: a job with
+    a Chinese filename (`小号-多色一体打印版.3mf`) used to surface as a 500."""
+    create = await app_client.post(
+        "/api/slice-jobs",
+        files={
+            "file": (
+                "小号-多色一体打印版.3mf",
+                b"original-bytes",
+                "application/octet-stream",
+            )
+        },
+        data={
+            "machine_profile": "GM014",
+            "process_profile": "0.20mm",
+            "filament_profiles": "{}",
+        },
+    )
+    job_id = create.json()["job_id"]
+
+    resp = await app_client.get(f"/api/slice-jobs/{job_id}/input")
+    assert resp.status_code == 200
+    assert resp.content == b"original-bytes"
+    disposition = resp.headers["content-disposition"]
+    # Modern UA: full filename via RFC 5987.
+    assert "filename*=UTF-8''" in disposition
+    assert "%E5%B0%8F%E5%8F%B7" in disposition
+    # Legacy fallback: ASCII-only `filename=` so latin-1 encoding succeeds.
+    assert 'filename="' in disposition
+    legacy_value = disposition.split('filename="', 1)[1].split('"', 1)[0]
+    legacy_value.encode("latin-1")
+
+
 async def test_get_input_404_unknown_job(app_client):
     resp = await app_client.get("/api/slice-jobs/deadbeef/input")
     assert resp.status_code == 404
