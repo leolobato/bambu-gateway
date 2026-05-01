@@ -959,7 +959,7 @@ async def slicer_plate_types():
 
 
 @app.post("/api/parse-3mf")
-async def parse_3mf_file(file: UploadFile):
+async def parse_3mf_file(file: UploadFile, plate_id: int | None = None):
     if not file.filename or not file.filename.lower().endswith(".3mf"):
         raise HTTPException(status_code=400, detail="File must be a .3mf file")
 
@@ -972,7 +972,7 @@ async def parse_3mf_file(file: UploadFile):
         )
 
     try:
-        info = parse_3mf(file_data)
+        info = parse_3mf(file_data, plate_id=plate_id)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Failed to parse 3MF: {e}")
 

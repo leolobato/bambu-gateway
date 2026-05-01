@@ -277,6 +277,11 @@ class PlateInfo(BaseModel):
     name: str = ""
     objects: list[PlateObject] = []
     thumbnail: str = ""
+    # 0-based filament indices the plate actually prints, derived from
+    # per-object extruder metadata plus face-painting (`paint_color`) scans.
+    # `None` means "couldn't determine — treat every declared filament as
+    # potentially used"; an empty list means "this plate uses no filaments".
+    used_filament_indices: list[int] | None = None
 
 
 class FilamentInfo(BaseModel):

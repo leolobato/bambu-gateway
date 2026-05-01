@@ -198,11 +198,20 @@ export default function PrintRoute() {
     info: ThreeMFInfo,
   ): Record<string, { profile_setting_id: string; tray_slot: number }> {
     const out: Record<string, { profile_setting_id: string; tray_slot: number }> = {};
-    // Only forward overrides for filaments actually referenced by the project;
-    // the gateway pads unused slots server-side using the chosen profile.
-    const usedFilaments = info.filaments.some((f) => f.used)
-      ? info.filaments.filter((f) => f.used)
-      : info.filaments;
+    // Only forward overrides for filaments the active plate actually prints.
+    // Sending overrides for slots a plate doesn't use has been observed to
+    // fail slicing on multi-filament projects; the gateway pads unused slots
+    // server-side using the chosen profile.
+    const platUsed = info.plates.find((p) => p.id === selectedPlateId)?.used_filament_indices;
+    const usedFilaments = (() => {
+      if (platUsed) {
+        const allow = new Set(platUsed);
+        return info.filaments.filter((f) => allow.has(f.index));
+      }
+      return info.filaments.some((f) => f.used)
+        ? info.filaments.filter((f) => f.used)
+        : info.filaments;
+    })();
     for (const filament of usedFilaments) {
       const slot = filamentMapping[filament.index];
       if (slot == null || slot < 0) continue;
@@ -666,6 +675,9 @@ export default function PrintRoute() {
           )}
           <FilamentsGroup
             projectFilaments={state.info.filaments}
+            usedFilamentIndices={
+              state.info.plates.find((p) => p.id === selectedPlateId)?.used_filament_indices ?? null
+            }
             trays={trays}
             mapping={filamentMapping}
             onChange={setFilamentMapping}

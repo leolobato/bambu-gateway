@@ -126,6 +126,13 @@ export interface PlateInfo {
   objects: PlateObject[];
   /** Base64-encoded PNG; empty string when the 3MF has no thumbnail. */
   thumbnail: string;
+  /**
+   * 0-based filament indices the plate actually prints, derived from
+   * per-object extruder metadata plus face-painting scans. `null` means
+   * "couldn't determine — show every declared filament"; an empty array
+   * means "this plate prints no filaments".
+   */
+  used_filament_indices: number[] | null;
 }
 
 export interface FilamentInfo {
