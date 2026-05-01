@@ -27,6 +27,9 @@ export function FilamentMappingRow({
   const projectColor = normalizeTrayColor(filament.color ? `${filament.color}FF` : '');
   const selectedTray = trays.find((t) => t.slot === selectedTraySlot);
   const selectedTrayColor = selectedTray ? normalizeTrayColor(selectedTray.tray_color) : null;
+  const selectedTrayDetail = selectedTray
+    ? [selectedTray.tray_type, selectedTray.matched_filament?.name].filter(Boolean).join(' · ')
+    : '';
   const projectName = filament.setting_id || `Filament ${filament.index + 1}`;
 
   return (
@@ -59,7 +62,13 @@ export function FilamentMappingRow({
             'focus:ring-0 focus:ring-offset-0',
           )}
         >
-          <span className="flex items-center gap-1.5 min-w-0">
+          {/*
+            Wrapper is a <div> (not <span>) on purpose: SelectTrigger's base
+            class applies `[&>span]:line-clamp-1` (display: -webkit-box) which
+            clobbers flex layout and collapses the empty color dot to zero
+            width. A div doesn't match that selector, so flex + the dot work.
+          */}
+          <div className="flex items-center gap-1.5 min-w-0">
             <span aria-hidden>→</span>
             {selectedTrayColor && (
               <span
@@ -69,9 +78,11 @@ export function FilamentMappingRow({
               />
             )}
             <span className="truncate">
-              {selectedTray ? `Tray ${selectedTray.slot + 1}` : 'Skip'}
+              {selectedTray
+                ? `Tray ${selectedTray.slot + 1}${selectedTrayDetail ? ` · ${selectedTrayDetail}` : ''}`
+                : 'Skip'}
             </span>
-          </span>
+          </div>
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="-1">Skip (use file's profile)</SelectItem>
