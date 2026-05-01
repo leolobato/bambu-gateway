@@ -102,7 +102,7 @@ def _get_arr(settings: dict, key: str, index: int, default: str = "") -> str:
 
 def _parse_project_settings(
     zf: zipfile.ZipFile,
-) -> tuple[list[FilamentInfo], PrintProfileInfo, PrinterInfo]:
+) -> tuple[list[FilamentInfo], PrintProfileInfo, PrinterInfo, str]:
     """Parse Metadata/project_settings.config for filaments, profile, printer.
 
     Generic 3MFs without Bambu's project settings still slice fine — the user
@@ -110,7 +110,7 @@ def _parse_project_settings(
     map to AMS trays.
     """
     if "Metadata/project_settings.config" not in zf.namelist():
-        return [], PrintProfileInfo(), PrinterInfo()
+        return [], PrintProfileInfo(), PrinterInfo(), ""
     raw = zf.read("Metadata/project_settings.config").decode()
     settings = json.loads(raw)
 
@@ -139,7 +139,9 @@ def _parse_project_settings(
         else "",
     )
 
-    return filaments, print_profile, printer
+    bed_type = settings.get("curr_bed_type", "") or ""
+
+    return filaments, print_profile, printer, bed_type
 
 
 def _has_gcode(zf: zipfile.ZipFile) -> bool:
@@ -188,7 +190,7 @@ def parse_3mf(data: bytes) -> ThreeMFInfo:
     """Parse a Bambu 3MF file from bytes and return structured metadata."""
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         plates, used_indices = _parse_model_settings(zf)
-        filaments, print_profile, printer = _parse_project_settings(zf)
+        filaments, print_profile, printer, bed_type = _parse_project_settings(zf)
         has_gcode = _has_gcode(zf)
         _extract_thumbnails(zf, plates)
         # Face-painted multi-color (single object, paint_color triangles)
@@ -215,4 +217,5 @@ def parse_3mf(data: bytes) -> ThreeMFInfo:
         print_profile=print_profile,
         printer=printer,
         has_gcode=has_gcode,
+        bed_type=bed_type,
     )

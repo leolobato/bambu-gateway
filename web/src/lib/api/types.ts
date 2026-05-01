@@ -161,6 +161,8 @@ export interface ThreeMFInfo {
   printer: PrinterInfo;
   /** When true, the file already contains G-code — slicing & filament overrides are ignored. */
   has_gcode: boolean;
+  /** Bed-type label as stored in the 3MF (e.g. "Textured PEI Plate"); matches `SlicerPlateType.label`. */
+  bed_type: string;
 }
 
 // --- Slicer profile shapes (returned by GET /api/slicer/*) ---

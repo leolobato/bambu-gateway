@@ -307,6 +307,10 @@ class ThreeMFInfo(BaseModel):
     print_profile: PrintProfileInfo = PrintProfileInfo()
     printer: PrinterInfo = PrinterInfo()
     has_gcode: bool = False
+    # Free-form bed-type label as stored in the 3MF (e.g. "Textured PEI Plate").
+    # The slicer's plate-type catalog returns the same string in `label`, with
+    # `value` being the slug expected by the slice API.
+    bed_type: str = ""
 
 
 # --- API response models ---

@@ -140,11 +140,18 @@ export default function PrintRoute() {
       // Default plate selection.
       const firstPlate = info.plates[0]?.id ?? 1;
       setSelectedPlateId(firstPlate);
-      // Pre-populate slicing settings from the 3MF if present.
+      // Pre-populate slicing settings from the 3MF if present. The 3MF stores
+      // the bed-type label (e.g. "Textured PEI Plate"); the picker's value is
+      // the slicer slug (e.g. "textured_pei_plate"), so map label → value via
+      // the plate-types catalog.
+      const bedTypeLabel = info.bed_type?.trim() ?? '';
+      const matchedPlateType = bedTypeLabel
+        ? plateTypesQuery.data?.find((p) => p.label === bedTypeLabel)?.value ?? ''
+        : '';
       setSettings((prev) => ({
         machine: prev.machine || info.printer.printer_settings_id || '',
         process: prev.process || info.print_profile.print_settings_id || '',
-        plateType: prev.plateType,
+        plateType: prev.plateType || matchedPlateType,
       }));
       // Filament-tray defaults via backend matcher. Only ask about filaments
       // any object actually references — declared-but-unused slots get padded
@@ -175,7 +182,7 @@ export default function PrintRoute() {
     } catch (err) {
       toast.error(`Failed to parse 3MF: ${(err as Error).message}`);
     }
-  }, [activePrinterId]);
+  }, [activePrinterId, plateTypesQuery.data]);
 
   const onDropFile = useCallback((file: File) => void importFile(file), [importFile]);
   const { dragging } = useDropZone({ accept: '.3mf', onFile: onDropFile, enabled: ddEnabled });
