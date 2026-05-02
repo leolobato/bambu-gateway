@@ -16,7 +16,7 @@ async def app_client(tmp_path: Path, monkeypatch):
 
     config_store.set_path(tmp_path / "printers.json")
     monkeypatch.setattr(settings, "orcaslicer_api_url", "http://stub")
-    monkeypatch.setattr(main_mod, "parse_3mf", lambda data: MagicMock(filaments=[]))
+    monkeypatch.setattr(main_mod, "parse_3mf", lambda data, plate_id=None: MagicMock(filaments=[]))
 
     async def _fake_resolve(*a, **kw):
         return {}, None
@@ -472,7 +472,7 @@ async def test_create_rejects_invalid_filament_payload_with_400(
     monkeypatch.setattr(
         main_mod,
         "parse_3mf",
-        lambda data: MagicMock(
+        lambda data, plate_id=None: MagicMock(
             filaments=[MagicMock(setting_id=f"f{i}") for i in range(5)],
         ),
     )

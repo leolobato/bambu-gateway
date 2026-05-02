@@ -108,7 +108,7 @@ async def test_print_preview_returns_base64_estimate_header(monkeypatch, tmp_pat
     monkeypatch.setattr(
         app_main,
         "parse_3mf",
-        lambda data: SimpleNamespace(filaments=[]),
+        lambda data, plate_id=None: SimpleNamespace(filaments=[]),
     )
 
     async def _fake_resolve(*a, **kw):
@@ -171,7 +171,7 @@ async def test_print_stream_preview_result_includes_estimate(monkeypatch, tmp_pa
     monkeypatch.setattr(
         app_main,
         "parse_3mf",
-        lambda data: SimpleNamespace(filaments=[]),
+        lambda data, plate_id=None: SimpleNamespace(filaments=[]),
     )
 
     async def _fake_resolve(*a, **kw):
@@ -247,7 +247,7 @@ async def test_print_stream_preview_derives_estimate_from_sliced_3mf(monkeypatch
     monkeypatch.setattr(
         app_main,
         "parse_3mf",
-        lambda data: SimpleNamespace(filaments=[]),
+        lambda data, plate_id=None: SimpleNamespace(filaments=[]),
     )
 
     async def _fake_resolve(*a, **kw):

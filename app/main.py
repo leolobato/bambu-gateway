@@ -1102,7 +1102,7 @@ async def print_file(
 
     # Parse 3MF metadata
     try:
-        info = parse_3mf(file_data)
+        info = parse_3mf(file_data, plate_id=plate_id or 1)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Failed to parse 3MF: {e}")
 
@@ -1313,7 +1313,7 @@ async def print_preview(
             detail="machine_profile and process_profile are required",
         )
     try:
-        info = parse_3mf(file_data)
+        info = parse_3mf(file_data, plate_id=plate_id or 1)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Failed to parse 3MF: {e}")
 
@@ -1428,7 +1428,7 @@ async def print_file_stream(
             detail=f"File exceeds {settings.max_file_size_mb} MB limit",
         )
     try:
-        info = parse_3mf(file_data)
+        info = parse_3mf(file_data, plate_id=plate_id or 1)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Failed to parse 3MF: {e}")
 
@@ -1624,7 +1624,7 @@ async def create_slice_job(
             detail=f"File exceeds {settings.max_file_size_mb} MB limit",
         )
     try:
-        info = parse_3mf(file_data)
+        info = parse_3mf(file_data, plate_id=plate_id or 1)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Failed to parse 3MF: {e}")
 
