@@ -50,5 +50,9 @@ async def test_inspect_fixture_01_via_client():
         assert insp["plates"][0]["used_filament_indices"] == [0]
         assert insp["filaments"][0]["type"] == "PLA"
         assert insp["filaments"][0]["filament_id"] == "GFA00"
+        assert insp["printer_settings_id"] == "Bambu Lab A1 mini 0.4 nozzle"
+        assert insp["print_settings_id"] == "0.20mm Standard @BBL A1M"
+        assert insp["layer_height"] == "0.25"
+        assert insp["plates"][0]["objects"][0]["name"] == "3DBenchy.stl"
     finally:
         await client.delete_token(upload["token"])

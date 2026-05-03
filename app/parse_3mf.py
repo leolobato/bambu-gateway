@@ -84,7 +84,10 @@ def _adapt(
         plates.append(PlateInfo(
             id=pid,
             name=p.get("name", "") or "",
-            objects=[],  # Populated below from inspect.plates[].objects when surfaced.
+            objects=[
+                PlateObject(id=str(o.get("id", "")), name=o.get("name", "") or "")
+                for o in p.get("objects", [])
+            ],
             thumbnail=thumbnails.get(pid, ""),
             used_filament_indices=p.get("used_filament_indices"),
         ))
@@ -123,11 +126,11 @@ def _adapt(
         plates=plates,
         filaments=filaments,
         print_profile=PrintProfileInfo(
-            print_settings_id="",  # Inspect doesn't currently return this.
-            layer_height="",
+            print_settings_id=insp.get("print_settings_id", "") or "",
+            layer_height=insp.get("layer_height", "") or "",
         ),
         printer=PrinterInfo(
-            printer_settings_id="",
+            printer_settings_id=insp.get("printer_settings_id", "") or "",
             printer_model=insp.get("printer_model", "") or "",
             nozzle_diameter=insp.get("printer_variant", "") or "",
         ),
