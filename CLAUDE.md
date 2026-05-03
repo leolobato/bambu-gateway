@@ -58,10 +58,10 @@ and **FTPS** (port 990, implicit TLS) for file uploads.
 - `app/preparation_stages.py` — Preparation stage definitions (67+ stages) and
   state derivation logic. Determines granular printer state from `gcode_state`,
   `stg_cur`, and `layer_num` MQTT fields.
-- `app/parse_3mf.py` — Extracts metadata (plates, filaments, profiles, thumbnails)
-  from 3MF ZIP archives. The gateway does not mutate 3MFs before forwarding;
-  `orcaslicer-cli` owns all input normalization (clamps, printer-identity
-  rebrand, filament-slot trim).
+- `app/parse_3mf.py` — Network adapter (`parse_3mf_via_slicer`). Uploads the
+  3MF to `orcaslicer-cli`'s `POST /3mf` endpoint, calls `GET /3mf/{token}/inspect`,
+  fetches per-plate thumbnails, and adapts the response into `ThreeMFInfo`. The
+  gateway no longer opens 3MF ZIPs in-process.
 - `app/filament_selection.py` — Validates and normalizes filament profile selections
   before passing them to the slicer API.
 - `app/slicer_client.py` — HTTP client for the OrcaSlicer CLI API. Supports both
