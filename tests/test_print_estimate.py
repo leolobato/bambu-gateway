@@ -213,26 +213,27 @@ async def test_print_stream_preview_result_includes_estimate(monkeypatch, tmp_pa
         await manager.stop()
 
 
-async def test_print_stream_preview_derives_estimate_from_sliced_3mf(monkeypatch, tmp_path):
+async def test_print_stream_preview_uses_estimate_from_sse_result(monkeypatch, tmp_path):
+    """Estimate is read from the SSE result event, not extracted from the 3MF."""
     import asyncio as _asyncio
     from unittest.mock import MagicMock
     from app.slice_jobs import SliceJobManager, SliceJobStore
 
-    sliced = _zip_bytes({
-        "Metadata/slice_info.config": """<?xml version="1.0" encoding="UTF-8"?>
-<config>
-  <plate>
-    <metadata key="prediction" value="120"/>
-    <filament id="1" used_m="3.5" used_g="10.25" />
-  </plate>
-</config>
-""",
-    })
+    sliced = _zip_bytes({})
+
+    sse_estimate = {
+        "total_seconds": 120,
+        "total_filament_millimeters": 3500.0,
+        "total_filament_grams": 10.25,
+    }
 
     async def stream_events(*args, **kwargs):
         yield {
             "event": "result",
-            "data": {"file_base64": base64.b64encode(sliced).decode()},
+            "data": {
+                "file_base64": base64.b64encode(sliced).decode(),
+                "estimate": sse_estimate,
+            },
         }
         yield {"event": "done", "data": {}}
 
