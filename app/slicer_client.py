@@ -265,6 +265,51 @@ class SlicerClient:
 
         return resp.json()
 
+    async def upload_3mf(self, data: bytes, *, filename: str = "input.3mf") -> dict:
+        """POST /3mf — upload bytes, get a token + sha256.
+
+        Returns the JSON response: ``{token, sha256, size, evicts}``.
+        """
+        files = {"file": (filename, data, "application/octet-stream")}
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                r = await client.post(f"{self._base_url}/3mf", files=files)
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        r.raise_for_status()
+        return r.json()
+
+    async def inspect(self, token: str) -> dict:
+        """GET /3mf/{token}/inspect — return the structured summary.
+
+        Returns the JSON response with ``plates``, ``filaments``,
+        ``estimate``, ``bbox``, ``thumbnail_urls``, ``use_set_per_plate``,
+        and ``schema_version``.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.get(f"{self._base_url}/3mf/{token}/inspect")
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        r.raise_for_status()
+        return r.json()
+
+    async def delete_token(self, token: str) -> bool:
+        """DELETE /3mf/{token} — drop the cached file.
+
+        Returns True when the slicer confirmed the delete, False on 404
+        (token already evicted). Other HTTP errors raise.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.delete(f"{self._base_url}/3mf/{token}")
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        if r.status_code == 404:
+            return False
+        r.raise_for_status()
+        return True
+
     async def get_filament_detail(self, setting_id: str) -> dict | None:
         """Fetch one filament profile with its full resolved field set.
 
