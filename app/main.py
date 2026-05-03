@@ -66,7 +66,6 @@ from app.models import (
     TransferredSetting,
 )
 from app.parse_3mf import parse_3mf_via_slicer
-from app.print_estimate import extract_print_estimate
 from app.printer_service import PrinterService
 from app.slice_jobs import SliceJobManager, SliceJobStatus, SliceJobStore
 from app.slicer_client import SlicerClient, SliceResult, SlicingError

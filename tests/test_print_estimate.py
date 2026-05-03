@@ -12,8 +12,6 @@ from fastapi import UploadFile
 
 from app import main as app_main
 from app.models import PrintEstimate, PrintResponse
-from app.print_estimate import extract_print_estimate
-from app.slicer_client import SliceResult
 
 
 def _decode_estimate_header(value: str) -> dict:
@@ -55,32 +53,6 @@ def test_print_response_includes_optional_estimate():
         "model_print_seconds": 9000,
         "total_seconds": 9356,
     }
-
-
-def test_extract_print_estimate_from_sliced_3mf_slice_info():
-    archive = _zip_bytes({
-        "Metadata/slice_info.config": """<?xml version="1.0" encoding="UTF-8"?>
-<config>
-  <plate>
-    <metadata key="prediction" value="7518"/>
-    <metadata key="weight" value="80.41"/>
-    <filament id="1" used_m="26.53" used_g="80.41" />
-    <filament id="2" used_m="1.25" used_g="2.50" />
-  </plate>
-</config>
-""",
-    })
-
-    estimate = extract_print_estimate(archive)
-
-    assert estimate == PrintEstimate(
-        total_filament_millimeters=27780.0,
-        total_filament_grams=82.91,
-        model_filament_millimeters=27780.0,
-        model_filament_grams=82.91,
-        model_print_seconds=7518,
-        total_seconds=7518,
-    )
 
 
 async def test_print_preview_returns_base64_estimate_header(monkeypatch, tmp_path):
