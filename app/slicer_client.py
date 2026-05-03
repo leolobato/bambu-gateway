@@ -51,8 +51,14 @@ def _decode_print_estimate(value: str) -> PrintEstimate | None:
 class SlicerClient:
     """Thin wrapper around the OrcaSlicer CLI API."""
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
+        self._transport = transport
         self._has_stream: bool | None = None  # None = unknown, check on first call
 
     async def slice(
@@ -80,7 +86,7 @@ class SlicerClient:
 
         logger.info("Sending %s to slicer at %s", filename, url)
         try:
-            async with httpx.AsyncClient(timeout=300) as client:
+            async with httpx.AsyncClient(timeout=300, transport=self._transport) as client:
                 resp = await client.post(url, files=files, data=data)
         except httpx.HTTPError as e:
             raise SlicingError(f"Slicer unreachable: {e}")
@@ -124,7 +130,7 @@ class SlicerClient:
         if self._has_stream is not None:
             return self._has_stream
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with httpx.AsyncClient(timeout=5, transport=self._transport) as client:
                 resp = await client.options(f"{self._base_url}/slice-stream")
                 self._has_stream = resp.status_code != 404
         except httpx.HTTPError:
@@ -179,7 +185,7 @@ class SlicerClient:
 
         logger.info("Streaming slice of %s via %s", filename, url)
         timeout = httpx.Timeout(connect=10, read=300, write=60, pool=10)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, transport=self._transport) as client:
             async with client.stream("POST", url, files=files, data=form_data) as resp:
                 if resp.status_code != 200:
                     body = await resp.aread()
@@ -253,7 +259,7 @@ class SlicerClient:
         if category == "filaments" and ams_assignable is not None:
             params["ams_assignable"] = "true" if ams_assignable else "false"
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
                 resp = await client.get(url, params=params)
         except httpx.HTTPError as e:
             logger.error("Failed to fetch %s from slicer: %s", category, e)
@@ -272,7 +278,7 @@ class SlicerClient:
         """
         files = {"file": (filename, data, "application/octet-stream")}
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=120.0, transport=self._transport) as client:
                 r = await client.post(f"{self._base_url}/3mf", files=files)
         except httpx.HTTPError as e:
             raise SlicingError(f"Slicer unreachable: {e}")
@@ -287,7 +293,7 @@ class SlicerClient:
         and ``schema_version``.
         """
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, transport=self._transport) as client:
                 r = await client.get(f"{self._base_url}/3mf/{token}/inspect")
         except httpx.HTTPError as e:
             raise SlicingError(f"Slicer unreachable: {e}")
@@ -301,7 +307,7 @@ class SlicerClient:
         (token already evicted). Other HTTP errors raise.
         """
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, transport=self._transport) as client:
                 r = await client.delete(f"{self._base_url}/3mf/{token}")
         except httpx.HTTPError as e:
             raise SlicingError(f"Slicer unreachable: {e}")
@@ -319,7 +325,7 @@ class SlicerClient:
         """
         url = f"{self._base_url}/profiles/filaments/{setting_id}"
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
                 resp = await client.get(url)
         except httpx.HTTPError as e:
             logger.error("Failed to fetch filament %s from slicer: %s", setting_id, e)
