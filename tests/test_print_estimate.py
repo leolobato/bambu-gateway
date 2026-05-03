@@ -105,11 +105,10 @@ async def test_print_preview_returns_base64_estimate_header(monkeypatch, tmp_pat
 
     stub_slicer = StubSlicer()
     monkeypatch.setattr(app_main, "slicer_client", stub_slicer)
-    monkeypatch.setattr(
-        app_main,
-        "parse_3mf",
-        lambda data, plate_id=None: SimpleNamespace(filaments=[]),
-    )
+
+    async def _fake_parse(data, slicer, *, plate_id=None):
+        return SimpleNamespace(filaments=[])
+    monkeypatch.setattr(app_main, "parse_3mf_via_slicer", _fake_parse)
 
     async def _fake_resolve(*a, **kw):
         return {}, None
@@ -168,11 +167,10 @@ async def test_print_stream_preview_result_includes_estimate(monkeypatch, tmp_pa
 
     stub_slicer = StubSlicer()
     monkeypatch.setattr(app_main, "slicer_client", stub_slicer)
-    monkeypatch.setattr(
-        app_main,
-        "parse_3mf",
-        lambda data, plate_id=None: SimpleNamespace(filaments=[]),
-    )
+
+    async def _fake_parse2(data, slicer, *, plate_id=None):
+        return SimpleNamespace(filaments=[])
+    monkeypatch.setattr(app_main, "parse_3mf_via_slicer", _fake_parse2)
 
     async def _fake_resolve(*a, **kw):
         return {}, None
@@ -244,11 +242,10 @@ async def test_print_stream_preview_derives_estimate_from_sliced_3mf(monkeypatch
 
     stub_slicer = StubSlicer()
     monkeypatch.setattr(app_main, "slicer_client", stub_slicer)
-    monkeypatch.setattr(
-        app_main,
-        "parse_3mf",
-        lambda data, plate_id=None: SimpleNamespace(filaments=[]),
-    )
+
+    async def _fake_parse3(data, slicer, *, plate_id=None):
+        return SimpleNamespace(filaments=[])
+    monkeypatch.setattr(app_main, "parse_3mf_via_slicer", _fake_parse3)
 
     async def _fake_resolve(*a, **kw):
         return {}, None

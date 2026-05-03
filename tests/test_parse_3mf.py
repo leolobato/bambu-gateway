@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import zipfile
 
-from app.parse_3mf import parse_3mf
+from app.parse_3mf_legacy import parse_3mf
 
 
 def _zip_bytes(files: dict[str, str | bytes]) -> bytes:
