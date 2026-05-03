@@ -11,7 +11,6 @@ from typing import Any
 import httpx
 
 from app.models import PrintEstimate
-from app.print_estimate import extract_print_estimate
 
 logger = logging.getLogger(__name__)
 
@@ -112,10 +111,7 @@ class SlicerClient:
             except json.JSONDecodeError:
                 logger.warning("Failed to parse X-Filament-Settings-Transferred header")
 
-        estimate = (
-            _decode_print_estimate(resp.headers.get("x-print-estimate", ""))
-            or extract_print_estimate(resp.content)
-        )
+        estimate = _decode_print_estimate(resp.headers.get("x-print-estimate", ""))
 
         return SliceResult(
             content=resp.content,
