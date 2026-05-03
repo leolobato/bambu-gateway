@@ -166,8 +166,24 @@ export default function PrintRoute() {
           for (const m of matches.matches) {
             initialMapping[m.index] = m.preferred_tray_slot ?? -1;
           }
-        } catch {
-          // Non-fatal — user can pick manually.
+          // If we got matches back but none of them resolved to an AMS tray,
+          // every filament row is going to read "Skip (use file's profile)" —
+          // and a click-through "Slice" silently picks the file's authored
+          // profile instead of whatever's loaded in the AMS. Warn the user
+          // so they pick a tray (or knowingly accept the file defaults).
+          const anyMatched = Object.values(initialMapping).some((v) => v >= 0);
+          if (usedFilaments.length > 0 && !anyMatched) {
+            toast.warning(
+              "No AMS trays matched the project's filaments — pick a tray for each row, or the file's authored profiles will be used.",
+            );
+          }
+        } catch (err) {
+          // The previous behavior swallowed this silently and left the
+          // mapping empty, which made it look like the auto-match worked
+          // (rows showed "Skip") while the slice fell back to file defaults.
+          toast.error(
+            `Couldn't fetch AMS matches: ${(err as Error).message}. Pick filaments manually before slicing.`,
+          );
         }
       }
       setFilamentMapping(initialMapping);
