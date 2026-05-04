@@ -67,11 +67,17 @@ export default function PrintRoute() {
     queryFn: getSlicerMachines,
     staleTime: Infinity,
   });
+  // 3MF import seeds `settings.machine` with the printer's display name
+  // (e.g. "Bambu Lab P2S 0.4 nozzle"); a separate effect rewrites it to a
+  // setting_id once `machinesQuery` resolves. The slicer only accepts
+  // setting_ids on `?machine=`, so wait for that translation before firing.
+  const machineIsSettingId = !!settings.machine
+    && !!machinesQuery.data?.some((m) => m.setting_id === settings.machine);
   const processesQuery = useQuery({
     queryKey: ['slicer', 'processes', settings.machine],
     queryFn: () => getSlicerProcesses(settings.machine || undefined),
     staleTime: Infinity,
-    enabled: !!settings.machine,
+    enabled: machineIsSettingId,
   });
   const plateTypesQuery = useQuery({
     queryKey: ['slicer', 'plate-types'],

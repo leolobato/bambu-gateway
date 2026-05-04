@@ -51,11 +51,12 @@ async def parse_3mf_via_slicer(
 async def _fetch_main_thumbnails(
     slicer: SlicerClient, token: str, insp: dict,
 ) -> dict[int, str]:
-    """Fetch one ``main`` PNG per plate, return ``{plate_id: base64-str}``.
+    """Fetch one ``main`` PNG per plate, return ``{plate_id: data-url}``.
 
-    Skips silently when a plate has no main thumbnail — older 3MFs that
-    only carry ``small`` variants surface as empty strings, matching the
-    pre-migration behaviour for those files.
+    The value is a ``data:image/png;base64,...`` URL so the frontend can
+    drop it straight into ``<img src>``. Plates without a main thumbnail
+    are omitted — older 3MFs that only carry ``small`` variants surface
+    as empty strings, matching the pre-migration behaviour for those files.
     """
     out: dict[int, str] = {}
     for entry in insp.get("thumbnail_urls", []):
@@ -68,7 +69,8 @@ async def _fetch_main_thumbnails(
         async with httpx.AsyncClient() as client:
             r = await client.get(url, timeout=30.0)
             if r.status_code == 200:
-                out[plate] = base64.b64encode(r.content).decode("ascii")
+                b64 = base64.b64encode(r.content).decode("ascii")
+                out[plate] = f"data:image/png;base64,{b64}"
     return out
 
 
