@@ -50,9 +50,10 @@ async def test_unused_slot_keeps_authored_name():
     # the resolver upstream is responsible for swapping it before we get
     # here when the user retargets to a different machine.
     assert filament_ids == ["Bambu PLA Basic @BBL A1M", "Bambu PLA Basic @BBL P2S"]
-    # tray_slot=1 produces a filament_map starting at the AMS slot the user
-    # picked; unused slot 1 falls back to its 1-indexed identity.
-    assert filament_map == [1, 2]
+    # tray_slot is intentionally NOT forwarded to the slicer; AMS routing
+    # happens at print time via build_ams_mapping → MQTT project_file.
+    # See app/slicer_client.py:_normalize_filament_selection.
+    assert filament_map is None
 
 
 @pytest.mark.asyncio

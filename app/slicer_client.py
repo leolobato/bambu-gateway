@@ -337,6 +337,16 @@ class SlicerClient:
         input_token: str,
         filament_profiles: list[str] | dict[str, Any],
     ) -> tuple[list[str], list[int] | None]:
+        """Translate filament selection into the slicer's positional shape.
+
+        Returns ``(filament_settings_ids, None)``. ``tray_slot`` values
+        present on dict-form selections are intentionally ignored here:
+        AMS tray routing is a print-time concern, threaded into the MQTT
+        ``project_file`` command via ``build_ams_mapping``. Forwarding
+        tray slots to the slicer (the historical behaviour) repurposed
+        libslic3r's per-filament-extruder field, which corrupted single-
+        extruder slices and silenced the prime-tower auto-disable.
+        """
         if isinstance(filament_profiles, list):
             return list(filament_profiles), None
 
@@ -357,7 +367,6 @@ class SlicerClient:
             )
 
         filament_ids = list(base_ids)
-        tray_slots: dict[int, int] = {}
         for slot_str, selection in filament_profiles.items():
             try:
                 idx = int(slot_str)
@@ -374,21 +383,15 @@ class SlicerClient:
                 pid = str(selection.get("profile_setting_id", "")).strip()
                 if pid:
                     filament_ids[idx] = pid
-                tray_slot = selection.get("tray_slot")
-                if isinstance(tray_slot, int):
-                    tray_slots[idx] = tray_slot
+                # tray_slot is consumed by build_ams_mapping at print time;
+                # it MUST NOT leak into the slicer request.
             else:
                 raise SlicingError(
                     f"Project filament {idx} selection must be a setting_id string "
                     "or an object with profile_setting_id",
                 )
 
-        filament_map: list[int] | None = None
-        if tray_slots:
-            filament_map = [
-                tray_slots.get(i, i + 1) for i in range(len(filament_ids))
-            ]
-        return filament_ids, filament_map
+        return filament_ids, None
 
     async def _download_3mf(self, token: str) -> bytes:
         url = f"{self._base_url}/3mf/{token}"
