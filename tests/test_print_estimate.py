@@ -12,8 +12,6 @@ from fastapi import UploadFile
 
 from app import main as app_main
 from app.models import PrintEstimate, PrintResponse
-from app.print_estimate import extract_print_estimate
-from app.slicer_client import SliceResult
 
 
 def _decode_estimate_header(value: str) -> dict:
@@ -57,32 +55,6 @@ def test_print_response_includes_optional_estimate():
     }
 
 
-def test_extract_print_estimate_from_sliced_3mf_slice_info():
-    archive = _zip_bytes({
-        "Metadata/slice_info.config": """<?xml version="1.0" encoding="UTF-8"?>
-<config>
-  <plate>
-    <metadata key="prediction" value="7518"/>
-    <metadata key="weight" value="80.41"/>
-    <filament id="1" used_m="26.53" used_g="80.41" />
-    <filament id="2" used_m="1.25" used_g="2.50" />
-  </plate>
-</config>
-""",
-    })
-
-    estimate = extract_print_estimate(archive)
-
-    assert estimate == PrintEstimate(
-        total_filament_millimeters=27780.0,
-        total_filament_grams=82.91,
-        model_filament_millimeters=27780.0,
-        model_filament_grams=82.91,
-        model_print_seconds=7518,
-        total_seconds=7518,
-    )
-
-
 async def test_print_preview_returns_base64_estimate_header(monkeypatch, tmp_path):
     from unittest.mock import MagicMock
     from app.slice_jobs import SliceJobManager, SliceJobStore
@@ -105,11 +77,10 @@ async def test_print_preview_returns_base64_estimate_header(monkeypatch, tmp_pat
 
     stub_slicer = StubSlicer()
     monkeypatch.setattr(app_main, "slicer_client", stub_slicer)
-    monkeypatch.setattr(
-        app_main,
-        "parse_3mf",
-        lambda data, plate_id=None: SimpleNamespace(filaments=[]),
-    )
+
+    async def _fake_parse(data, slicer, *, plate_id=None):
+        return SimpleNamespace(filaments=[])
+    monkeypatch.setattr(app_main, "parse_3mf_via_slicer", _fake_parse)
 
     async def _fake_resolve(*a, **kw):
         return {}, None
@@ -168,11 +139,10 @@ async def test_print_stream_preview_result_includes_estimate(monkeypatch, tmp_pa
 
     stub_slicer = StubSlicer()
     monkeypatch.setattr(app_main, "slicer_client", stub_slicer)
-    monkeypatch.setattr(
-        app_main,
-        "parse_3mf",
-        lambda data, plate_id=None: SimpleNamespace(filaments=[]),
-    )
+
+    async def _fake_parse2(data, slicer, *, plate_id=None):
+        return SimpleNamespace(filaments=[])
+    monkeypatch.setattr(app_main, "parse_3mf_via_slicer", _fake_parse2)
 
     async def _fake_resolve(*a, **kw):
         return {}, None
@@ -215,26 +185,27 @@ async def test_print_stream_preview_result_includes_estimate(monkeypatch, tmp_pa
         await manager.stop()
 
 
-async def test_print_stream_preview_derives_estimate_from_sliced_3mf(monkeypatch, tmp_path):
+async def test_print_stream_preview_uses_estimate_from_sse_result(monkeypatch, tmp_path):
+    """Estimate is read from the SSE result event, not extracted from the 3MF."""
     import asyncio as _asyncio
     from unittest.mock import MagicMock
     from app.slice_jobs import SliceJobManager, SliceJobStore
 
-    sliced = _zip_bytes({
-        "Metadata/slice_info.config": """<?xml version="1.0" encoding="UTF-8"?>
-<config>
-  <plate>
-    <metadata key="prediction" value="120"/>
-    <filament id="1" used_m="3.5" used_g="10.25" />
-  </plate>
-</config>
-""",
-    })
+    sliced = _zip_bytes({})
+
+    sse_estimate = {
+        "total_seconds": 120,
+        "total_filament_millimeters": 3500.0,
+        "total_filament_grams": 10.25,
+    }
 
     async def stream_events(*args, **kwargs):
         yield {
             "event": "result",
-            "data": {"file_base64": base64.b64encode(sliced).decode()},
+            "data": {
+                "file_base64": base64.b64encode(sliced).decode(),
+                "estimate": sse_estimate,
+            },
         }
         yield {"event": "done", "data": {}}
 
@@ -244,11 +215,10 @@ async def test_print_stream_preview_derives_estimate_from_sliced_3mf(monkeypatch
 
     stub_slicer = StubSlicer()
     monkeypatch.setattr(app_main, "slicer_client", stub_slicer)
-    monkeypatch.setattr(
-        app_main,
-        "parse_3mf",
-        lambda data, plate_id=None: SimpleNamespace(filaments=[]),
-    )
+
+    async def _fake_parse3(data, slicer, *, plate_id=None):
+        return SimpleNamespace(filaments=[])
+    monkeypatch.setattr(app_main, "parse_3mf_via_slicer", _fake_parse3)
 
     async def _fake_resolve(*a, **kw):
         return {}, None

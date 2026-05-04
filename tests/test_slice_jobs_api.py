@@ -16,7 +16,9 @@ async def app_client(tmp_path: Path, monkeypatch):
 
     config_store.set_path(tmp_path / "printers.json")
     monkeypatch.setattr(settings, "orcaslicer_api_url", "http://stub")
-    monkeypatch.setattr(main_mod, "parse_3mf", lambda data, plate_id=None: MagicMock(filaments=[]))
+    async def _fake_parse(data, slicer, *, plate_id=None):
+        return MagicMock(filaments=[])
+    monkeypatch.setattr(main_mod, "parse_3mf_via_slicer", _fake_parse)
 
     async def _fake_resolve(*a, **kw):
         return {}, None
@@ -469,13 +471,9 @@ async def test_create_rejects_invalid_filament_payload_with_400(
     config_store.set_path(tmp_path / "printers.json")
     monkeypatch.setattr(settings, "orcaslicer_api_url", "http://stub")
     # Project has 5 filaments — matches the user's bug report shape.
-    monkeypatch.setattr(
-        main_mod,
-        "parse_3mf",
-        lambda data, plate_id=None: MagicMock(
-            filaments=[MagicMock(setting_id=f"f{i}") for i in range(5)],
-        ),
-    )
+    async def _fake_parse_5(data, slicer, *, plate_id=None):
+        return MagicMock(filaments=[MagicMock(setting_id=f"f{i}") for i in range(5)])
+    monkeypatch.setattr(main_mod, "parse_3mf_via_slicer", _fake_parse_5)
 
     main_mod.printer_service = MagicMock()
     main_mod.printer_service.default_printer_id.return_value = "PRINTER1"

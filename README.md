@@ -175,6 +175,20 @@ When a slicer URL is configured, the web UI will show machine and filament profi
 selectors, and unsliced 3MF files will be sliced automatically before printing.
 Without it, only pre-sliced 3MF files can be printed.
 
+## 3MF parsing
+
+`bambu-gateway` does not open `.3mf` ZIPs. All metadata extraction
+(plates, filaments, thumbnails, used-filament dispatch, print
+estimates) goes through `orcaslicer-cli`'s HTTP API, which links
+libslic3r directly. Set `ORCASLICER_API_URL` to point at it.
+
+Required endpoints (consumed by `app/slicer_client.py`):
+- `POST /3mf` — upload, returns token
+- `GET /3mf/{token}/inspect` — structured summary
+- `GET /3mf/{token}/plates/{n}/thumbnail` — PNG bytes
+- `DELETE /3mf/{token}` — drop cached upload
+- `POST /slice/v2` — slice, returns estimate + output token
+
 ## How It Works
 
 The app communicates with Bambu Lab printers using their LAN protocol:

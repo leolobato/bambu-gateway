@@ -11,7 +11,6 @@ from typing import Any
 import httpx
 
 from app.models import PrintEstimate
-from app.print_estimate import extract_print_estimate
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +50,14 @@ def _decode_print_estimate(value: str) -> PrintEstimate | None:
 class SlicerClient:
     """Thin wrapper around the OrcaSlicer CLI API."""
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
+        self._transport = transport
         self._has_stream: bool | None = None  # None = unknown, check on first call
 
     async def slice(
@@ -80,7 +85,7 @@ class SlicerClient:
 
         logger.info("Sending %s to slicer at %s", filename, url)
         try:
-            async with httpx.AsyncClient(timeout=300) as client:
+            async with httpx.AsyncClient(timeout=300, transport=self._transport) as client:
                 resp = await client.post(url, files=files, data=data)
         except httpx.HTTPError as e:
             raise SlicingError(f"Slicer unreachable: {e}")
@@ -106,10 +111,7 @@ class SlicerClient:
             except json.JSONDecodeError:
                 logger.warning("Failed to parse X-Filament-Settings-Transferred header")
 
-        estimate = (
-            _decode_print_estimate(resp.headers.get("x-print-estimate", ""))
-            or extract_print_estimate(resp.content)
-        )
+        estimate = _decode_print_estimate(resp.headers.get("x-print-estimate", ""))
 
         return SliceResult(
             content=resp.content,
@@ -124,7 +126,7 @@ class SlicerClient:
         if self._has_stream is not None:
             return self._has_stream
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with httpx.AsyncClient(timeout=5, transport=self._transport) as client:
                 resp = await client.options(f"{self._base_url}/slice-stream")
                 self._has_stream = resp.status_code != 404
         except httpx.HTTPError:
@@ -179,7 +181,7 @@ class SlicerClient:
 
         logger.info("Streaming slice of %s via %s", filename, url)
         timeout = httpx.Timeout(connect=10, read=300, write=60, pool=10)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, transport=self._transport) as client:
             async with client.stream("POST", url, files=files, data=form_data) as resp:
                 if resp.status_code != 200:
                     body = await resp.aread()
@@ -253,7 +255,7 @@ class SlicerClient:
         if category == "filaments" and ams_assignable is not None:
             params["ams_assignable"] = "true" if ams_assignable else "false"
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
                 resp = await client.get(url, params=params)
         except httpx.HTTPError as e:
             logger.error("Failed to fetch %s from slicer: %s", category, e)
@@ -265,6 +267,51 @@ class SlicerClient:
 
         return resp.json()
 
+    async def upload_3mf(self, data: bytes, *, filename: str = "input.3mf") -> dict:
+        """POST /3mf — upload bytes, get a token + sha256.
+
+        Returns the JSON response: ``{token, sha256, size, evicts}``.
+        """
+        files = {"file": (filename, data, "application/octet-stream")}
+        try:
+            async with httpx.AsyncClient(timeout=120.0, transport=self._transport) as client:
+                r = await client.post(f"{self._base_url}/3mf", files=files)
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        r.raise_for_status()
+        return r.json()
+
+    async def inspect(self, token: str) -> dict:
+        """GET /3mf/{token}/inspect — return the structured summary.
+
+        Returns the JSON response with ``plates``, ``filaments``,
+        ``estimate``, ``bbox``, ``thumbnail_urls``, ``use_set_per_plate``,
+        and ``schema_version``.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=60.0, transport=self._transport) as client:
+                r = await client.get(f"{self._base_url}/3mf/{token}/inspect")
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        r.raise_for_status()
+        return r.json()
+
+    async def delete_token(self, token: str) -> bool:
+        """DELETE /3mf/{token} — drop the cached file.
+
+        Returns True when the slicer confirmed the delete, False on 404
+        (token already evicted). Other HTTP errors raise.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=10.0, transport=self._transport) as client:
+                r = await client.delete(f"{self._base_url}/3mf/{token}")
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        if r.status_code == 404:
+            return False
+        r.raise_for_status()
+        return True
+
     async def get_filament_detail(self, setting_id: str) -> dict | None:
         """Fetch one filament profile with its full resolved field set.
 
@@ -274,7 +321,7 @@ class SlicerClient:
         """
         url = f"{self._base_url}/profiles/filaments/{setting_id}"
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
                 resp = await client.get(url)
         except httpx.HTTPError as e:
             logger.error("Failed to fetch filament %s from slicer: %s", setting_id, e)
