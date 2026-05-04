@@ -30,21 +30,38 @@ class SliceResult:
     estimate: PrintEstimate | None = None
 
 
-def _decode_print_estimate(value: str) -> PrintEstimate | None:
-    if not value:
+def _decode_print_estimate_dict(payload: dict | None) -> PrintEstimate | None:
+    if not payload:
         return None
-    payload = value
     try:
-        payload = base64.b64decode(value).decode()
-    except Exception:
-        # Some slicer versions may send raw JSON instead of base64.
-        pass
-    try:
-        estimate = PrintEstimate(**json.loads(payload))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        logger.warning("Failed to parse X-Print-Estimate header")
+        estimate = PrintEstimate(**payload)
+    except (TypeError, ValueError):
+        logger.warning("Failed to parse slice estimate payload")
         return None
     return None if estimate.is_empty else estimate
+
+
+def _slice_result_from_v2(payload: dict, sliced_bytes: bytes) -> "SliceResult":
+    """Map a /slice/v2 JSON response onto the gateway's SliceResult shape.
+
+    The v2 ``settings_transfer`` schema is:
+    ``{status, process_keys, printer_keys, filament_slots, curr_bed_type?}``
+    where ``process_keys``/``printer_keys`` are lists of key names (not
+    key+value+original triples like the legacy headers). The gateway's
+    ``TransferredSetting`` model expects the legacy shape, so we only
+    surface ``status`` and ``filament_slots`` here — keys-only lists land
+    in the logs but aren't yet wired into the response model.
+    """
+    transfer = payload.get("settings_transfer") or {}
+    status = str(transfer.get("status", "") or "")
+    filament_slots = transfer.get("filament_slots") or []
+    return SliceResult(
+        content=sliced_bytes,
+        settings_transfer_status=status,
+        settings_transferred=[],
+        filament_transfers=filament_slots if isinstance(filament_slots, list) else [],
+        estimate=_decode_print_estimate_dict(payload.get("estimate")),
+    )
 
 
 class SlicerClient:
@@ -70,64 +87,51 @@ class SlicerClient:
         plate_type: str = "",
         plate: int = 1,
     ) -> SliceResult:
-        """Send a 3MF file to the slicer and return the sliced result."""
-        url = f"{self._base_url}/slice"
-        files = {"file": (filename, file_data, "application/octet-stream")}
-        data = {
-            "machine_profile": machine_profile,
-            "process_profile": process_profile,
-            "filament_profiles": json.dumps(filament_profiles),
-        }
-        if plate_type:
-            data["plate_type"] = plate_type
-        if plate > 1:
-            data["plate"] = str(plate)
+        """Slice a 3MF via orcaslicer-cli's token-based v2 API.
 
-        logger.info("Sending %s to slicer at %s", filename, url)
+        Uploads the bytes (sha256-deduped, so a re-upload of a file already
+        cached by ``parse_3mf_via_slicer`` is free server-side), posts the
+        slice request as JSON, and downloads the sliced output.
+        """
+        if plate_type:
+            logger.warning(
+                "plate_type=%r ignored: /slice/v2 reads curr_bed_type from the 3MF",
+                plate_type,
+            )
+
+        upload = await self.upload_3mf(file_data, filename=filename)
+        input_token = upload["token"]
+
+        body = await self._build_v2_slice_body(
+            input_token=input_token,
+            machine_profile=machine_profile,
+            process_profile=process_profile,
+            filament_profiles=filament_profiles,
+            plate=plate,
+        )
+
+        url = f"{self._base_url}/slice/v2"
+        logger.info("Sending %s to slicer at %s (token=%s)", filename, url, input_token)
         try:
             async with httpx.AsyncClient(timeout=300, transport=self._transport) as client:
-                resp = await client.post(url, files=files, data=data)
+                resp = await client.post(url, json=body)
         except httpx.HTTPError as e:
             raise SlicingError(f"Slicer unreachable: {e}")
 
         if resp.status_code != 200:
-            detail = resp.text[:500]
-            raise SlicingError(f"Slicer returned {resp.status_code}: {detail}")
+            raise SlicingError(f"Slicer returned {resp.status_code}: {resp.text[:500]}")
 
-        status = resp.headers.get("x-settings-transfer-status", "")
-        transferred = []
-        raw = resp.headers.get("x-settings-transferred", "")
-        if raw:
-            try:
-                transferred = json.loads(raw)
-            except json.JSONDecodeError:
-                logger.warning("Failed to parse X-Settings-Transferred header")
-
-        filament_transfers = []
-        raw_filaments = resp.headers.get("x-filament-settings-transferred", "")
-        if raw_filaments:
-            try:
-                filament_transfers = json.loads(raw_filaments)
-            except json.JSONDecodeError:
-                logger.warning("Failed to parse X-Filament-Settings-Transferred header")
-
-        estimate = _decode_print_estimate(resp.headers.get("x-print-estimate", ""))
-
-        return SliceResult(
-            content=resp.content,
-            settings_transfer_status=status,
-            settings_transferred=transferred,
-            filament_transfers=filament_transfers,
-            estimate=estimate,
-        )
+        payload = resp.json()
+        sliced = await self._download_3mf(payload["output_token"])
+        return _slice_result_from_v2(payload, sliced)
 
     async def _check_stream_support(self) -> bool:
-        """Probe the slicer to see if /slice-stream exists."""
+        """Probe the slicer to see if /slice-stream/v2 exists."""
         if self._has_stream is not None:
             return self._has_stream
         try:
             async with httpx.AsyncClient(timeout=5, transport=self._transport) as client:
-                resp = await client.options(f"{self._base_url}/slice-stream")
+                resp = await client.options(f"{self._base_url}/slice-stream/v2")
                 self._has_stream = resp.status_code != 404
         except httpx.HTTPError:
             self._has_stream = False
@@ -146,47 +150,51 @@ class SlicerClient:
     ):
         """Stream SSE events for a slice operation.
 
-        Uses /slice-stream if available, otherwise falls back to /slice
+        Uses /slice-stream/v2 if available, otherwise falls back to /slice/v2
         and emits synthetic SSE events.
         Yields dicts with 'event' and 'data' keys.
         """
+        if plate_type:
+            logger.warning(
+                "plate_type=%r ignored: /slice-stream/v2 reads curr_bed_type from the 3MF",
+                plate_type,
+            )
         if await self._check_stream_support():
             async for event in self._slice_stream_real(
                 file_data, filename, machine_profile, process_profile, filament_profiles,
-                plate_type, plate,
+                plate,
             ):
                 yield event
         else:
             async for event in self._slice_stream_fallback(
                 file_data, filename, machine_profile, process_profile, filament_profiles,
-                plate_type, plate,
+                plate,
             ):
                 yield event
 
     async def _slice_stream_real(
         self, file_data, filename, machine_profile, process_profile, filament_profiles,
-        plate_type, plate=1,
+        plate=1,
     ):
-        url = f"{self._base_url}/slice-stream"
-        files = {"file": (filename, file_data, "application/octet-stream")}
-        form_data = {
-            "machine_profile": machine_profile,
-            "process_profile": process_profile,
-            "filament_profiles": json.dumps(filament_profiles),
-        }
-        if plate_type:
-            form_data["plate_type"] = plate_type
-        if plate > 1:
-            form_data["plate"] = str(plate)
+        upload = await self.upload_3mf(file_data, filename=filename)
+        input_token = upload["token"]
+        body = await self._build_v2_slice_body(
+            input_token=input_token,
+            machine_profile=machine_profile,
+            process_profile=process_profile,
+            filament_profiles=filament_profiles,
+            plate=plate,
+        )
 
-        logger.info("Streaming slice of %s via %s", filename, url)
+        url = f"{self._base_url}/slice-stream/v2"
+        logger.info("Streaming slice of %s via %s (token=%s)", filename, url, input_token)
         timeout = httpx.Timeout(connect=10, read=300, write=60, pool=10)
         async with httpx.AsyncClient(timeout=timeout, transport=self._transport) as client:
-            async with client.stream("POST", url, files=files, data=form_data) as resp:
+            async with client.stream("POST", url, json=body) as resp:
                 if resp.status_code != 200:
-                    body = await resp.aread()
+                    raw = await resp.aread()
                     raise SlicingError(
-                        f"Slicer returned {resp.status_code}: {body.decode()[:500]}"
+                        f"Slicer returned {resp.status_code}: {raw.decode()[:500]}"
                     )
 
                 event_type = None
@@ -202,20 +210,27 @@ class SlicerClient:
                                 payload = json.loads("".join(data_lines))
                             except json.JSONDecodeError:
                                 payload = {"raw": "".join(data_lines)}
+                            # /slice-stream/v2's `result` event carries
+                            # output_token + download_url instead of bytes.
+                            # Fetch the bytes and re-emit with file_base64
+                            # so the gateway's existing SSE consumer
+                            # (slice_jobs._run_job) keeps working unchanged.
+                            if event_type == "result" and isinstance(payload, dict):
+                                payload = await self._inflate_v2_result(payload)
                             yield {"event": event_type, "data": payload}
                         event_type = None
                         data_lines = []
 
     async def _slice_stream_fallback(
         self, file_data, filename, machine_profile, process_profile, filament_profiles,
-        plate_type, plate=1,
+        plate=1,
     ):
-        """Use the non-streaming /slice endpoint and emit synthetic SSE events."""
+        """Use the non-streaming /slice/v2 endpoint and emit synthetic SSE events."""
         yield {"event": "status", "data": {"phase": "slicing", "message": "Slicing..."}}
 
         result = await self.slice(
             file_data, filename, machine_profile, process_profile, filament_profiles,
-            plate_type, plate,
+            "", plate,
         )
 
         transfer_info = {}
@@ -234,6 +249,147 @@ class SlicerClient:
             if result.estimate else None,
         }}
         yield {"event": "done", "data": {}}
+
+    async def _build_v2_slice_body(
+        self,
+        *,
+        input_token: str,
+        machine_profile: str,
+        process_profile: str,
+        filament_profiles: list[str] | dict[str, Any],
+        plate: int,
+    ) -> dict[str, Any]:
+        """Translate the gateway's filament_profiles shape to the v2 schema.
+
+        v2 wants ``filament_settings_ids: list[str]`` (positional) plus an
+        optional ``filament_map: list[int]`` (per-slot AMS slot index).
+        For the dict form, slots not explicitly overridden keep the 3MF's
+        authored ``filament_settings_id``; we read that list via
+        ``/3mf/{token}/inspect`` so the gateway doesn't need to plumb it
+        through every call site.
+        """
+        filament_ids, filament_map = await self._normalize_filament_selection(
+            input_token, filament_profiles,
+        )
+        body: dict[str, Any] = {
+            "input_token": input_token,
+            "machine_id": machine_profile,
+            "process_id": process_profile,
+            "filament_settings_ids": filament_ids,
+            "plate_id": plate or 1,
+            # Match the GUI's "import" behaviour: keep the 3MF's authored
+            # placement instead of re-centering on the plate.
+            "recenter": False,
+        }
+        if filament_map is not None:
+            body["filament_map"] = filament_map
+        return body
+
+    async def _normalize_filament_selection(
+        self,
+        input_token: str,
+        filament_profiles: list[str] | dict[str, Any],
+    ) -> tuple[list[str], list[int] | None]:
+        if isinstance(filament_profiles, list):
+            return list(filament_profiles), None
+
+        if not isinstance(filament_profiles, dict):
+            raise SlicingError(
+                f"filament_profiles must be list or dict, got {type(filament_profiles).__name__}",
+            )
+
+        # Resolve indexed overrides against the 3MF's authored filament list.
+        insp = await self.inspect(input_token)
+        base_ids = [
+            str(f.get("settings_id", "") or "")
+            for f in insp.get("filaments", [])
+        ]
+        if not base_ids:
+            raise SlicingError(
+                "filament_profiles dict form requires the input 3MF to declare filament_settings_id",
+            )
+
+        filament_ids = list(base_ids)
+        tray_slots: dict[int, int] = {}
+        overridden: set[int] = set()
+        for slot_str, selection in filament_profiles.items():
+            try:
+                idx = int(slot_str)
+            except (TypeError, ValueError):
+                raise SlicingError(f"Invalid project filament index: {slot_str!r}")
+            if idx < 0 or idx >= len(filament_ids):
+                raise SlicingError(
+                    f"Project filament index {idx} out of range for "
+                    f"{len(filament_ids)} project filament(s)",
+                )
+            if isinstance(selection, str):
+                filament_ids[idx] = selection.strip()
+                overridden.add(idx)
+            elif isinstance(selection, dict):
+                pid = str(selection.get("profile_setting_id", "")).strip()
+                if pid:
+                    filament_ids[idx] = pid
+                    overridden.add(idx)
+                tray_slot = selection.get("tray_slot")
+                if isinstance(tray_slot, int):
+                    tray_slots[idx] = tray_slot
+            else:
+                raise SlicingError(
+                    f"Project filament {idx} selection must be a setting_id string "
+                    "or an object with profile_setting_id",
+                )
+
+        # The UI only surfaces filament slots the model actually paints with
+        # (`info.filaments.filter(f.used)`); declared-but-unused slots stay
+        # hidden and never get an explicit override. When the user retargets
+        # the print to a different machine than the 3MF was authored for,
+        # the unused slot's authored filament (e.g. an `@BBL P2S` profile on
+        # an A1 mini machine) trips the slicer's compat check and aborts
+        # the slice. Unused slots produce no gcode, so substituting them
+        # with the first overridden filament keeps the config composition
+        # consistent without affecting output.
+        if overridden:
+            fallback = filament_ids[min(overridden)]
+            for i in range(len(filament_ids)):
+                if i not in overridden:
+                    filament_ids[i] = fallback
+
+        filament_map: list[int] | None = None
+        if tray_slots:
+            filament_map = [
+                tray_slots.get(i, i + 1) for i in range(len(filament_ids))
+            ]
+        return filament_ids, filament_map
+
+    async def _download_3mf(self, token: str) -> bytes:
+        url = f"{self._base_url}/3mf/{token}"
+        try:
+            async with httpx.AsyncClient(timeout=120, transport=self._transport) as client:
+                r = await client.get(url)
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable while fetching {token}: {e}")
+        if r.status_code != 200:
+            raise SlicingError(
+                f"Slicer returned {r.status_code} fetching output {token}: {r.text[:200]}",
+            )
+        return r.content
+
+    async def _inflate_v2_result(self, payload: dict) -> dict:
+        """Add ``file_base64`` to a /slice-stream/v2 ``result`` payload.
+
+        The server emits ``{output_token, download_url, estimate, settings_transfer}``;
+        the gateway's existing SSE consumer expects ``file_base64``. Fetch
+        the bytes here so the contract stays internal to ``SlicerClient``.
+        """
+        out_token = payload.get("output_token")
+        if not out_token:
+            return payload
+        sliced = await self._download_3mf(out_token)
+        return {
+            **payload,
+            "file_base64": base64.b64encode(sliced).decode(),
+            "file_size": len(sliced),
+        }
 
     async def get_profiles(
         self,

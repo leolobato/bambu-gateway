@@ -650,6 +650,14 @@ class SliceJobManager:
                             or "Slicer reported an error"
                         )
                         detail = _extract_slicer_error_detail(edata)
+                        if isinstance(edata, dict):
+                            tail = edata.get("stderr_tail")
+                            if isinstance(tail, str) and tail.strip():
+                                snippet = tail.strip()
+                                detail = (
+                                    f"{detail}\nstderr: {snippet}"
+                                    if detail else f"stderr: {snippet}"
+                                )
                         raise RuntimeError(f"{base}: {detail}" if detail else base)
                     elif etype == "done":
                         break
