@@ -26,6 +26,16 @@ import type {
 export type PrintState =
   | { kind: 'empty' }
   | {
+      // Between file pick and 'imported': we're waiting on /api/parse-3mf
+      // (upload + slicer inspect) and the AMS tray matcher. Renders an
+      // indeterminate spinner so the drop zone doesn't sit silent.
+      kind: 'importing';
+      file: File;
+      // Bumped on every fresh pick. Stale resolutions check this against
+      // the current state to decide whether to commit their result.
+      importId: string;
+    }
+  | {
       kind: 'imported';
       file: File;
       info: ThreeMFInfo;

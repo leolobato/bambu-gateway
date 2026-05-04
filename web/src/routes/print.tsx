@@ -11,6 +11,7 @@ import type { SettingOption } from '@/components/print/setting-row';
 import { FilamentsGroup, type FilamentMapping } from '@/components/print/filaments-group';
 import { InfoBanner } from '@/components/print/info-banner';
 import { SlicingProgressCard } from '@/components/print/slicing-progress-card';
+import { ImportingCard } from '@/components/print/importing-card';
 import { SettingsTransferNote } from '@/components/print/settings-transfer-note';
 import { PrintEstimationCard } from '@/components/print/print-estimation-card';
 import { parse3mf } from '@/lib/api/3mf';
@@ -190,11 +191,22 @@ export default function PrintRoute() {
     appliedForMachineRef.current = settings.machine;
   }, [resolveQuery.data, settings.machine, setSettings]);
 
-  // Drag-and-drop is active in every state EXCEPT slicing/uploading
+  // Drag-and-drop is active in every state EXCEPT slicing/uploading/importing
   // (replacing the file mid-stream would be confusing).
-  const ddEnabled = state.kind !== 'slicing' && state.kind !== 'uploading';
+  const ddEnabled =
+    state.kind !== 'slicing' &&
+    state.kind !== 'uploading' &&
+    state.kind !== 'importing';
+
+  const importIdRef = useRef<string | null>(null);
 
   const importFile = useCallback(async (file: File) => {
+    // Bump the importId on every fresh pick. Stale resolutions compare
+    // against importIdRef before committing — a Cancel click clears the
+    // ref so any in-flight parse/match silently no-ops.
+    const importId = `imp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    importIdRef.current = importId;
+    setState({ kind: 'importing', file, importId });
     try {
       const info = await parse3mf(file);
       // Default plate selection.
@@ -254,9 +266,14 @@ export default function PrintRoute() {
             message: 'Slicing is skipped. Pick AMS trays below if you want to override the file\'s defaults.',
           }
         : { variant: 'info', title: 'File parsed — slicing required.' };
+      // Only commit if this import is still the current one. A Cancel
+      // click (or a fresh pick) clears/replaces importIdRef.
+      if (importIdRef.current !== importId) return;
       setState({ kind: 'imported', file, info, banner });
     } catch (err) {
+      if (importIdRef.current !== importId) return;
       toast.error(`Failed to parse 3MF: ${(err as Error).message}`);
+      setState({ kind: 'empty' });
     }
   }, [activePrinterId, plateTypesQuery.data]);
 
@@ -266,6 +283,7 @@ export default function PrintRoute() {
   function clearImport() {
     sliceAbortRef.current?.abort();
     sliceAbortRef.current = null;
+    importIdRef.current = null;
     setState({ kind: 'empty' });
     setFilamentMapping({});
   }
@@ -676,10 +694,14 @@ export default function PrintRoute() {
   }
 
   // Build options for the select rows.
+  // 'importing' has no parsed info yet; 'empty'/'sent' never had one.
   const fileMachineSettingId =
-    state.kind === 'empty' || state.kind === 'sent'
-      ? null
-      : state.info.printer.printer_settings_id || null;
+    state.kind === 'imported' ||
+    state.kind === 'slicing' ||
+    state.kind === 'previewReady' ||
+    state.kind === 'uploading'
+      ? state.info.printer.printer_settings_id || null
+      : null;
 
   // Slicer profiles can include entries with empty `setting_id` (some
   // vendors ship process variants without a unique id). Radix Select rejects
@@ -729,6 +751,10 @@ export default function PrintRoute() {
 
       {state.kind === 'empty' && (
         <DropZoneCard onFile={onDropFile} targetPrinterName={activePrinterName} />
+      )}
+
+      {state.kind === 'importing' && (
+        <ImportingCard filename={state.file.name} onCancel={clearImport} />
       )}
 
       {state.kind === 'sent' && (
