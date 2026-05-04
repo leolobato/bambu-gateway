@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RotateCcw } from 'lucide-react';
@@ -18,6 +18,7 @@ import {
   getSlicerMachines,
   getSlicerProcesses,
   getSlicerPlateTypes,
+  resolveForMachine,
 } from '@/lib/api/slicer-profiles';
 import { getAms } from '@/lib/api/ams';
 import { listPrinters } from '@/lib/api/printers';
@@ -136,6 +137,59 @@ export default function PrintRoute() {
     }
   }, [processesQuery.data, settings.process]);
 
+  // GUI-equivalent profile fallback when the user retargets a 3MF to a
+  // different printer. The slicer's `/profiles/resolve-for-machine` mirrors
+  // OrcaSlicer's `PresetBundle::update_compatible`: same-alias variants of
+  // the authored process/filaments win, and unsupported plate types fall
+  // back to the machine's default. We feed the 3MF's authored names (not
+  // the form's current values) so re-running the resolver after the user
+  // edits doesn't unwind their choices.
+  const infoForResolve = state.kind === 'imported' ? state.info : null;
+  const resolveQuery = useQuery({
+    queryKey: [
+      'slicer',
+      'resolve-for-machine',
+      settings.machine,
+      infoForResolve?.print_profile.print_settings_id ?? '',
+      (infoForResolve?.filaments ?? []).map((f) => f.setting_id).join('|'),
+      infoForResolve?.bed_type ?? '',
+    ],
+    queryFn: () =>
+      resolveForMachine({
+        machineId: settings.machine,
+        processName: infoForResolve?.print_profile.print_settings_id ?? '',
+        filamentNames: (infoForResolve?.filaments ?? []).map((f) => f.setting_id),
+        plateType: infoForResolve
+          ? plateTypesQuery.data?.find((p) => p.label === infoForResolve.bed_type)?.value ?? ''
+          : '',
+      }),
+    staleTime: Infinity,
+    enabled: machineIsSettingId && infoForResolve != null,
+  });
+
+  // Apply resolved process/plate-type once per machine change. Tracking the
+  // "last applied" machine in a ref lets the user freely re-pick those
+  // fields after the auto-apply without us clobbering them on the next
+  // render. Resolved filament names flow into `buildFilamentProfilesPayload`
+  // for unused-slot fallback rather than into form state.
+  const appliedForMachineRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!resolveQuery.data) return;
+    if (appliedForMachineRef.current === settings.machine) return;
+    const resolved = resolveQuery.data;
+    setSettings((prev) => {
+      const next = { ...prev };
+      if (resolved.process && resolved.process.setting_id) {
+        next.process = resolved.process.setting_id;
+      }
+      if (resolved.plate_type && resolved.plate_type.resolved) {
+        next.plateType = resolved.plate_type.resolved;
+      }
+      return next;
+    });
+    appliedForMachineRef.current = settings.machine;
+  }, [resolveQuery.data, settings.machine, setSettings]);
+
   // Drag-and-drop is active in every state EXCEPT slicing/uploading
   // (replacing the file mid-stream would be confusing).
   const ddEnabled = state.kind !== 'slicing' && state.kind !== 'uploading';
@@ -218,12 +272,14 @@ export default function PrintRoute() {
 
   function buildFilamentProfilesPayload(
     info: ThreeMFInfo,
-  ): Record<string, { profile_setting_id: string; tray_slot: number }> {
-    const out: Record<string, { profile_setting_id: string; tray_slot: number }> = {};
-    // Only forward overrides for filaments the active plate actually prints.
-    // Sending overrides for slots a plate doesn't use has been observed to
-    // fail slicing on multi-filament projects; the gateway pads unused slots
-    // server-side using the chosen profile.
+  ): Record<string, { profile_setting_id: string; tray_slot: number } | string> {
+    const out: Record<string, { profile_setting_id: string; tray_slot: number } | string> = {};
+    // Only forward AMS-tray overrides for filaments the active plate
+    // actually prints. Slots without an AMS match fall back to the
+    // resolver's GUI-equivalent suggestion (same-alias variant for the
+    // target machine), so a P2S 3MF sliced on an A1 mini doesn't ship
+    // a `@BBL P2S` filament name to a slot that the slicer's compat
+    // check would then reject.
     const platUsed = info.plates.find((p) => p.id === selectedPlateId)?.used_filament_indices;
     const usedFilaments = (() => {
       if (platUsed) {
@@ -234,6 +290,7 @@ export default function PrintRoute() {
         ? info.filaments.filter((f) => f.used)
         : info.filaments;
     })();
+    const usedIndices = new Set(usedFilaments.map((f) => f.index));
     for (const filament of usedFilaments) {
       const slot = filamentMapping[filament.index];
       if (slot == null || slot < 0) continue;
@@ -241,6 +298,24 @@ export default function PrintRoute() {
       const settingId = tray?.matched_filament?.setting_id ?? '';
       if (!settingId) continue;
       out[String(filament.index)] = { profile_setting_id: settingId, tray_slot: slot };
+    }
+    // Resolver-provided fallback for any declared slot not already in `out`.
+    // Covers two cases: (a) "unused" slots the UI hides — same-alias swap on
+    // a cross-machine slice; (b) "used" slots the user left on `Skip` — at
+    // least carry through a machine-compatible name instead of the 3MF's
+    // authored one for printer X.
+    const resolved = resolveQuery.data?.filaments ?? [];
+    for (const r of resolved) {
+      const key = String(r.slot);
+      if (key in out) continue;
+      if (!r.setting_id || r.match === 'unchanged' || r.match === 'none') continue;
+      // Only override slots the plate actually doesn't paint, OR slots the
+      // user hasn't picked an AMS tray for. Don't second-guess explicit AMS
+      // mappings (handled above) or already-compat names.
+      if (usedIndices.has(r.slot) && filamentMapping[r.slot] != null && filamentMapping[r.slot] >= 0) {
+        continue;
+      }
+      out[key] = r.setting_id;
     }
     return out;
   }

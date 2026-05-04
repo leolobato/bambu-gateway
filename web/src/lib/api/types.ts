@@ -196,6 +196,57 @@ export interface SlicerPlateType {
   label: string;
 }
 
+// --- Resolve-for-machine ---
+
+export type ResolveFilamentMatch =
+  | 'unchanged'
+  | 'alias'
+  | 'type'
+  | 'default'
+  | 'first_compat'
+  | 'none';
+
+export type ResolveProcessMatch =
+  | 'unchanged'
+  | 'alias'
+  | 'layer_height'
+  | 'default'
+  | 'first_compat'
+  | 'none';
+
+export type ResolvePlateTypeMatch = 'unchanged' | 'default' | 'none';
+
+export interface ResolvedFilament {
+  slot: number;
+  requested: string;
+  setting_id: string;
+  name: string;
+  alias: string;
+  match: ResolveFilamentMatch;
+}
+
+export interface ResolvedProcess {
+  requested: string;
+  setting_id: string;
+  name: string;
+  alias: string;
+  match: ResolveProcessMatch;
+}
+
+export interface ResolvedPlateType {
+  requested: string;
+  resolved: string;
+  match: ResolvePlateTypeMatch;
+}
+
+export interface ResolveForMachineResponse {
+  machine_id: string;
+  machine_name: string;
+  process: ResolvedProcess | null;
+  filaments: ResolvedFilament[];
+  plate_type: ResolvedPlateType | null;
+}
+
 // --- Filament matching ---
 
 export type FilamentMatchReason = 'exact_filament_id' | 'type_fallback' | 'none';

@@ -16,7 +16,7 @@ export interface SubmitSliceJobArgs {
   plateId: number;
   machineProfile: string;
   processProfile: string;
-  filamentProfiles: Record<string, { profile_setting_id: string; tray_slot: number }>;
+  filamentProfiles: Record<string, { profile_setting_id: string; tray_slot: number } | string>;
   plateType?: string;
   autoPrint?: boolean;
 }

@@ -1,5 +1,11 @@
 import { fetchJson } from './client';
-import type { SlicerFilament, SlicerMachine, SlicerPlateType, SlicerProcess } from './types';
+import type {
+  ResolveForMachineResponse,
+  SlicerFilament,
+  SlicerMachine,
+  SlicerPlateType,
+  SlicerProcess,
+} from './types';
 
 export async function getSlicerMachines(): Promise<SlicerMachine[]> {
   return fetchJson<SlicerMachine[]>('/api/slicer/machines');
@@ -29,4 +35,26 @@ export async function getSlicerFilaments(
 
 export async function getSlicerPlateTypes(): Promise<SlicerPlateType[]> {
   return fetchJson<SlicerPlateType[]>('/api/slicer/plate-types');
+}
+
+export interface ResolveForMachineParams {
+  machineId: string;
+  processName?: string;
+  filamentNames?: string[];
+  plateType?: string;
+}
+
+export async function resolveForMachine(
+  params: ResolveForMachineParams,
+): Promise<ResolveForMachineResponse> {
+  return fetchJson<ResolveForMachineResponse>('/api/slicer/resolve-for-machine', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      machine_id: params.machineId,
+      process_name: params.processName ?? '',
+      filament_names: params.filamentNames ?? [],
+      plate_type: params.plateType ?? '',
+    }),
+  });
 }

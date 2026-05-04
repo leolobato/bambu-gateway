@@ -957,6 +957,38 @@ async def slicer_plate_types():
     return plate_types or DEFAULT_PLATE_TYPES
 
 
+class _ResolveForMachineBody(BaseModel):
+    machine_id: str
+    process_name: str = ""
+    filament_names: list[str] = []
+    plate_type: str = ""
+
+
+@app.post("/api/slicer/resolve-for-machine")
+async def slicer_resolve_for_machine(body: _ResolveForMachineBody):
+    """Forward to the slicer's GUI-equivalent profile resolver.
+
+    Used by the print form to populate process / filament / plate-type
+    defaults whenever the user picks a machine, so a 3MF authored for
+    printer X can be retargeted to printer Y without manually re-picking
+    every same-alias variant.
+    """
+    if slicer_client is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Slicer not configured: ORCASLICER_API_URL not set",
+        )
+    try:
+        return await slicer_client.resolve_for_machine(
+            machine_id=body.machine_id,
+            process_name=body.process_name,
+            filament_names=body.filament_names,
+            plate_type=body.plate_type,
+        )
+    except SlicingError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 @app.post("/api/parse-3mf")
 async def parse_3mf_file(file: UploadFile, plate_id: int | None = None):
     if not file.filename or not file.filename.lower().endswith(".3mf"):
