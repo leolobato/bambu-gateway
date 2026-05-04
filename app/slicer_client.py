@@ -468,6 +468,42 @@ class SlicerClient:
         r.raise_for_status()
         return True
 
+    async def resolve_for_machine(
+        self,
+        *,
+        machine_id: str,
+        process_name: str = "",
+        filament_names: list[str] | None = None,
+        plate_type: str = "",
+    ) -> dict:
+        """POST /profiles/resolve-for-machine.
+
+        Returns the slicer's JSON response unchanged: `{machine_id,
+        machine_name, process, filaments, plate_type}` where each resolved
+        block carries a `match` reason (`alias`, `default`, `type`,
+        `layer_height`, `unchanged`, `first_compat`, `none`). Used by the
+        print form to hydrate process / filament / plate-type fields with
+        GUI-equivalent defaults when the user picks a target machine.
+        """
+        body = {
+            "machine_id": machine_id,
+            "process_name": process_name,
+            "filament_names": list(filament_names or []),
+            "plate_type": plate_type,
+        }
+        url = f"{self._base_url}/profiles/resolve-for-machine"
+        try:
+            async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
+                resp = await client.post(url, json=body)
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+
+        if resp.status_code != 200:
+            raise SlicingError(
+                f"Slicer returned {resp.status_code}: {resp.text[:500]}",
+            )
+        return resp.json()
+
     async def get_filament_detail(self, setting_id: str) -> dict | None:
         """Fetch one filament profile with its full resolved field set.
 
