@@ -146,12 +146,6 @@ class SlicerClient:
         cached by ``parse_3mf_via_slicer`` is free server-side), posts the
         slice request as JSON, and downloads the sliced output.
         """
-        if plate_type:
-            logger.warning(
-                "plate_type=%r ignored: /slice/v2 reads curr_bed_type from the 3MF",
-                plate_type,
-            )
-
         upload = await self.upload_3mf(file_data, filename=filename)
         input_token = upload["token"]
 
@@ -161,6 +155,7 @@ class SlicerClient:
             process_profile=process_profile,
             filament_profiles=filament_profiles,
             plate=plate,
+            plate_type=plate_type,
         )
 
         url = f"{self._base_url}/slice/v2"
@@ -207,27 +202,22 @@ class SlicerClient:
         and emits synthetic SSE events.
         Yields dicts with 'event' and 'data' keys.
         """
-        if plate_type:
-            logger.warning(
-                "plate_type=%r ignored: /slice-stream/v2 reads curr_bed_type from the 3MF",
-                plate_type,
-            )
         if await self._check_stream_support():
             async for event in self._slice_stream_real(
                 file_data, filename, machine_profile, process_profile, filament_profiles,
-                plate,
+                plate, plate_type,
             ):
                 yield event
         else:
             async for event in self._slice_stream_fallback(
                 file_data, filename, machine_profile, process_profile, filament_profiles,
-                plate,
+                plate, plate_type,
             ):
                 yield event
 
     async def _slice_stream_real(
         self, file_data, filename, machine_profile, process_profile, filament_profiles,
-        plate=1,
+        plate=1, plate_type="",
     ):
         upload = await self.upload_3mf(file_data, filename=filename)
         input_token = upload["token"]
@@ -237,6 +227,7 @@ class SlicerClient:
             process_profile=process_profile,
             filament_profiles=filament_profiles,
             plate=plate,
+            plate_type=plate_type,
         )
 
         url = f"{self._base_url}/slice-stream/v2"
@@ -276,14 +267,14 @@ class SlicerClient:
 
     async def _slice_stream_fallback(
         self, file_data, filename, machine_profile, process_profile, filament_profiles,
-        plate=1,
+        plate=1, plate_type="",
     ):
         """Use the non-streaming /slice/v2 endpoint and emit synthetic SSE events."""
         yield {"event": "status", "data": {"phase": "slicing", "message": "Slicing..."}}
 
         result = await self.slice(
             file_data, filename, machine_profile, process_profile, filament_profiles,
-            "", plate,
+            plate_type, plate,
         )
 
         transfer_info = {}
@@ -311,6 +302,7 @@ class SlicerClient:
         process_profile: str,
         filament_profiles: list[str] | dict[str, Any],
         plate: int,
+        plate_type: str = "",
     ) -> dict[str, Any]:
         """Translate the gateway's filament_profiles shape to the v2 schema.
 
@@ -336,6 +328,8 @@ class SlicerClient:
         }
         if filament_map is not None:
             body["filament_map"] = filament_map
+        if plate_type:
+            body["plate_type"] = plate_type
         return body
 
     async def _normalize_filament_selection(
