@@ -30,13 +30,66 @@ class SliceResult:
     estimate: PrintEstimate | None = None
 
 
-def _decode_print_estimate_dict(payload: dict | None) -> PrintEstimate | None:
+def translate_estimate_from_binary(payload: dict | None) -> dict | None:
+    """Map orca-headless's estimate dict onto `PrintEstimate`-shaped keys.
+
+    The C++ binary returns ``{time_seconds, prepare_seconds, weight_g,
+    model_weight_g, filament_used_m: list[float],
+    model_filament_used_m: list[float]}``. The gateway's `PrintEstimate`
+    model and the iOS UI expect GUI-style keys
+    (`total_filament_millimeters`, `total_filament_grams`, `total_seconds`,
+    `model_filament_*`, `prepare_seconds`, `model_print_seconds`). Without
+    this translation `PrintEstimate(**raw)` ignores the unknown keys and
+    every field is `None`, so `is_empty` strips the estimate from the API
+    response.
+    """
     if not payload:
         return None
+    out: dict[str, Any] = {}
+
+    fum = payload.get("filament_used_m")
+    if isinstance(fum, list) and fum:
+        try:
+            out["total_filament_millimeters"] = sum(float(v) for v in fum) * 1000.0
+        except (TypeError, ValueError):
+            pass
+    model_fum = payload.get("model_filament_used_m")
+    if isinstance(model_fum, list) and model_fum:
+        try:
+            out["model_filament_millimeters"] = sum(float(v) for v in model_fum) * 1000.0
+        except (TypeError, ValueError):
+            pass
+
+    weight = payload.get("weight_g")
+    if isinstance(weight, (int, float)):
+        out["total_filament_grams"] = float(weight)
+    model_weight = payload.get("model_weight_g")
+    if isinstance(model_weight, (int, float)):
+        out["model_filament_grams"] = float(model_weight)
+
+    secs = payload.get("time_seconds")
+    prepare = payload.get("prepare_seconds")
+    if isinstance(secs, (int, float)):
+        out["total_seconds"] = int(secs)
+    if isinstance(prepare, (int, float)):
+        out["prepare_seconds"] = int(prepare)
+    # The "printing" / "model_print" time = total - prepare. The binary
+    # doesn't expose it directly because it's redundant; compute here so
+    # the UI's three-row breakdown (Prepare / Printing / Total) populates.
+    if isinstance(secs, (int, float)) and isinstance(prepare, (int, float)):
+        out["model_print_seconds"] = max(0, int(secs) - int(prepare))
+
+    return out or None
+
+
+def _decode_print_estimate_dict(payload: dict | None) -> PrintEstimate | None:
+    translated = translate_estimate_from_binary(payload)
+    if not translated:
+        return None
     try:
-        estimate = PrintEstimate(**payload)
+        estimate = PrintEstimate(**translated)
     except (TypeError, ValueError):
-        logger.warning("Failed to parse slice estimate payload")
+        logger.warning("Failed to parse slice estimate payload: %r", payload)
         return None
     return None if estimate.is_empty else estimate
 

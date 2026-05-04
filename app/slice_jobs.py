@@ -19,6 +19,7 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from app.filament_selection import build_ams_mapping, validate_selected_trays
 from app.models import PrintEstimate
+from app.slicer_client import translate_estimate_from_binary
 from app.upload_tracker import UploadCancelledError
 
 logger = logging.getLogger(__name__)
@@ -640,7 +641,9 @@ class SliceJobManager:
                         if not b64:
                             raise ValueError("result event missing file_base64")
                         result_bytes = base64.b64decode(b64)
-                        estimate = edata.get("estimate")
+                        estimate = translate_estimate_from_binary(
+                            edata.get("estimate"),
+                        )
                         settings_transfer = edata.get("settings_transfer")
                     elif etype == "error":
                         base = (

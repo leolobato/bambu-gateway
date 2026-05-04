@@ -48,7 +48,16 @@ async def test_submit_slice_succeeds_and_writes_output_blob(tmp_jobs_dir: Path):
             "data": {
                 "file_base64": base64.b64encode(b"sliced!").decode(),
                 "file_size": 7,
-                "estimate": {"total_time_seconds": 1234},
+                # Slicer binary returns these keys; the gateway translates
+                # them onto `PrintEstimate`-shaped fields when storing.
+                "estimate": {
+                    "filament_used_m": [3.5],
+                    "model_filament_used_m": [3.0],
+                    "time_seconds": 1234,
+                    "prepare_seconds": 60,
+                    "weight_g": 12.5,
+                    "model_weight_g": 11.0,
+                },
             },
         },
         {"event": "done", "data": {}},
@@ -80,7 +89,15 @@ async def test_submit_slice_succeeds_and_writes_output_blob(tmp_jobs_dir: Path):
         assert ready.progress == 100
         assert ready.output_path is not None
         assert Path(ready.output_path).read_bytes() == b"sliced!"
-        assert ready.estimate == {"total_time_seconds": 1234}
+        assert ready.estimate == {
+            "total_filament_millimeters": 3500.0,  # 3.5 m × 1000
+            "model_filament_millimeters": 3000.0,  # 3.0 m × 1000
+            "total_filament_grams": 12.5,
+            "model_filament_grams": 11.0,
+            "total_seconds": 1234,
+            "prepare_seconds": 60,
+            "model_print_seconds": 1174,  # 1234 − 60
+        }
         assert ready.error is None
     finally:
         await manager.stop()
