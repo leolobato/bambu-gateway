@@ -311,7 +311,6 @@ class SlicerClient:
 
         filament_ids = list(base_ids)
         tray_slots: dict[int, int] = {}
-        overridden: set[int] = set()
         for slot_str, selection in filament_profiles.items():
             try:
                 idx = int(slot_str)
@@ -324,12 +323,10 @@ class SlicerClient:
                 )
             if isinstance(selection, str):
                 filament_ids[idx] = selection.strip()
-                overridden.add(idx)
             elif isinstance(selection, dict):
                 pid = str(selection.get("profile_setting_id", "")).strip()
                 if pid:
                     filament_ids[idx] = pid
-                    overridden.add(idx)
                 tray_slot = selection.get("tray_slot")
                 if isinstance(tray_slot, int):
                     tray_slots[idx] = tray_slot
@@ -338,21 +335,6 @@ class SlicerClient:
                     f"Project filament {idx} selection must be a setting_id string "
                     "or an object with profile_setting_id",
                 )
-
-        # The UI only surfaces filament slots the model actually paints with
-        # (`info.filaments.filter(f.used)`); declared-but-unused slots stay
-        # hidden and never get an explicit override. When the user retargets
-        # the print to a different machine than the 3MF was authored for,
-        # the unused slot's authored filament (e.g. an `@BBL P2S` profile on
-        # an A1 mini machine) trips the slicer's compat check and aborts
-        # the slice. Unused slots produce no gcode, so substituting them
-        # with the first overridden filament keeps the config composition
-        # consistent without affecting output.
-        if overridden:
-            fallback = filament_ids[min(overridden)]
-            for i in range(len(filament_ids)):
-                if i not in overridden:
-                    filament_ids[i] = fallback
 
         filament_map: list[int] | None = None
         if tray_slots:
