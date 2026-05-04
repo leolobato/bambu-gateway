@@ -59,7 +59,10 @@ export async function printFromJob(
 export async function printGcodeFile(
   file: File,
   printerId?: string,
-  filamentProfiles?: Record<string, { profile_setting_id: string; tray_slot: number }>,
+  filamentProfiles?: Record<
+    string,
+    { profile_setting_id: string; tray_slot: number } | string
+  >,
   plateId?: number,
 ): Promise<PrintDirectResponse> {
   const fd = new FormData();
