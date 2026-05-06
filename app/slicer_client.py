@@ -317,13 +317,16 @@ class SlicerClient:
             input_token, filament_profiles,
             machine_profile=machine_profile,
         )
-        # GUI parity: when the user retargets a project authored for a
-        # different printer, the GUI shows the model on the new bed and
-        # auto-arranges/centers if needed. Headless equivalent: ask the
-        # slicer to recenter when the authored printer differs from the
-        # target. Same-printer retargets keep authored placement (the
-        # original "match the GUI's import behaviour" rule).
-        recenter = await self._should_recenter_for_machine(
+        # Headless-only knob. The OrcaSlicer GUI doesn't have an
+        # equivalent: when the user retargets to a different printer,
+        # the GUI relies on the human visually adjusting placement.
+        # Headless has no human-in-the-loop step, so when the target
+        # printer differs from the project's authored one, we ask the
+        # slicer to auto-center the model on the new bed (delegates to
+        # libslic3r's ``Model::center_instances_around_point`` — the
+        # same primitive the GUI's Center toolbar bottoms out in).
+        # Same-printer retargets keep authored placement.
+        auto_center = await self._should_auto_center_for_machine(
             input_token, machine_profile,
         )
         body: dict[str, Any] = {
@@ -332,7 +335,7 @@ class SlicerClient:
             "process_id": process_profile,
             "filament_settings_ids": filament_ids,
             "plate_id": plate or 1,
-            "recenter": recenter,
+            "auto_center": auto_center,
         }
         if filament_map is not None:
             body["filament_map"] = filament_map
@@ -433,20 +436,20 @@ class SlicerClient:
 
         return filament_ids, None
 
-    async def _should_recenter_for_machine(
+    async def _should_auto_center_for_machine(
         self,
         input_token: str,
         machine_profile: str,
     ) -> bool:
         """Return True when the project was authored for a different printer.
 
-        The OrcaSlicer GUI keeps authored placement on project import but
-        re-arranges items when the user changes the printer. We mirror
-        that for headless retargets: compare the project's authored
+        Headless-only behaviour: the GUI has no equivalent runtime flag
+        because a human visually adjusts placement after a printer
+        change. For headless retargets, compare the project's authored
         ``printer_settings_id`` (a display name) to the target machine's
-        display name; recenter when they differ. Best-effort — any
-        upstream error falls through to ``False`` so a single bad probe
-        can't break otherwise-valid slices.
+        display name and request auto-centering when they differ.
+        Best-effort — any upstream error falls through to ``False`` so a
+        single bad probe can't break otherwise-valid slices.
         """
         if not machine_profile:
             return False
