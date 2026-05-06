@@ -1,10 +1,13 @@
-"""GUI-parity recenter behaviour for `_build_v2_slice_body`.
+"""Auto-center decision rule for `_build_v2_slice_body`.
 
-The OrcaSlicer GUI re-arranges items when the user changes the active
-printer (so a project authored for a P2S 256mm bed shows up centered on
-A1 mini's 180mm bed instead of hanging off the right edge). For
-same-machine slices we keep authored placement, matching the GUI's
-project-import path.
+Headless-only behaviour: the orcaslicer-cli's `auto_center` flag asks
+libslic3r to re-anchor a project's models on the target printer's bed
+centre. The GUI has no equivalent runtime flag because a human adjusts
+placement visually after a printer change.
+
+The gateway flips `auto_center: true` only when the project's authored
+``printer_settings_id`` differs from the target machine's display name.
+Same-printer retargets keep authored placement.
 """
 from __future__ import annotations
 
@@ -37,9 +40,9 @@ def _machine_response(name: str) -> httpx.Response:
 
 
 @pytest.mark.asyncio
-async def test_recenter_true_when_printer_differs():
+async def test_auto_center_true_when_printer_differs():
     """Project authored for a P2S printer + slice request targeting an
-    A1 mini → recenter."""
+    A1 mini → auto_center."""
 
     def _handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/inspect"):
@@ -56,11 +59,11 @@ async def test_recenter_true_when_printer_differs():
         filament_profiles=["Bambu PLA Basic @BBL A1M"],
         plate=1,
     )
-    assert body["recenter"] is True
+    assert body["auto_center"] is True
 
 
 @pytest.mark.asyncio
-async def test_recenter_false_when_printer_matches():
+async def test_auto_center_false_when_printer_matches():
     """Project authored for a P2S printer + slice request targeting the
     same P2S → keep authored placement."""
 
@@ -79,14 +82,15 @@ async def test_recenter_false_when_printer_matches():
         filament_profiles=["Bambu PLA Basic @BBL P2S"],
         plate=1,
     )
-    assert body["recenter"] is False
+    assert body["auto_center"] is False
 
 
 @pytest.mark.asyncio
-async def test_recenter_false_when_printer_unknown():
-    """Inspect doesn't carry an authored printer name (older 3MFs, raw
-    geometry uploads) → keep authored placement (no information to act
-    on; the slicer's own validation will catch out-of-bed errors)."""
+async def test_auto_center_false_when_inspect_has_no_authored_printer():
+    """Older 3MFs / non-project files have no `printer_settings_id`. We
+    must NOT ask the slicer to recenter in that case — falling back to
+    authored placement is the safe default. This locks in the
+    best-effort fallback in `_should_auto_center_for_machine`."""
 
     def _handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/inspect"):
@@ -100,30 +104,7 @@ async def test_recenter_false_when_printer_unknown():
         input_token="tok",
         machine_profile="GM020",
         process_profile="GP000",
-        filament_profiles=["x"],
+        filament_profiles=["Bambu PLA Basic @BBL A1M"],
         plate=1,
     )
-    assert body["recenter"] is False
-
-
-@pytest.mark.asyncio
-async def test_recenter_false_when_machine_lookup_fails():
-    """Slicer's /profiles/machines/{id} returns non-200 → can't compare,
-    fall through to authored placement (best-effort probe)."""
-
-    def _handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/inspect"):
-            return _inspect_response("Bambu Lab P2S 0.4 nozzle")
-        if "/profiles/machines/" in request.url.path:
-            return httpx.Response(503)
-        return httpx.Response(404)
-
-    client = SlicerClient("http://test", transport=httpx.MockTransport(_handler))
-    body = await client._build_v2_slice_body(
-        input_token="tok",
-        machine_profile="GM020",
-        process_profile="GP000",
-        filament_profiles=["x"],
-        plate=1,
-    )
-    assert body["recenter"] is False
+    assert body["auto_center"] is False
