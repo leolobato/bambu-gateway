@@ -108,3 +108,28 @@ async def test_auto_center_false_when_inspect_has_no_authored_printer():
         plate=1,
     )
     assert body["auto_center"] is False
+
+
+@pytest.mark.asyncio
+async def test_auto_center_false_when_machine_lookup_fails():
+    """Slicer's /profiles/machines/{id} returns non-200 → can't compare
+    target name to authored, so fall through to authored placement.
+    Best-effort probe: a transient 503 must not flip the slice into
+    auto-center mode and silently move the user's model."""
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/inspect"):
+            return _inspect_response("Bambu Lab P2S 0.4 nozzle")
+        if "/profiles/machines/" in request.url.path:
+            return httpx.Response(503)
+        return httpx.Response(404)
+
+    client = SlicerClient("http://test", transport=httpx.MockTransport(_handler))
+    body = await client._build_v2_slice_body(
+        input_token="tok",
+        machine_profile="GM020",
+        process_profile="GP000",
+        filament_profiles=["Bambu PLA Basic @BBL A1M"],
+        plate=1,
+    )
+    assert body["auto_center"] is False
