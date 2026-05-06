@@ -315,6 +315,7 @@ class SlicerClient:
         """
         filament_ids, filament_map = await self._normalize_filament_selection(
             input_token, filament_profiles,
+            machine_profile=machine_profile,
         )
         body: dict[str, Any] = {
             "input_token": input_token,
@@ -336,6 +337,8 @@ class SlicerClient:
         self,
         input_token: str,
         filament_profiles: list[str] | dict[str, Any],
+        *,
+        machine_profile: str | None = None,
     ) -> tuple[list[str], list[int] | None]:
         """Translate filament selection into the slicer's positional shape.
 
@@ -346,6 +349,22 @@ class SlicerClient:
         tray slots to the slicer (the historical behaviour) repurposed
         libslic3r's per-filament-extruder field, which corrupted single-
         extruder slices and silenced the prime-tower auto-disable.
+
+        For dict-form selections the per-slot fill from the 3MF carries
+        the project's *authored* filament name. When the requested
+        ``machine_profile`` is different from the printer the project
+        was authored for, those carry-over names can be incompatible
+        (e.g. ``Bambu PLA Basic @BBL P2S`` on an A1 mini target),
+        causing the slicer to return ``filament_machine_mismatch``. We
+        mirror what the OrcaSlicer GUI's
+        ``PresetBundle::update_compatible`` does on machine change:
+        substitute incompatible carry-over names with the same-alias
+        variant for the target machine via
+        ``/profiles/resolve-for-machine`` before sending the slice
+        request. User-overridden slots are left exactly as the caller
+        specified — the user's explicit pick wins over the resolver,
+        matching the GUI's behaviour where the user can override the
+        bundle's auto-resolved selection.
         """
         if isinstance(filament_profiles, list):
             return list(filament_profiles), None
@@ -367,6 +386,7 @@ class SlicerClient:
             )
 
         filament_ids = list(base_ids)
+        overridden_slots: set[int] = set()
         for slot_str, selection in filament_profiles.items():
             try:
                 idx = int(slot_str)
@@ -379,10 +399,12 @@ class SlicerClient:
                 )
             if isinstance(selection, str):
                 filament_ids[idx] = selection.strip()
+                overridden_slots.add(idx)
             elif isinstance(selection, dict):
                 pid = str(selection.get("profile_setting_id", "")).strip()
                 if pid:
                     filament_ids[idx] = pid
+                    overridden_slots.add(idx)
                 # tray_slot is consumed by build_ams_mapping at print time;
                 # it MUST NOT leak into the slicer request.
             else:
@@ -391,7 +413,62 @@ class SlicerClient:
                     "or an object with profile_setting_id",
                 )
 
+        # GUI parity: rotate carry-over slots to same-alias variants for
+        # the target machine. Skip when no machine context is available
+        # (older callers); skip overridden slots so the user's explicit
+        # pick is never second-guessed.
+        if machine_profile and len(overridden_slots) < len(filament_ids):
+            filament_ids = await self._resolve_carryover_filaments(
+                filament_ids,
+                machine_profile=machine_profile,
+                overridden_slots=overridden_slots,
+            )
+
         return filament_ids, None
+
+    async def _resolve_carryover_filaments(
+        self,
+        filament_ids: list[str],
+        *,
+        machine_profile: str,
+        overridden_slots: set[int],
+    ) -> list[str]:
+        """Run un-overridden carry-over slots through ``/profiles/resolve-for-machine``.
+
+        The resolver returns one entry per requested slot with a ``match``
+        reason; ``unchanged`` (already compat) and ``none`` (no compat
+        candidate) leave the slot alone, anything else substitutes with
+        the resolved name. Mirrors the GUI's update-compatible flow on
+        machine change.
+        """
+        try:
+            resolved = await self.resolve_for_machine(
+                machine_id=machine_profile,
+                filament_names=list(filament_ids),
+            )
+        except SlicingError as e:
+            # Don't fail the slice on a resolver outage — let the slicer
+            # itself surface the mismatch with its usual 400. Logging
+            # belongs in the caller's slice-job orchestration.
+            return filament_ids
+
+        out = list(filament_ids)
+        for entry in resolved.get("filaments", []) or []:
+            slot = entry.get("slot")
+            if not isinstance(slot, int) or slot < 0 or slot >= len(out):
+                continue
+            if slot in overridden_slots:
+                continue
+            match = entry.get("match", "")
+            if match in ("", "unchanged", "none"):
+                # Already compat OR no candidate — leave authored name
+                # in place; slicer will accept (compat) or 400 (none),
+                # both of which carry clearer signal than a blind swap.
+                continue
+            resolved_name = (entry.get("name") or "").strip()
+            if resolved_name:
+                out[slot] = resolved_name
+        return out
 
     async def _download_3mf(self, token: str) -> bytes:
         url = f"{self._base_url}/3mf/{token}"
