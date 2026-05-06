@@ -323,8 +323,8 @@ class SlicerClient:
         # Headless has no human-in-the-loop step, so when the target
         # printer differs from the project's authored one, we ask the
         # slicer to auto-center the model on the new bed (delegates to
-        # libslic3r's ``Model::center_instances_around_point`` — the
-        # same primitive the GUI's Center toolbar bottoms out in).
+        # libslic3r's ``Model::center_instances_around_point``, the
+        # same primitive the GUI calls on project import).
         # Same-printer retargets keep authored placement.
         auto_center = await self._should_auto_center_for_machine(
             input_token, machine_profile,
