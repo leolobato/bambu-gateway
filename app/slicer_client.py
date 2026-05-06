@@ -317,15 +317,22 @@ class SlicerClient:
             input_token, filament_profiles,
             machine_profile=machine_profile,
         )
+        # GUI parity: when the user retargets a project authored for a
+        # different printer, the GUI shows the model on the new bed and
+        # auto-arranges/centers if needed. Headless equivalent: ask the
+        # slicer to recenter when the authored printer differs from the
+        # target. Same-printer retargets keep authored placement (the
+        # original "match the GUI's import behaviour" rule).
+        recenter = await self._should_recenter_for_machine(
+            input_token, machine_profile,
+        )
         body: dict[str, Any] = {
             "input_token": input_token,
             "machine_id": machine_profile,
             "process_id": process_profile,
             "filament_settings_ids": filament_ids,
             "plate_id": plate or 1,
-            # Match the GUI's "import" behaviour: keep the 3MF's authored
-            # placement instead of re-centering on the plate.
-            "recenter": False,
+            "recenter": recenter,
         }
         if filament_map is not None:
             body["filament_map"] = filament_map
@@ -425,6 +432,50 @@ class SlicerClient:
             )
 
         return filament_ids, None
+
+    async def _should_recenter_for_machine(
+        self,
+        input_token: str,
+        machine_profile: str,
+    ) -> bool:
+        """Return True when the project was authored for a different printer.
+
+        The OrcaSlicer GUI keeps authored placement on project import but
+        re-arranges items when the user changes the printer. We mirror
+        that for headless retargets: compare the project's authored
+        ``printer_settings_id`` (a display name) to the target machine's
+        display name; recenter when they differ. Best-effort — any
+        upstream error falls through to ``False`` so a single bad probe
+        can't break otherwise-valid slices.
+        """
+        if not machine_profile:
+            return False
+        try:
+            insp = await self.inspect(input_token)
+        except SlicingError:
+            return False
+        authored_name = str(insp.get("printer_settings_id") or "").strip()
+        if not authored_name:
+            return False
+        target_name = await self._machine_display_name(machine_profile)
+        if not target_name:
+            return False
+        return authored_name != target_name
+
+    async def _machine_display_name(self, machine_profile: str) -> str:
+        """Fetch the target machine's display name. Empty on any error."""
+        url = f"{self._base_url}/profiles/machines/{machine_profile}"
+        try:
+            async with httpx.AsyncClient(timeout=10.0, transport=self._transport) as client:
+                resp = await client.get(url)
+        except httpx.HTTPError:
+            return ""
+        if resp.status_code != 200:
+            return ""
+        try:
+            return str(resp.json().get("name") or "").strip()
+        except (ValueError, TypeError):
+            return ""
 
     async def _resolve_carryover_filaments(
         self,
