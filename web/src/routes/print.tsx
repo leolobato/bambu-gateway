@@ -292,46 +292,42 @@ export default function PrintRoute() {
     info: ThreeMFInfo,
   ): Record<string, { profile_setting_id: string; tray_slot: number } | string> {
     const out: Record<string, { profile_setting_id: string; tray_slot: number } | string> = {};
-    // Only forward AMS-tray overrides for filaments the active plate
-    // actually prints. Slots without an AMS match fall back to the
-    // resolver's GUI-equivalent suggestion (same-alias variant for the
-    // target machine), so a P2S 3MF sliced on an A1 mini doesn't ship
-    // a `@BBL P2S` filament name to a slot that the slicer's compat
-    // check would then reject.
+    // Payload keys are positions in `info.filaments` (the slicer/backend
+    // build dense, positional `filament_settings_ids` lists). `filament.index`
+    // is the 3MF's authored *slot* number, which can be sparse — e.g. a
+    // single-filament 3MF authored on AMS slot 1 has `info.filaments=[{index:1}]`,
+    // and a slot-keyed payload `{"1": ...}` would be rejected against the
+    // length-1 project list.
     const platUsed = info.plates.find((p) => p.id === selectedPlateId)?.used_filament_indices;
-    const usedFilaments = (() => {
-      if (platUsed) {
-        const allow = new Set(platUsed);
-        return info.filaments.filter((f) => allow.has(f.index));
-      }
-      return info.filaments.some((f) => f.used)
-        ? info.filaments.filter((f) => f.used)
-        : info.filaments;
-    })();
-    const usedIndices = new Set(usedFilaments.map((f) => f.index));
-    for (const filament of usedFilaments) {
-      const slot = filamentMapping[filament.index];
-      if (slot == null || slot < 0) continue;
-      const tray = trays.find((t) => t.slot === slot);
+    const isPositionUsed = (filament: { index: number; used: boolean }) => {
+      if (platUsed) return platUsed.includes(filament.index);
+      if (info.filaments.some((f) => f.used)) return filament.used;
+      return true;
+    };
+    info.filaments.forEach((filament, position) => {
+      if (!isPositionUsed(filament)) return;
+      const traySlot = filamentMapping[filament.index];
+      if (traySlot == null || traySlot < 0) return;
+      const tray = trays.find((t) => t.slot === traySlot);
       const settingId = tray?.matched_filament?.setting_id ?? '';
-      if (!settingId) continue;
-      out[String(filament.index)] = { profile_setting_id: settingId, tray_slot: slot };
-    }
+      if (!settingId) return;
+      out[String(position)] = { profile_setting_id: settingId, tray_slot: traySlot };
+    });
     // Resolver-provided fallback for any declared slot not already in `out`.
     // Covers two cases: (a) "unused" slots the UI hides — same-alias swap on
     // a cross-machine slice; (b) "used" slots the user left on `Skip` — at
     // least carry through a machine-compatible name instead of the 3MF's
-    // authored one for printer X.
+    // authored one for printer X. `r.slot` from the resolver is positional
+    // (the position in the `filament_names` we sent), matching `out`'s keys.
     const resolved = resolveQuery.data?.filaments ?? [];
     for (const r of resolved) {
       const key = String(r.slot);
       if (key in out) continue;
       if (!r.setting_id || r.match === 'unchanged' || r.match === 'none') continue;
-      // Only override slots the plate actually doesn't paint, OR slots the
-      // user hasn't picked an AMS tray for. Don't second-guess explicit AMS
-      // mappings (handled above) or already-compat names.
-      if (usedIndices.has(r.slot) && filamentMapping[r.slot] != null && filamentMapping[r.slot] >= 0) {
-        continue;
+      const filamentAtPos = info.filaments[r.slot];
+      if (filamentAtPos && isPositionUsed(filamentAtPos)) {
+        const userMapping = filamentMapping[filamentAtPos.index];
+        if (userMapping != null && userMapping >= 0) continue;
       }
       out[key] = r.setting_id;
     }
