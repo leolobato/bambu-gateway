@@ -56,6 +56,7 @@ from app.models import (
     PrinterListResponse,
     PrintEstimate,
     PrintResponse,
+    ProcessOverrideApplied,
     SetAmsFilamentRequest,
     SettingsTransferInfo,
     SlicerFilament,
@@ -817,6 +818,33 @@ async def _get_ams_tray_profile_map(printer_id: str) -> dict[int, str]:
     return tray_profile_map
 
 
+def _parse_process_overrides_form(raw: str) -> dict[str, str] | None:
+    """Validate and decode the process_overrides form field.
+
+    Returns ``None`` for empty input. Raises ``HTTPException(400)`` on
+    malformed input — the slicer is permissive on unknown / unparseable
+    keys, but we surface client-side mistakes (bad JSON, wrong shape,
+    non-string values) early rather than silently swallowing them.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid process_overrides JSON")
+    if not isinstance(parsed, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="process_overrides must be a JSON object",
+        )
+    if any(not isinstance(v, str) for v in parsed.values()):
+        raise HTTPException(
+            status_code=400,
+            detail="process_overrides values must be strings",
+        )
+    return parsed
+
+
 async def _resolve_slice_filament_payload(
     project_filament_ids: list[str],
     filament_profiles: str,
@@ -1096,8 +1124,10 @@ async def print_file(
     filament_profiles: str = Form(""),
     plate_type: str = Form(""),
     slice_only: bool = Form(False),
+    process_overrides: str = Form(""),
 ):
     effective_job_id = job_id or preview_id
+    process_overrides_dict = _parse_process_overrides_form(process_overrides)
 
     # --- Fast path: print from a sliced job ---
     if effective_job_id and slice_jobs is not None:
@@ -1263,6 +1293,7 @@ async def print_file(
                 filament_payload,
                 plate_type=plate_type.strip(),
                 plate=plate_id or 1,
+                process_overrides=process_overrides_dict,
             )
         except SlicingError as e:
             raise HTTPException(status_code=502, detail=f"Slicing failed: {e}")
@@ -1272,7 +1303,11 @@ async def print_file(
 
     # Build settings transfer info if available
     settings_transfer = None
-    if slice_result and (slice_result.settings_transfer_status or slice_result.filament_transfers):
+    if slice_result and (
+        slice_result.settings_transfer_status
+        or slice_result.filament_transfers
+        or slice_result.process_overrides_applied
+    ):
         settings_transfer = SettingsTransferInfo(
             status=slice_result.settings_transfer_status,
             transferred=[
@@ -1280,6 +1315,10 @@ async def print_file(
             ],
             filaments=[
                 FilamentTransferEntry(**f) for f in slice_result.filament_transfers
+            ],
+            process_overrides_applied=[
+                ProcessOverrideApplied(**o)
+                for o in slice_result.process_overrides_applied
             ],
         )
 
