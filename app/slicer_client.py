@@ -28,6 +28,7 @@ class SliceResult:
     settings_transferred: list[dict] = field(default_factory=list)
     filament_transfers: list[dict] = field(default_factory=list)
     estimate: PrintEstimate | None = None
+    process_overrides_applied: list[dict] = field(default_factory=list)
 
 
 def translate_estimate_from_binary(payload: dict | None) -> dict | None:
@@ -98,22 +99,29 @@ def _slice_result_from_v2(payload: dict, sliced_bytes: bytes) -> "SliceResult":
     """Map a /slice/v2 JSON response onto the gateway's SliceResult shape.
 
     The v2 ``settings_transfer`` schema is:
-    ``{status, process_keys, printer_keys, filament_slots, curr_bed_type?}``
-    where ``process_keys``/``printer_keys`` are lists of key names (not
-    key+value+original triples like the legacy headers). The gateway's
-    ``TransferredSetting`` model expects the legacy shape, so we only
-    surface ``status`` and ``filament_slots`` here — keys-only lists land
-    in the logs but aren't yet wired into the response model.
+    ``{status, process_keys, printer_keys, filament_slots, curr_bed_type?,
+    process_overrides_applied?}``. ``process_keys``/``printer_keys`` are
+    lists of key names (not key+value+original triples like the legacy
+    headers). The gateway's ``TransferredSetting`` model expects the legacy
+    shape, so we only surface ``status`` and ``filament_slots`` here —
+    keys-only lists land in the logs but aren't yet wired into the response
+    model. ``process_overrides_applied`` (rev 41+) carries the
+    ``[{key, value, previous}, ...]`` list of overrides the slicer
+    actually applied.
     """
     transfer = payload.get("settings_transfer") or {}
     status = str(transfer.get("status", "") or "")
     filament_slots = transfer.get("filament_slots") or []
+    overrides_applied = transfer.get("process_overrides_applied") or []
     return SliceResult(
         content=sliced_bytes,
         settings_transfer_status=status,
         settings_transferred=[],
         filament_transfers=filament_slots if isinstance(filament_slots, list) else [],
         estimate=_decode_print_estimate_dict(payload.get("estimate")),
+        process_overrides_applied=(
+            list(overrides_applied) if isinstance(overrides_applied, list) else []
+        ),
     )
 
 
@@ -139,12 +147,19 @@ class SlicerClient:
         filament_profiles: list[str] | dict[str, Any],
         plate_type: str = "",
         plate: int = 1,
+        process_overrides: dict[str, str] | None = None,
     ) -> SliceResult:
         """Slice a 3MF via orcaslicer-cli's token-based v2 API.
 
         Uploads the bytes (sha256-deduped, so a re-upload of a file already
         cached by ``parse_3mf_via_slicer`` is free server-side), posts the
         slice request as JSON, and downloads the sliced output.
+
+        ``process_overrides`` is forwarded verbatim into the slice body
+        when non-empty. The slicer is permissive — unknown / filament-
+        domain / unparseable keys are silently dropped server-side; the
+        slicer reports back what was actually applied via
+        ``settings_transfer.process_overrides_applied``.
         """
         upload = await self.upload_3mf(file_data, filename=filename)
         input_token = upload["token"]
@@ -156,6 +171,7 @@ class SlicerClient:
             filament_profiles=filament_profiles,
             plate=plate,
             plate_type=plate_type,
+            process_overrides=process_overrides,
         )
 
         url = f"{self._base_url}/slice/v2"
@@ -303,6 +319,7 @@ class SlicerClient:
         filament_profiles: list[str] | dict[str, Any],
         plate: int,
         plate_type: str = "",
+        process_overrides: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Translate the gateway's filament_profiles shape to the v2 schema.
 
@@ -312,6 +329,9 @@ class SlicerClient:
         authored ``filament_settings_id``; we read that list via
         ``/3mf/{token}/inspect`` so the gateway doesn't need to plumb it
         through every call site.
+
+        ``process_overrides`` is included in the body only when non-empty
+        (``None`` and ``{}`` are no-ops per the slicer API contract).
         """
         filament_ids, filament_map = await self._normalize_filament_selection(
             input_token, filament_profiles,
@@ -341,6 +361,8 @@ class SlicerClient:
             body["filament_map"] = filament_map
         if plate_type:
             body["plate_type"] = plate_type
+        if process_overrides:
+            body["process_overrides"] = dict(process_overrides)
         return body
 
     async def _normalize_filament_selection(
