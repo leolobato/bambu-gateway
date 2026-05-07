@@ -306,6 +306,19 @@ class PrintProfileInfo(BaseModel):
     layer_height: str = ""
 
 
+class ProcessModifications(BaseModel):
+    """Per-3MF customisations away from the system process preset.
+
+    Sourced from `process_modifications` on the slicer's
+    `/3mf/{token}/inspect` response (schema_version >= 4). Empty defaults
+    when the slicer is older or the project didn't customise process
+    settings.
+    """
+    process_setting_id: str = ""
+    modified_keys: list[str] = []
+    values: dict[str, str] = {}
+
+
 class ThreeMFInfo(BaseModel):
     plates: list[PlateInfo] = []
     filaments: list[FilamentInfo] = []
@@ -316,6 +329,7 @@ class ThreeMFInfo(BaseModel):
     # The slicer's plate-type catalog returns the same string in `label`, with
     # `value` being the slug expected by the slice API.
     bed_type: str = ""
+    process_modifications: ProcessModifications = ProcessModifications()
 
 
 # --- API response models ---
