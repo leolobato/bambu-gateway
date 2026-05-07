@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from app.models import ProcessModifications, ThreeMFInfo
+from app.parse_3mf import _adapt
 
 
 def test_process_modifications_defaults_to_empty():
@@ -28,9 +29,6 @@ def test_process_modifications_round_trips():
     assert dumped["process_modifications"]["process_setting_id"] == "Custom 0.20mm Standard"
     assert dumped["process_modifications"]["modified_keys"] == ["layer_height", "wall_loops"]
     assert dumped["process_modifications"]["values"] == {"layer_height": "0.16", "wall_loops": "3"}
-
-
-from app.parse_3mf import _adapt
 
 
 def _fake_inspect_with_pm(pm: dict | None) -> dict:

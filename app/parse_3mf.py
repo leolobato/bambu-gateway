@@ -127,7 +127,7 @@ def _adapt(
 
     pm_raw = insp.get("process_modifications") or {}
     process_modifications = ProcessModifications(
-        process_setting_id=str(pm_raw.get("process_setting_id", "") or ""),
+        process_setting_id=pm_raw.get("process_setting_id", "") or "",
         modified_keys=list(pm_raw.get("modified_keys") or []),
         values=dict(pm_raw.get("values") or {}),
     )
