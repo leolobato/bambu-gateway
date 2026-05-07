@@ -1406,6 +1406,7 @@ async def print_preview(
     process_profile: str = Form(""),
     filament_profiles: str = Form(""),
     plate_type: str = Form(""),
+    process_overrides: str = Form(""),
 ):
     """Slice synchronously via the job manager and return the sliced bytes.
 
@@ -1429,6 +1430,7 @@ async def print_preview(
             status_code=400,
             detail="machine_profile and process_profile are required",
         )
+    process_overrides_dict = _parse_process_overrides_form(process_overrides)
     try:
         info = await parse_3mf_via_slicer(
             file_data, slicer_client, plate_id=plate_id or 1,
@@ -1456,6 +1458,7 @@ async def print_preview(
         project_filament_count=len(info.filaments),
         printer_id=printer_id or None,
         auto_print=False,
+        process_overrides=process_overrides_dict,
     )
 
     # Wait for terminal state (bounded — preview is meant to be sync-ish).
@@ -1522,6 +1525,7 @@ async def print_file_stream(
     plate_type: str = Form(""),
     slice_only: bool = Form(False),
     preview: bool = Form(False),
+    process_overrides: str = Form(""),
 ):
     """Slice and optionally print a 3MF, streaming progress via SSE.
 
@@ -1546,6 +1550,7 @@ async def print_file_stream(
             status_code=400,
             detail=f"File exceeds {settings.max_file_size_mb} MB limit",
         )
+    process_overrides_dict = _parse_process_overrides_form(process_overrides)
     try:
         info = await parse_3mf_via_slicer(
             file_data, slicer_client, plate_id=plate_id or 1,
@@ -1578,6 +1583,7 @@ async def print_file_stream(
         project_filament_count=len(info.filaments),
         printer_id=pid or None,
         auto_print=auto_print,
+        process_overrides=process_overrides_dict,
     )
 
     async def generate():

@@ -136,3 +136,124 @@ def test_print_rejects_non_string_value(configured_app):
     )
     assert resp.status_code == 400
     assert "values must be strings" in resp.json()["detail"]
+
+
+@pytest.fixture
+def configured_app_with_jobs(monkeypatch, tmp_path):
+    """Wire mocks for the slice-job-driven endpoints."""
+    fake_slicer = AsyncMock()
+    monkeypatch.setattr(app_main, "slicer_client", fake_slicer)
+
+    fake_info = MagicMock()
+    fake_info.has_gcode = False
+    fake_info.filaments = [
+        MagicMock(setting_id="Bambu PLA Basic", index=0, used=True),
+    ]
+    fake_info.process_modifications = MagicMock(values={})
+
+    async def fake_parse(*a, **kw):
+        return fake_info
+
+    monkeypatch.setattr(app_main, "parse_3mf_via_slicer", fake_parse)
+
+    async def fake_resolve(project_ids, raw, printer_id, used_filament_indices=None):
+        return ["Bambu PLA Basic"], None
+
+    monkeypatch.setattr(app_main, "_resolve_slice_filament_payload", fake_resolve)
+
+    fake_jobs = AsyncMock()
+    fake_job = MagicMock()
+    fake_job.id = "job-1"
+    fake_jobs.submit.return_value = fake_job
+
+    # Default `get` returns a clean-failed terminal job so the SSE
+    # generator in /api/print-stream exits its polling loop quickly
+    # without trying to read fake output bytes / estimate / etc. Tests
+    # that need a different shape override this on the fixture instance.
+    terminal = MagicMock()
+    terminal.id = "job-1"
+    terminal.status.is_terminal = True
+    terminal.status.value = "failed"
+    terminal.error = "stub"
+    terminal.progress = 0
+    terminal.phase = None
+    fake_jobs.get.return_value = terminal
+
+    monkeypatch.setattr(app_main, "slice_jobs", fake_jobs)
+
+    fake_printer_service = MagicMock()
+    fake_printer_service.default_printer_id.return_value = "PRINTER1"
+    monkeypatch.setattr(app_main, "printer_service", fake_printer_service)
+
+    return TestClient(app_main.app), fake_jobs
+
+
+def test_print_stream_passes_process_overrides_to_jobs_submit(
+    configured_app_with_jobs,
+):
+    client, fake_jobs = configured_app_with_jobs
+    resp = client.post(
+        "/api/print-stream",
+        files={"file": ("test.3mf", io.BytesIO(_FAKE_3MF), "application/octet-stream")},
+        data={
+            "machine_profile": "GM004",
+            "process_profile": "GP004",
+            "process_overrides": json.dumps({"layer_height": "0.16"}),
+            "preview": "true",
+        },
+    )
+    # SSE endpoint returns 200 + a stream; we don't need to drain it here.
+    assert resp.status_code == 200
+    _, kwargs = fake_jobs.submit.call_args
+    assert kwargs["process_overrides"] == {"layer_height": "0.16"}
+
+
+def test_print_stream_rejects_invalid_overrides_json(configured_app_with_jobs):
+    client, _ = configured_app_with_jobs
+    resp = client.post(
+        "/api/print-stream",
+        files={"file": ("test.3mf", io.BytesIO(_FAKE_3MF), "application/octet-stream")},
+        data={
+            "machine_profile": "GM004",
+            "process_profile": "GP004",
+            "process_overrides": "{not json",
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_print_preview_passes_process_overrides_to_jobs_submit(
+    configured_app_with_jobs, monkeypatch,
+):
+    """print-preview waits for terminal state — fixture's default `get`
+    returns a clean-failed terminal job so the loop exits immediately
+    and we can verify the submit call args."""
+    client, fake_jobs = configured_app_with_jobs
+
+    resp = client.post(
+        "/api/print-preview",
+        files={"file": ("test.3mf", io.BytesIO(_FAKE_3MF), "application/octet-stream")},
+        data={
+            "machine_profile": "GM004",
+            "process_profile": "GP004",
+            "process_overrides": json.dumps({"wall_loops": "3"}),
+        },
+    )
+    # Forced-failure short-circuit returns 502; we only care about call args.
+    assert resp.status_code == 502
+    _, kwargs = fake_jobs.submit.call_args
+    assert kwargs["process_overrides"] == {"wall_loops": "3"}
+
+
+def test_print_preview_rejects_invalid_overrides_json(configured_app_with_jobs):
+    client, _ = configured_app_with_jobs
+    resp = client.post(
+        "/api/print-preview",
+        files={"file": ("test.3mf", io.BytesIO(_FAKE_3MF), "application/octet-stream")},
+        data={
+            "machine_profile": "GM004",
+            "process_profile": "GP004",
+            "process_overrides": "[1,2,3]",
+        },
+    )
+    assert resp.status_code == 400
