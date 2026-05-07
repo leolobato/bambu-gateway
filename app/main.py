@@ -965,6 +965,41 @@ async def slicer_plate_types():
     return plate_types or DEFAULT_PLATE_TYPES
 
 
+@app.get("/api/slicer/options/process")
+async def slicer_options_process():
+    """Process-option metadata catalogue. Pass-through to the slicer.
+
+    Clients cache by the response's ``version`` field. ~150 KB; the
+    gateway does not cache server-side.
+    """
+    if slicer_client is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Slicer not configured: ORCASLICER_API_URL not set",
+        )
+    try:
+        return await slicer_client.get_process_options()
+    except SlicingError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/slicer/options/process/layout")
+async def slicer_options_process_layout():
+    """Allowlist-filtered editor layout. Pass-through to the slicer.
+
+    Clients cache by ``(version, allowlist_revision)``.
+    """
+    if slicer_client is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Slicer not configured: ORCASLICER_API_URL not set",
+        )
+    try:
+        return await slicer_client.get_process_layout()
+    except SlicingError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 class _ResolveForMachineBody(BaseModel):
     machine_id: str
     process_name: str = ""
