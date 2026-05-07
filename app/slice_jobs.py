@@ -67,6 +67,7 @@ class SliceJob:
 
     # blobs (paths as strings for JSON-friendliness; converted to Path in code)
     input_path: str
+    process_overrides: dict[str, str] | None = None
     output_path: str | None = None
 
     # progress
@@ -104,6 +105,7 @@ class SliceJob:
         printer_id: str | None,
         auto_print: bool,
         input_path: Path,
+        process_overrides: dict[str, str] | None = None,
     ) -> "SliceJob":
         ts = _now()
         return cls(
@@ -120,6 +122,7 @@ class SliceJob:
             printer_id=printer_id,
             auto_print=auto_print,
             input_path=str(input_path),
+            process_overrides=process_overrides,
         )
 
     def touch(self) -> None:
@@ -229,6 +232,7 @@ class _SlicerLike(Protocol):
         filament_profiles: list | dict,
         plate_type: str = "",
         plate: int = 1,
+        process_overrides: dict[str, str] | None = None,
     ): ...
 
 
@@ -483,6 +487,7 @@ class SliceJobManager:
         project_filament_count: int | None,
         printer_id: str | None,
         auto_print: bool,
+        process_overrides: dict[str, str] | None = None,
     ) -> SliceJob:
         # Allocate job id, then write input blob at the matching path so the
         # job record always references a real file.
@@ -501,6 +506,7 @@ class SliceJobManager:
             printer_id=printer_id,
             auto_print=auto_print,
             input_path=input_path,
+            process_overrides=process_overrides,
         )
         # SliceJob.new generates its own id, but we want it to match the blob.
         job.id = job_id
@@ -565,6 +571,7 @@ class SliceJobManager:
                 file_data, job.filename, job.machine_profile, job.process_profile,
                 job.filament_profiles, plate_type=job.plate_type,
                 plate=job.plate_id or 1,
+                process_overrides=job.process_overrides,
             )
             try:
                 while True:
