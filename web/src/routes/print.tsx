@@ -263,7 +263,7 @@ export default function PrintRoute() {
         ? {
             variant: 'warn',
             title: 'This 3MF already contains G-code.',
-            message: 'Slicing is skipped. Pick AMS trays below if you want to override the file\'s defaults.',
+            message: 'Print as-is, or pick settings below and Preview to re-slice.',
           }
         : { variant: 'info', title: 'File parsed — slicing required.' };
       // Only commit if this import is still the current one. A Cancel
@@ -785,17 +785,15 @@ export default function PrintRoute() {
             onClear={clearImport}
             disabled={state.kind === 'previewReady'}
           />
-          {!state.info.has_gcode && (
-            <SlicingSettingsGroup
-              settings={settings}
-              onChange={setSettings}
-              machineOptions={machineOptions}
-              processOptions={processOptions}
-              plateTypeOptions={plateTypeOptions}
-              activeMachineModel={activePrinter?.machine_model || null}
-              disabled={state.kind === 'previewReady'}
-            />
-          )}
+          <SlicingSettingsGroup
+            settings={settings}
+            onChange={setSettings}
+            machineOptions={machineOptions}
+            processOptions={processOptions}
+            plateTypeOptions={plateTypeOptions}
+            activeMachineModel={activePrinter?.machine_model || null}
+            disabled={state.kind === 'previewReady'}
+          />
           <FilamentsGroup
             projectFilaments={state.info.filaments}
             usedFilamentIndices={
@@ -827,7 +825,6 @@ export default function PrintRoute() {
           )}
           <ActionButtons
             kind={state.kind}
-            hasGcode={state.info.has_gcode}
             onPreview={() => startSlicing(state.file, state.info, true)}
             onPrint={() =>
               state.kind === 'imported' && state.info.has_gcode
@@ -885,7 +882,6 @@ function PrintSentReceipt({
 
 function ActionButtons({
   kind,
-  hasGcode,
   onPreview,
   onPrint,
   onReslice,
@@ -893,7 +889,6 @@ function ActionButtons({
   onDownload,
 }: {
   kind: 'imported' | 'previewReady';
-  hasGcode: boolean;
   onPreview: () => void;
   onPrint: () => void;
   onReslice: () => void;
@@ -901,18 +896,6 @@ function ActionButtons({
   onDownload: () => void;
 }) {
   if (kind === 'imported') {
-    if (hasGcode) {
-      // No slicing — only the Print action.
-      return (
-        <Button
-          type="button"
-          onClick={onPrint}
-          className="w-full rounded-full bg-gradient-to-r from-accent-strong to-accent text-white border-0 h-11 text-[14px] font-semibold"
-        >
-          ⎙ Print
-        </Button>
-      );
-    }
     return (
       <div className="grid grid-cols-2 gap-2.5">
         <Button
