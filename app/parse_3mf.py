@@ -23,6 +23,7 @@ from app.models import (
     PlateObject,
     PrinterInfo,
     PrintProfileInfo,
+    ProcessModifications,
     ThreeMFInfo,
 )
 from app.slicer_client import SlicerClient
@@ -124,6 +125,13 @@ def _adapt(
     for f in filaments:
         f.used = f.index in target_set
 
+    pm_raw = insp.get("process_modifications") or {}
+    process_modifications = ProcessModifications(
+        process_setting_id=str(pm_raw.get("process_setting_id", "") or ""),
+        modified_keys=list(pm_raw.get("modified_keys") or []),
+        values=dict(pm_raw.get("values") or {}),
+    )
+
     return ThreeMFInfo(
         plates=plates,
         filaments=filaments,
@@ -138,4 +146,5 @@ def _adapt(
         ),
         has_gcode=bool(insp.get("is_sliced", False)),
         bed_type=insp.get("curr_bed_type", "") or "",
+        process_modifications=process_modifications,
     )
