@@ -211,6 +211,7 @@ class SlicerClient:
         filament_profiles: list[str] | dict[str, Any],
         plate_type: str = "",
         plate: int = 1,
+        process_overrides: dict[str, str] | None = None,
     ):
         """Stream SSE events for a slice operation.
 
@@ -221,19 +222,19 @@ class SlicerClient:
         if await self._check_stream_support():
             async for event in self._slice_stream_real(
                 file_data, filename, machine_profile, process_profile, filament_profiles,
-                plate, plate_type,
+                plate, plate_type, process_overrides,
             ):
                 yield event
         else:
             async for event in self._slice_stream_fallback(
                 file_data, filename, machine_profile, process_profile, filament_profiles,
-                plate, plate_type,
+                plate, plate_type, process_overrides,
             ):
                 yield event
 
     async def _slice_stream_real(
         self, file_data, filename, machine_profile, process_profile, filament_profiles,
-        plate=1, plate_type="",
+        plate=1, plate_type="", process_overrides=None,
     ):
         upload = await self.upload_3mf(file_data, filename=filename)
         input_token = upload["token"]
@@ -244,6 +245,7 @@ class SlicerClient:
             filament_profiles=filament_profiles,
             plate=plate,
             plate_type=plate_type,
+            process_overrides=process_overrides,
         )
 
         url = f"{self._base_url}/slice-stream/v2"
@@ -283,14 +285,14 @@ class SlicerClient:
 
     async def _slice_stream_fallback(
         self, file_data, filename, machine_profile, process_profile, filament_profiles,
-        plate=1, plate_type="",
+        plate=1, plate_type="", process_overrides=None,
     ):
         """Use the non-streaming /slice/v2 endpoint and emit synthetic SSE events."""
         yield {"event": "status", "data": {"phase": "slicing", "message": "Slicing..."}}
 
         result = await self.slice(
             file_data, filename, machine_profile, process_profile, filament_profiles,
-            plate_type, plate,
+            plate_type, plate, process_overrides=process_overrides,
         )
 
         transfer_info = {}
@@ -300,6 +302,10 @@ class SlicerClient:
                 transfer_info["transferred"] = result.settings_transferred
         if result.filament_transfers:
             transfer_info["filaments"] = result.filament_transfers
+        if result.process_overrides_applied:
+            transfer_info["process_overrides_applied"] = list(
+                result.process_overrides_applied
+            )
 
         yield {"event": "result", "data": {
             "file_base64": base64.b64encode(result.content).decode(),
