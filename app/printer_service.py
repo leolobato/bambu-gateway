@@ -365,6 +365,14 @@ class PrinterService:
         nozzle_temp_min: int,
         nozzle_temp_max: int,
         setting_id: str,
+        tag_uid: str | None = None,
+        bed_temp: int | None = None,
+        tray_weight: int | None = None,
+        remain: int | None = None,
+        k: float | None = None,
+        n: float | None = None,
+        tray_uuid: str | None = None,
+        cali_idx: int | None = None,
     ) -> None:
         """Assign a filament profile to one AMS tray via MQTT.
 
@@ -389,6 +397,14 @@ class PrinterService:
             nozzle_temp_min=nozzle_temp_min,
             nozzle_temp_max=nozzle_temp_max,
             setting_id=setting_id,
+            tag_uid=tag_uid,
+            bed_temp=bed_temp,
+            tray_weight=tray_weight,
+            remain=remain,
+            k=k,
+            n=n,
+            tray_uuid=tray_uuid,
+            cali_idx=cali_idx,
         )
         logger.info(
             "AMS filament set on printer %s AMS %d tray %d: %s (%s)",

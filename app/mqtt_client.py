@@ -318,6 +318,15 @@ class BambuMQTTClient:
         nozzle_temp_min: int,
         nozzle_temp_max: int,
         setting_id: str,
+        *,
+        tag_uid: str | None = None,
+        bed_temp: int | None = None,
+        tray_weight: int | None = None,
+        remain: int | None = None,
+        k: float | None = None,
+        n: float | None = None,
+        tray_uuid: str | None = None,
+        cali_idx: int | None = None,
     ) -> None:
         """Assign a filament profile to one AMS tray.
 
@@ -332,21 +341,42 @@ class BambuMQTTClient:
         (NOT the global slot index). For the external spool, callers pass
         ams_id=255 / tray_id=254 — Bambu uses those reserved values.
         `tray_color` is the 8-char hex "RRGGBBAA" (no leading "#").
+
+        The keyword-only fields are spool-tracking extras forwarded verbatim
+        when not None: `tag_uid` and `tray_uuid` identify the physical spool
+        for the printer's RFID/AMS ledger; `k`, `n`, and `cali_idx` carry
+        flow-calibration state; `bed_temp`, `tray_weight`, and `remain`
+        propagate per-spool defaults that would otherwise reset.
         """
-        self.publish({
-            "print": {
-                "sequence_id": "0",
-                "command": "ams_filament_setting",
-                "ams_id": ams_id,
-                "tray_id": tray_id,
-                "tray_info_idx": tray_info_idx,
-                "tray_color": tray_color,
-                "tray_type": tray_type,
-                "nozzle_temp_min": nozzle_temp_min,
-                "nozzle_temp_max": nozzle_temp_max,
-                "setting_id": setting_id,
-            }
-        })
+        payload = {
+            "sequence_id": "0",
+            "command": "ams_filament_setting",
+            "ams_id": ams_id,
+            "tray_id": tray_id,
+            "tray_info_idx": tray_info_idx,
+            "tray_color": tray_color,
+            "tray_type": tray_type,
+            "nozzle_temp_min": nozzle_temp_min,
+            "nozzle_temp_max": nozzle_temp_max,
+            "setting_id": setting_id,
+        }
+        if tag_uid is not None:
+            payload["tag_uid"] = tag_uid
+        if bed_temp is not None:
+            payload["bed_temp"] = bed_temp
+        if tray_weight is not None:
+            payload["tray_weight"] = tray_weight
+        if remain is not None:
+            payload["remain"] = remain
+        if k is not None:
+            payload["k"] = k
+        if n is not None:
+            payload["n"] = n
+        if tray_uuid is not None:
+            payload["tray_uuid"] = tray_uuid
+        if cali_idx is not None:
+            payload["cali_idx"] = cali_idx
+        self.publish({"print": payload})
 
     def send_print_command(
         self,

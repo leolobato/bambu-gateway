@@ -425,10 +425,23 @@ class SetAmsFilamentRequest(BaseModel):
     slicer's profile detail. `tray_color` overrides the resolved default —
     useful for keeping the spool's actual on-screen colour when the user is
     only changing the *profile* and not the physical filament.
+
+    The remaining fields are optional spool-tracking extras forwarded
+    verbatim into the `ams_filament_setting` MQTT payload when present.
+    Callers (e.g. spool inventory services) pass them to preserve the
+    printer's per-spool calibration and identity state.
     """
 
     setting_id: str
     tray_color: str | None = None  # 8-char "RRGGBBAA" hex, no leading "#"
+    tag_uid: str | None = None
+    bed_temp: int | None = None
+    tray_weight: int | None = None
+    remain: int | None = None
+    k: float | None = None
+    n: float | None = None
+    tray_uuid: str | None = None
+    cali_idx: int | None = None
 
 
 # --- Push / Live Activity models ---

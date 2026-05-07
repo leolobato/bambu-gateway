@@ -602,6 +602,14 @@ async def set_ams_filament(
             nozzle_temp_min=temp_min,
             nozzle_temp_max=temp_max,
             setting_id=setting_id,
+            tag_uid=body.tag_uid,
+            bed_temp=body.bed_temp,
+            tray_weight=body.tray_weight,
+            remain=body.remain,
+            k=body.k,
+            n=body.n,
+            tray_uuid=body.tray_uuid,
+            cali_idx=body.cali_idx,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
