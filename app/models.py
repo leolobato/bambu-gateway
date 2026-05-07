@@ -350,10 +350,24 @@ class FilamentTransferEntry(BaseModel):
     discarded: list[str] = []
 
 
+class ProcessOverrideApplied(BaseModel):
+    """One process override that the slicer actually applied.
+
+    Returned in ``settings_transfer.process_overrides_applied`` for each
+    override the client submitted that wasn't dropped (filament-domain
+    keys, unknown keys, and unparseable values are dropped silently).
+    """
+
+    key: str
+    value: str
+    previous: str
+
+
 class SettingsTransferInfo(BaseModel):
     status: str
     transferred: list[TransferredSetting] = []
     filaments: list[FilamentTransferEntry] = []
+    process_overrides_applied: list[ProcessOverrideApplied] = []
 
 
 class PrintEstimate(BaseModel):
