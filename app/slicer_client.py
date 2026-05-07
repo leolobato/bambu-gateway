@@ -586,6 +586,44 @@ class SlicerClient:
 
         return resp.json()
 
+    async def get_process_options(self) -> dict:
+        """GET /options/process — process-option metadata catalogue.
+
+        Returns the slicer's JSON response unchanged: ``{version, options}``.
+        Raises ``SlicingError`` on non-200 (the 503 ``options_not_loaded``
+        case is meaningful — clients retry — so we surface it rather than
+        masking it as an empty payload).
+        """
+        url = f"{self._base_url}/options/process"
+        try:
+            async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
+                resp = await client.get(url)
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        if resp.status_code != 200:
+            raise SlicingError(
+                f"Slicer returned {resp.status_code}: {resp.text[:500]}",
+            )
+        return resp.json()
+
+    async def get_process_layout(self) -> dict:
+        """GET /options/process/layout — paged + allowlist-filtered layout.
+
+        Returns ``{version, allowlist_revision, pages}`` unchanged. Same
+        error semantics as ``get_process_options``.
+        """
+        url = f"{self._base_url}/options/process/layout"
+        try:
+            async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
+                resp = await client.get(url)
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        if resp.status_code != 200:
+            raise SlicingError(
+                f"Slicer returned {resp.status_code}: {resp.text[:500]}",
+            )
+        return resp.json()
+
     async def upload_3mf(self, data: bytes, *, filename: str = "input.3mf") -> dict:
         """POST /3mf — upload bytes, get a token + sha256.
 
