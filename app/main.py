@@ -825,8 +825,13 @@ def _parse_process_overrides_form(raw: str) -> dict[str, str] | None:
     malformed input — the slicer is permissive on unknown / unparseable
     keys, but we surface client-side mistakes (bad JSON, wrong shape,
     non-string values) early rather than silently swallowing them.
+
+    The ``isinstance(raw, str)`` guard handles direct in-process route
+    invocation (e.g. ``await app_main.print_preview(...)`` from tests),
+    where the parameter receives FastAPI's ``Form("")`` sentinel rather
+    than the empty-string default a real request would yield.
     """
-    if not raw:
+    if not isinstance(raw, str) or not raw:
         return None
     try:
         parsed = json.loads(raw)
