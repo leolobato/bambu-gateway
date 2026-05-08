@@ -119,15 +119,32 @@ def extract_selected_tray_slots(
 def build_ams_mapping(
     filament_payload: list[str] | dict | None,
     project_filament_count: int | None = None,
+    slot_indices: list[int] | None = None,
 ) -> tuple[list[int] | None, bool]:
     """Build the ams_mapping array for the printer's project_file command.
 
-    Returns a variable-length array (one entry per project filament) mapping
-    each filament index to an AMS tray slot, plus a use_ams flag. Indices
-    without a selection get -1.
+    Returns a slot-indexed array mapping each authored filament slot to an
+    AMS tray slot, plus a use_ams flag. Slots without a selection get -1.
     Returns (None, False) when no AMS selections are present.
+
+    The payload's keys are *positions* in the project filament list (the
+    same positional shape the gateway sends to the slicer). For sparse 3MFs
+    — projects whose filament is authored on a non-zero AMS slot, e.g. a
+    single-filament file emitting T1 toolchanges — position and slot index
+    diverge. The printer's gcode references the authored slot, so the
+    mapping array must be sized by ``max(slot)+1`` with each entry placed
+    at its slot index, not its payload position. ``slot_indices`` carries
+    one authored slot per project filament position (typically
+    ``[f.index for f in info.filaments]``) and is used to translate.
+
+    When ``slot_indices`` is omitted the historical position == slot
+    contract is preserved, which is correct only for dense 3MFs.
     """
     tray_slots = extract_selected_tray_slots(filament_payload)
+    logger.info(
+        "AMS mapping inputs: payload=%s project_filament_count=%s slot_indices=%s tray_slots=%s",
+        filament_payload, project_filament_count, slot_indices, tray_slots,
+    )
     if not tray_slots:
         logger.info(
             "AMS mapping: no tray_slot selections found in payload=%s",
@@ -135,16 +152,37 @@ def build_ams_mapping(
         )
         return None, False
 
-    if project_filament_count is None:
-        project_filament_count = max(tray_slots) + 1
+    if slot_indices is not None:
+        slot_for_position = {pos: slot for pos, slot in enumerate(slot_indices)}
+        max_slot = max(slot_for_position.values(), default=-1)
+        # `tray_slots` is already keyed by payload position (per
+        # `extract_selected_tray_slots`); translate to authored slot.
+        position_max = max(tray_slots, default=-1)
+        if position_max in slot_for_position:
+            max_slot = max(max_slot, slot_for_position[position_max])
+        size = max(
+            max_slot + 1,
+            project_filament_count or 0,
+        )
+    else:
+        slot_for_position = None
+        size = project_filament_count if project_filament_count is not None else (
+            max(tray_slots) + 1
+        )
 
-    ams_mapping = [-1] * project_filament_count
+    ams_mapping = [-1] * size
 
     use_ams = False
-    for filament_index, tray_slot in tray_slots.items():
-        if filament_index < 0 or filament_index >= project_filament_count:
+    for position, tray_slot in tray_slots.items():
+        if slot_for_position is not None:
+            slot = slot_for_position.get(position)
+            if slot is None:
+                continue
+        else:
+            slot = position
+        if slot < 0 or slot >= size:
             continue
-        ams_mapping[filament_index] = tray_slot
+        ams_mapping[slot] = tray_slot
         use_ams = True
 
     logger.info("AMS mapping: %s, use_ams=%s", ams_mapping, use_ams)

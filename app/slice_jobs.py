@@ -69,6 +69,12 @@ class SliceJob:
     input_path: str
     process_overrides: dict[str, str] | None = None
     output_path: str | None = None
+    # Authored 3MF slot index per project-filament position. For sparse 3MFs
+    # (e.g. a single filament authored on AMS slot 1) position and slot
+    # diverge; this is what `build_ams_mapping` needs at print time so the
+    # printer's `ams_mapping` is keyed by slot, not position. Optional for
+    # back-compat with jobs persisted before this field existed.
+    slot_indices: list[int] | None = None
 
     # progress
     status: SliceJobStatus = SliceJobStatus.QUEUED
@@ -106,6 +112,7 @@ class SliceJob:
         auto_print: bool,
         input_path: Path,
         process_overrides: dict[str, str] | None = None,
+        slot_indices: list[int] | None = None,
     ) -> "SliceJob":
         ts = _now()
         return cls(
@@ -123,6 +130,7 @@ class SliceJob:
             auto_print=auto_print,
             input_path=str(input_path),
             process_overrides=process_overrides,
+            slot_indices=slot_indices,
         )
 
     def touch(self) -> None:
@@ -488,6 +496,7 @@ class SliceJobManager:
         printer_id: str | None,
         auto_print: bool,
         process_overrides: dict[str, str] | None = None,
+        slot_indices: list[int] | None = None,
     ) -> SliceJob:
         # Allocate job id, then write input blob at the matching path so the
         # job record always references a real file.
@@ -507,6 +516,7 @@ class SliceJobManager:
             auto_print=auto_print,
             input_path=input_path,
             process_overrides=process_overrides,
+            slot_indices=slot_indices,
         )
         # SliceJob.new generates its own id, but we want it to match the blob.
         job.id = job_id
@@ -514,6 +524,12 @@ class SliceJobManager:
         await self._store.upsert(job)
         self._cancel_events[job.id] = asyncio.Event()
         await self._queue.put(job.id)
+        logger.info(
+            "slice job submitted id=%s filament_profiles=%s "
+            "project_filament_count=%s slot_indices=%s auto_print=%s printer_id=%s",
+            job.id, job.filament_profiles, job.project_filament_count,
+            job.slot_indices, job.auto_print, job.printer_id,
+        )
         return job
 
     async def get(self, job_id: str) -> SliceJob | None:
@@ -751,6 +767,7 @@ class SliceJobManager:
         ams_mapping, use_ams = build_ams_mapping(
             job.filament_profiles,
             project_filament_count=job.project_filament_count,
+            slot_indices=job.slot_indices,
         )
 
         await self._set_status(job, SliceJobStatus.UPLOADING, phase="uploading")

@@ -1171,9 +1171,16 @@ async def print_file(
         )
         if tray_error is not None:
             raise HTTPException(status_code=409, detail=tray_error)
+        logger.info(
+            "Print from job id=%s filament_profiles=%s "
+            "project_filament_count=%s slot_indices=%s",
+            job.id, job.filament_profiles, job.project_filament_count,
+            job.slot_indices,
+        )
         ams_mapping, use_ams = build_ams_mapping(
             job.filament_profiles,
             project_filament_count=job.project_filament_count,
+            slot_indices=job.slot_indices,
         )
 
         file_data_job = Path(job.output_path).read_bytes()
@@ -1364,6 +1371,7 @@ async def print_file(
     ams_mapping, use_ams = build_ams_mapping(
         filament_payload,
         project_filament_count=len(info.filaments) or None,
+        slot_indices=[f.index for f in info.filaments] or None,
     )
     logger.info(
         "Print submission: filament_payload=%s ams_mapping=%s use_ams=%s filament_count=%s",
@@ -1461,6 +1469,7 @@ async def print_preview(
         plate_id=plate_id,
         plate_type=plate_type.strip(),
         project_filament_count=len(info.filaments),
+        slot_indices=[f.index for f in info.filaments] or None,
         printer_id=printer_id or None,
         auto_print=False,
         process_overrides=process_overrides_dict,
@@ -1586,6 +1595,7 @@ async def print_file_stream(
         plate_id=plate_id,
         plate_type=plate_type.strip(),
         project_filament_count=len(info.filaments),
+        slot_indices=[f.index for f in info.filaments] or None,
         printer_id=pid or None,
         auto_print=auto_print,
         process_overrides=process_overrides_dict,
@@ -1792,6 +1802,7 @@ async def create_slice_job(
         plate_id=plate_id,
         plate_type=plate_type.strip(),
         project_filament_count=len(info.filaments),
+        slot_indices=[f.index for f in info.filaments] or None,
         printer_id=printer_id or None,
         auto_print=auto_print,
     )

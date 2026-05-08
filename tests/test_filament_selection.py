@@ -43,6 +43,43 @@ def test_build_ams_mapping_derives_count_from_max_index():
     assert use is True
 
 
+def test_build_ams_mapping_sparse_3mf_routes_by_authored_slot():
+    """Sparse 3MFs author filaments at non-zero slot indices.
+
+    The frontend keys `filament_profiles` by *position* in `info.filaments`
+    (0..N-1), but the printer's gcode references the authored *slot index*
+    (e.g. a single-filament 3MF with the filament on AMS slot 1 emits T1
+    toolchanges). Without `slot_indices`, the position-based ams_mapping is
+    too short and the printer falls back to identity routing for slot 1 —
+    pulling from tray 1 even though the user picked tray 0. Threading
+    `slot_indices` through translates position→slot so the mapping array
+    is sized by `max(slot)+1` and the user's pick lands at the right index.
+    """
+    payload = {"0": {"tray_slot": 0, "profile_setting_id": "GFA00"}}
+    mapping, use = build_ams_mapping(
+        payload, project_filament_count=1, slot_indices=[1],
+    )
+    assert mapping == [-1, 0]
+    assert use is True
+
+
+def test_build_ams_mapping_slot_indices_with_dense_3mf():
+    payload = {"0": {"tray_slot": 2}, "1": {"tray_slot": 0}}
+    mapping, use = build_ams_mapping(
+        payload, project_filament_count=2, slot_indices=[0, 1],
+    )
+    assert mapping == [2, 0]
+    assert use is True
+
+
+def test_build_ams_mapping_slot_indices_default_matches_dense():
+    """With slot_indices=None, behaviour is unchanged (position == slot)."""
+    payload = {"0": {"tray_slot": 2}, "1": {"tray_slot": 0}}
+    mapping, use = build_ams_mapping(payload, project_filament_count=2)
+    assert mapping == [2, 0]
+    assert use is True
+
+
 # build_slicer_filament_payload — unmapped slots are passed through
 
 

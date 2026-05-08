@@ -13,9 +13,12 @@ to URL-based thumbnails is a separate Phase 4 task.
 from __future__ import annotations
 
 import base64
+import logging
 from typing import Optional
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from app.models import (
     FilamentInfo,
@@ -130,6 +133,13 @@ def _adapt(
         process_setting_id=pm_raw.get("process_setting_id", "") or "",
         modified_keys=list(pm_raw.get("modified_keys") or []),
         values=dict(pm_raw.get("values") or {}),
+    )
+
+    logger.info(
+        "parse_3mf: plate_id=%s filaments=%s used=%s",
+        plate_id,
+        [(f.index, f.setting_id) for f in filaments],
+        sorted(int(i) for i in target_set),
     )
 
     return ThreeMFInfo(
