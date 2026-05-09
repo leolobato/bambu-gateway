@@ -19,6 +19,7 @@ export interface SubmitSliceJobArgs {
   filamentProfiles: Record<string, { profile_setting_id: string; tray_slot: number } | string>;
   plateType?: string;
   autoPrint?: boolean;
+  processOverrides?: Record<string, string>;
 }
 
 export async function submitSliceJob(args: SubmitSliceJobArgs): Promise<SliceJob> {
@@ -29,6 +30,9 @@ export async function submitSliceJob(args: SubmitSliceJobArgs): Promise<SliceJob
   fd.append('machine_profile', args.machineProfile);
   fd.append('process_profile', args.processProfile);
   fd.append('filament_profiles', JSON.stringify(args.filamentProfiles));
+  if (args.processOverrides && Object.keys(args.processOverrides).length > 0) {
+    fd.append('process_overrides', JSON.stringify(args.processOverrides));
+  }
   if (args.plateType) fd.append('plate_type', args.plateType);
   if (args.autoPrint) fd.append('auto_print', 'true');
 
