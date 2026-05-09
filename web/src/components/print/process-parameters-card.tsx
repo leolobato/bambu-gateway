@@ -128,15 +128,6 @@ export function ProcessParametersCard({ modifications }: Props) {
           })}
         </div>
       )}
-
-      <Button
-        variant="secondary"
-        className="mt-3 w-full"
-        onClick={() => setProcessSheetOpen(true)}
-      >
-        Show all settings
-        <ChevronRight className="size-3.5 ml-1" />
-      </Button>
     </Card>
   );
 }

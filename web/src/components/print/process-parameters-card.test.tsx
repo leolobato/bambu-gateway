@@ -32,8 +32,9 @@ describe('ProcessParametersCard', () => {
     expect(
       screen.getByText('No customizations from default profile'),
     ).toBeInTheDocument();
+    // Header is the sole entry point into the All sheet.
     expect(
-      screen.getByRole('button', { name: /Show all settings/ }),
+      screen.getByRole('button', { name: /Open process settings/ }),
     ).toBeInTheDocument();
   });
 
