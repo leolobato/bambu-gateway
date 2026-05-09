@@ -102,7 +102,7 @@ export async function fetchProcessProfile(settingId: string): Promise<Record<str
 
 const RETRYABLE_503_CODES = new Set(['options_not_loaded', 'options_layout_not_loaded']);
 
-function shouldRetry(failureCount: number, error: unknown): boolean {
+function shouldRetry(failureCount: number, error: Error): boolean {
   if (failureCount >= 1) return false;
   if (!(error instanceof ApiError)) return false;
   if (error.status !== 503) return false;
@@ -110,7 +110,7 @@ function shouldRetry(failureCount: number, error: unknown): boolean {
 }
 
 export function useProcessOptions(): UseQueryResult<ProcessOptionsCatalogue, Error> {
-  return useQuery({
+  return useQuery<ProcessOptionsCatalogue, Error>({
     queryKey: ['process-options', 'catalogue'],
     queryFn: fetchProcessOptions,
     staleTime: Infinity,
@@ -121,7 +121,7 @@ export function useProcessOptions(): UseQueryResult<ProcessOptionsCatalogue, Err
 }
 
 export function useProcessLayout(): UseQueryResult<ProcessLayout, Error> {
-  return useQuery({
+  return useQuery<ProcessLayout, Error>({
     queryKey: ['process-options', 'layout'],
     queryFn: fetchProcessLayout,
     staleTime: Infinity,
@@ -134,7 +134,7 @@ export function useProcessLayout(): UseQueryResult<ProcessLayout, Error> {
 export function useProcessProfile(
   settingId: string | undefined,
 ): UseQueryResult<Record<string, string>, Error> {
-  return useQuery({
+  return useQuery<Record<string, string>, Error>({
     queryKey: ['process-options', 'profile', settingId ?? ''],
     queryFn: () => fetchProcessProfile(settingId!),
     enabled: !!settingId,
