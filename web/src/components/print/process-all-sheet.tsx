@@ -209,8 +209,11 @@ function PageList(props: PageListProps) {
   const searchResults = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return null;
-    const matches: Array<{ key: string; pageLabel: string }> = [];
+    // Grouped per page in layout order so the rendered list mirrors the
+    // page-detail surface — section header + bordered row block per page.
+    const groups: Array<{ pageLabel: string; keys: string[] }> = [];
     for (const page of layout.pages) {
+      const keys: string[] = [];
       for (const group of page.optgroups) {
         for (const key of group.options) {
           const opt = catalogue.options[key];
@@ -219,13 +222,16 @@ function PageList(props: PageListProps) {
             opt.label.toLowerCase().includes(q) ||
             key.toLowerCase().includes(q)
           ) {
-            matches.push({ key, pageLabel: page.label });
+            keys.push(key);
           }
         }
       }
+      if (keys.length > 0) groups.push({ pageLabel: page.label, keys });
     }
-    return matches;
+    return groups;
   }, [search, layout, catalogue]);
+
+  const totalSearchMatches = searchResults?.reduce((sum, g) => sum + g.keys.length, 0) ?? 0;
 
   return (
     <>
@@ -243,41 +249,46 @@ function PageList(props: PageListProps) {
       </div>
 
       {searchResults ? (
-        <div className="divide-y divide-border/40">
-          {searchResults.length === 0 ? (
-            <p className="p-4 text-sm text-muted-foreground">
-              No matches for &ldquo;{search}&rdquo;.
-            </p>
-          ) : (
-            searchResults.map(({ key, pageLabel }) => {
-              const opt = catalogue.options[key];
-              if (!opt) return null;
-              const value =
-                effectiveValue(key, processOverrides, modifications, processBaseline, catalogue) ?? '';
-              const revertTo =
-                revertTarget(key, modifications, processBaseline, catalogue) ?? '';
-              return (
-                <div key={key} className="relative">
-                  <ProcessOptionRow
-                    option={opt}
-                    value={value}
-                    revertTo={revertTo}
-                    isUserEdited={key in processOverrides}
-                    isFileModified={!!modifications?.values && key in modifications.values}
-                    showTooltipCaption
-                    isExpanded={expandedKey === key}
-                    onToggleExpand={() => onToggleExpand(key)}
-                    onCommit={(v) => onCommit(key, v)}
-                    onRevert={() => onRevert(key)}
-                  />
-                  <span className="pointer-events-none absolute right-10 top-3 text-xs text-muted-foreground">
-                    {pageLabel}
-                  </span>
+        totalSearchMatches === 0 ? (
+          <p className="p-4 text-sm text-muted-foreground">
+            No matches for &ldquo;{search}&rdquo;.
+          </p>
+        ) : (
+          <div className="px-4 py-3">
+            {searchResults.map(({ pageLabel, keys }) => (
+              <section key={pageLabel} className="mb-4">
+                <h3 className="text-xs font-semibold tracking-wide uppercase text-muted-foreground pb-2 pt-4">
+                  {pageLabel}
+                </h3>
+                <div className="rounded-lg border border-border/40 overflow-hidden">
+                  {keys.map((key) => {
+                    const opt = catalogue.options[key];
+                    if (!opt) return null;
+                    const value =
+                      effectiveValue(key, processOverrides, modifications, processBaseline, catalogue) ?? '';
+                    const revertTo =
+                      revertTarget(key, modifications, processBaseline, catalogue) ?? '';
+                    return (
+                      <ProcessOptionRow
+                        key={key}
+                        option={opt}
+                        value={value}
+                        revertTo={revertTo}
+                        isUserEdited={key in processOverrides}
+                        isFileModified={!!modifications?.values && key in modifications.values}
+                        showTooltipCaption
+                        isExpanded={expandedKey === key}
+                        onToggleExpand={() => onToggleExpand(key)}
+                        onCommit={(v) => onCommit(key, v)}
+                        onRevert={() => onRevert(key)}
+                      />
+                    );
+                  })}
                 </div>
-              );
-            })
-          )}
-        </div>
+              </section>
+            ))}
+          </div>
+        )
       ) : (
         <div className="divide-y divide-border/40">
           {layout.pages.map((page) => {
