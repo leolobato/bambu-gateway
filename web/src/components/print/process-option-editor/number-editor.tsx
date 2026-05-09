@@ -56,7 +56,7 @@ export function NumberEditor({ option, value, onCommit, onValidityChange }: Edit
     }
     const clamped = clamp(num, option.min, option.max);
     onValidityChange?.(true);
-    const formatted = isInt ? String(clamped) : String(clamped);
+    const formatted = String(clamped);
     const final = isPercentLockedSuffix || (isMixed && unit === '%')
       ? `${formatted}%`
       : formatted;
