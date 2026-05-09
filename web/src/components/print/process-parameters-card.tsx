@@ -80,21 +80,15 @@ export function ProcessParametersCard({ modifications }: Props) {
 
   return (
     <Card className="p-4">
-      <button
-        type="button"
-        onClick={() => setProcessSheetOpen(true)}
-        className="flex w-full items-center gap-2 mb-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
-        aria-label="Open process settings"
-      >
-        <Settings2 className="size-3.5 text-accent" />
+      <div className="flex items-center gap-2 mb-3">
+        <Settings2 className="size-3.5 text-accent" aria-hidden />
         <span className="text-base font-semibold">Process settings</span>
-        <span className="ml-auto flex items-center gap-2">
-          {modifiedCount > 0 && (
-            <Badge variant="secondary">{modifiedCount} modified</Badge>
-          )}
-          <ChevronRight className="size-3 text-muted-foreground" />
-        </span>
-      </button>
+        {modifiedCount > 0 && (
+          <Badge variant="secondary" className="ml-auto">
+            {modifiedCount} modified
+          </Badge>
+        )}
+      </div>
 
       {isLoading ? (
         <div className="flex flex-col gap-2">
@@ -170,6 +164,15 @@ export function ProcessParametersCard({ modifications }: Props) {
           ))}
         </div>
       )}
+
+      <Button
+        variant="secondary"
+        className="mt-3 w-full"
+        onClick={() => setProcessSheetOpen(true)}
+      >
+        Show all settings
+        <ChevronRight className="size-3.5 ml-1" aria-hidden />
+      </Button>
     </Card>
   );
 }
