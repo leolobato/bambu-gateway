@@ -109,7 +109,7 @@ function shouldRetry(failureCount: number, error: unknown): boolean {
   return !!error.code && RETRYABLE_503_CODES.has(error.code);
 }
 
-export function useProcessOptions(): UseQueryResult<ProcessOptionsCatalogue> {
+export function useProcessOptions(): UseQueryResult<ProcessOptionsCatalogue, Error> {
   return useQuery({
     queryKey: ['process-options', 'catalogue'],
     queryFn: fetchProcessOptions,
@@ -120,7 +120,7 @@ export function useProcessOptions(): UseQueryResult<ProcessOptionsCatalogue> {
   });
 }
 
-export function useProcessLayout(): UseQueryResult<ProcessLayout> {
+export function useProcessLayout(): UseQueryResult<ProcessLayout, Error> {
   return useQuery({
     queryKey: ['process-options', 'layout'],
     queryFn: fetchProcessLayout,
@@ -133,7 +133,7 @@ export function useProcessLayout(): UseQueryResult<ProcessLayout> {
 
 export function useProcessProfile(
   settingId: string | undefined,
-): UseQueryResult<Record<string, string>> {
+): UseQueryResult<Record<string, string>, Error> {
   return useQuery({
     queryKey: ['process-options', 'profile', settingId ?? ''],
     queryFn: () => fetchProcessProfile(settingId!),
