@@ -91,6 +91,51 @@ async def test_list_includes_created_jobs(app_client):
     assert len(resp.json()["jobs"]) == 1
 
 
+async def test_process_overrides_are_forwarded_to_submit(app_client, monkeypatch):
+    """The form field must reach SliceJobManager.submit, not get dropped.
+
+    Regression: /api/slice-jobs originally didn't declare ``process_overrides``,
+    so iOS clients that disabled e.g. brim saw the override silently ignored.
+    """
+    import app.main as main_mod
+
+    captured: dict = {}
+    real_submit = main_mod.slice_jobs.submit
+
+    async def spy_submit(*args, **kwargs):
+        captured.update(kwargs)
+        return await real_submit(*args, **kwargs)
+
+    monkeypatch.setattr(main_mod.slice_jobs, "submit", spy_submit)
+
+    resp = await app_client.post(
+        "/api/slice-jobs",
+        files={"file": ("cube.3mf", b"x", "application/octet-stream")},
+        data={
+            "machine_profile": "GM014",
+            "process_profile": "0.20mm",
+            "filament_profiles": "{}",
+            "process_overrides": '{"brim_type": "no_brim"}',
+        },
+    )
+    assert resp.status_code == 202
+    assert captured.get("process_overrides") == {"brim_type": "no_brim"}
+
+
+async def test_invalid_process_overrides_json_is_400(app_client):
+    resp = await app_client.post(
+        "/api/slice-jobs",
+        files={"file": ("cube.3mf", b"x", "application/octet-stream")},
+        data={
+            "machine_profile": "GM014",
+            "process_profile": "0.20mm",
+            "filament_profiles": "{}",
+            "process_overrides": "not-json",
+        },
+    )
+    assert resp.status_code == 400
+
+
 async def test_auto_print_without_printer_id_is_400(app_client):
     resp = await app_client.post(
         "/api/slice-jobs",

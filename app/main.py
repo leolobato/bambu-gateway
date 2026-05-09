@@ -1750,6 +1750,7 @@ async def create_slice_job(
     plate_type: str = Form(""),
     printer_id: str = Form(""),
     auto_print: bool = Form(False),
+    process_overrides: str = Form(""),
 ):
     if slice_jobs is None or slicer_client is None:
         raise HTTPException(
@@ -1778,6 +1779,8 @@ async def create_slice_job(
             detail="printer_id is required when auto_print=true",
         )
 
+    process_overrides_dict = _parse_process_overrides_form(process_overrides)
+
     # Validate + normalize filament selections the same way /api/print-stream
     # and /api/print-preview do, so missing setting_ids or unavailable AMS
     # tray slots are surfaced here instead of as opaque slicer 400s.
@@ -1805,6 +1808,7 @@ async def create_slice_job(
         slot_indices=[f.index for f in info.filaments] or None,
         printer_id=printer_id or None,
         auto_print=auto_print,
+        process_overrides=process_overrides_dict,
     )
     return _slice_job_to_response(job)
 
