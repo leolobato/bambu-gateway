@@ -10,7 +10,7 @@ from app.config import PrinterConfig, settings
 
 logger = logging.getLogger(__name__)
 
-_config_path: Path = Path("printers.json")
+_config_path: Path = Path("data/printers.json")
 
 
 def set_path(path: str | Path) -> None:

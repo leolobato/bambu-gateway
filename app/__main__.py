@@ -10,8 +10,8 @@ from app import config_store
 parser = argparse.ArgumentParser(description="Bambu Gateway")
 parser.add_argument(
     "-c", "--config",
-    default="printers.json",
-    help="path to printers.json config file (default: ./printers.json)",
+    default="data/printers.json",
+    help="path to printers.json config file (default: ./data/printers.json)",
 )
 args = parser.parse_args()
 

@@ -53,7 +53,7 @@ pip install -r requirements.txt
 python -m app
 ```
 
-Open [http://localhost:4844](http://localhost:4844) and add your printer from the **Settings** page. Printer configuration is saved to `printers.json` in the working directory.
+Open [http://localhost:4844](http://localhost:4844) and add your printer from the **Settings** page. Runtime state — printer configuration, slice jobs, and their cached 3MF blobs — is saved under `./data/` (gitignored).
 
 ### iOS push notifications (optional)
 
@@ -87,12 +87,14 @@ deployments, rotating keys, and troubleshooting.
 
 ### Printer config
 
-Printers are stored in `printers.json` (see `printers.example.json` for the
-format). The file is created automatically on first run — either seeded from
-environment variables or empty if none are set. After that, manage printers
-through the **Settings** page at `/settings`.
+Printers are stored in `data/printers.json` by default (see
+`printers.example.json` for the format). The file is created automatically on
+first run — either seeded from environment variables or empty if none are set.
+After that, manage printers through the **Settings** page at `/settings`. The
+slice-job store (`data/slice_jobs.json` plus the `data/slice_jobs/` blob dir)
+is rooted at the same parent.
 
-To use a custom path (e.g. a Docker volume):
+To use a custom path (e.g. a Docker volume mounted at `/data`):
 
 ```bash
 python -m app -c /data/printers.json

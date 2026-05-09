@@ -73,8 +73,14 @@ loop). `PrinterStatus` updates are guarded by a `threading.Lock`. Each MQTT clie
 has a 20-second idle disconnect timer on a daemon thread. FastAPI routes are async;
 slicer calls use `httpx.AsyncClient`.
 
-**UI:** Vanilla HTML/CSS/JS in `app/templates/` and `app/static/`. No build step.
-Dashboard auto-refreshes via 4-second polling. Settings page manages printer CRUD.
+**UI:** React + Vite + TypeScript SPA in `web/`, built into `app/static/dist/` and
+served by FastAPI. Stack: Tailwind CSS + shadcn/ui (Radix primitives) + Lucide
+icons + TanStack Query + React Router + Sonner toasts. Forced dark mode. Inter
+(sans) and JetBrains Mono (mono) via `@fontsource-variable`. Routes live in
+`web/src/routes/` (e.g. `print.tsx`); shared UI primitives in
+`web/src/components/`. Print-flow state is held in `usePrintContext`. Build with
+`npm run build` from `web/`; `npm run dev` runs Vite with HMR. Dashboard
+auto-refreshes via React Query polling. Settings page manages printer CRUD.
 
 ## API Endpoints
 
@@ -135,9 +141,11 @@ Previews are stored in `/tmp/bambu-gateway-previews/` and cleaned up on restart.
 
 ## Configuration
 
-Printer config is persisted to `printers.json` in the project root (gitignored).
-The path can be overridden with `python -m app -c /data/printers.json` (useful
-for Docker volumes). On first run with no JSON file, env vars
+Printer config is persisted to `data/printers.json` (the `data/` directory is
+gitignored, so all runtime artifacts — printer config, slice jobs and their 3MF
+blobs — live there). The path can be overridden with `python -m app -c
+/path/to/printers.json` (the slice-job store is rooted at the same parent, so
+Docker uses `/data/`). On first run with no JSON file, env vars
 (`BAMBU_PRINTER_IP`, `BAMBU_PRINTER_ACCESS_CODE`, `BAMBU_PRINTER_SERIAL` —
 comma-separated for multiple printers) seed the file. After that, the JSON file
 is the source of truth and printers are managed via the `/settings` UI or
