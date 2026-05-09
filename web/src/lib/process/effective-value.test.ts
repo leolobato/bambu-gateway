@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { effectiveValue, revertTarget } from './effective-value';
-import type { ProcessOptionsCatalogue, ProcessModifications } from './types';
+import { displayValue, effectiveValue, revertTarget } from './effective-value';
+import type { ProcessOption, ProcessOptionsCatalogue, ProcessModifications } from './types';
 
 const catalogue: ProcessOptionsCatalogue = {
   version: 'v1',
@@ -58,6 +58,41 @@ describe('effectiveValue', () => {
 
   it('treats null modifications as absent', () => {
     expect(effectiveValue('sparse_infill_density', {}, null, baseline, catalogue)).toBe('15%');
+  });
+});
+
+describe('displayValue', () => {
+  const brimTypeOption: ProcessOption = {
+    key: 'brim_type', label: 'Brim type', category: 'quality',
+    tooltip: '', type: 'coEnum', sidetext: '',
+    default: 'auto_brim',
+    min: null, max: null,
+    enumValues: ['auto_brim', 'no_brim', 'outer_only'],
+    enumLabels: ['Auto', 'No brim', 'Outer only'],
+    mode: 'simple', guiType: '', nullable: false, readonly: false,
+  };
+
+  it('maps an enum value to its catalogue label', () => {
+    expect(displayValue('no_brim', brimTypeOption)).toBe('No brim');
+  });
+
+  it('returns the raw value for non-enum options', () => {
+    const layerHeight = catalogue.options.layer_height;
+    expect(displayValue('0.16', layerHeight)).toBe('0.16');
+  });
+
+  it('returns the raw value when the enum option lacks labels', () => {
+    const partial: ProcessOption = { ...brimTypeOption, enumLabels: null };
+    expect(displayValue('no_brim', partial)).toBe('no_brim');
+  });
+
+  it('returns the raw value when the value is not in enum_values', () => {
+    expect(displayValue('mystery', brimTypeOption)).toBe('mystery');
+  });
+
+  it('returns the raw value when option is null/undefined', () => {
+    expect(displayValue('no_brim', null)).toBe('no_brim');
+    expect(displayValue('no_brim', undefined)).toBe('no_brim');
   });
 });
 

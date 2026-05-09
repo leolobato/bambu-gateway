@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ChevronRight, RotateCcw, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { displayValue } from '@/lib/process/effective-value';
 import type { ProcessOption } from '@/lib/process/types';
 import type { EditorProps } from './process-option-editor/types';
 import { BoolEditor } from './process-option-editor/bool-editor';
@@ -61,6 +62,10 @@ export function ProcessOptionRow(props: RowProps) {
   const [tooltipExpanded, setTooltipExpanded] = useState(false);
 
   const Editor = pickEditor(option);
+  // Enum-aware label for the value summary and the revert footer; the
+  // editor keeps receiving the raw `value` so commits round-trip exactly.
+  const valueLabel = displayValue(value, option);
+  const revertLabel = displayValue(revertTo, option);
   const dotClass = isUserEdited
     ? 'bg-orange-500'
     : isFileModified
@@ -79,7 +84,7 @@ export function ProcessOptionRow(props: RowProps) {
         type="button"
         data-state={isExpanded ? 'open' : 'closed'}
         aria-expanded={isExpanded}
-        aria-label={`${option.label}, ${value} ${option.sidetext}`}
+        aria-label={`${option.label}, ${valueLabel} ${option.sidetext}`}
         aria-description={ariaDescription || undefined}
         onClick={onToggleExpand}
         className={cn(
@@ -106,7 +111,7 @@ export function ProcessOptionRow(props: RowProps) {
         </span>
 
         <span className="flex items-center gap-1 shrink-0">
-          <span className="text-sm font-medium tabular-nums">{value}</span>
+          <span className="text-sm font-medium tabular-nums">{valueLabel}</span>
           {option.sidetext && (
             <span className="text-xs text-muted-foreground">{option.sidetext}</span>
           )}
@@ -177,7 +182,7 @@ export function ProcessOptionRow(props: RowProps) {
 
               <div className="flex items-center justify-between pt-1">
                 <p className="text-xs text-muted-foreground">
-                  {isFileModified ? 'From file' : 'Default'}: <span className="tabular-nums">{revertTo}</span> {option.sidetext}
+                  {isFileModified ? 'From file' : 'Default'}: <span className="tabular-nums">{revertLabel}</span> {option.sidetext}
                 </p>
                 <Button
                   variant="ghost"
