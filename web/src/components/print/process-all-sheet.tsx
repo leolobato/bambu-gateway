@@ -6,8 +6,14 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
+  AlertDialogTitle, AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import { ChevronLeft, ChevronRight, Search, RotateCcw } from 'lucide-react';
 import { ProcessOptionRow } from './process-option-row';
+import { ProcessPageDetail } from './process-page-detail';
 import {
   useProcessOptions,
   useProcessLayout,
@@ -73,19 +79,31 @@ export function ProcessAllSheet({ modifications }: Props) {
               ? `Process settings / ${selectedPage.label}`
               : 'Process settings'}
           </SheetTitle>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => {
-              if (window.confirm('Reset all process settings?')) {
-                resetAllProcessOverrides();
-              }
-            }}
-            disabled={Object.keys(processOverrides).length === 0}
-            aria-label="Reset all"
-          >
-            <RotateCcw className="size-4" />
-          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={Object.keys(processOverrides).length === 0}
+                aria-label="Reset all"
+              >
+                <RotateCcw className="size-4" />
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Reset all process settings?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Every override you've made for this 3MF will be cleared. The 3MF's
+                  original modifications stay.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={resetAllProcessOverrides}>Reset</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </SheetHeader>
 
         <div className="flex-1 overflow-y-auto">
@@ -112,8 +130,17 @@ export function ProcessAllSheet({ modifications }: Props) {
               </AlertDescription>
             </Alert>
           ) : !catalogue || !layout ? null : selectedPage ? (
-            // Placeholder until Task 11 lands `ProcessPageDetail`.
-            <div className="p-4 text-sm text-muted-foreground">Detail view coming next</div>
+            <ProcessPageDetail
+              page={selectedPage}
+              catalogue={catalogue}
+              modifications={modifications}
+              processOverrides={processOverrides}
+              processBaseline={processBaseline}
+              expandedKey={expandedKey}
+              onToggleExpand={(k) => setExpandedKey((prev) => (prev === k ? null : k))}
+              onCommit={setProcessOverride}
+              onRevert={revertProcessOverride}
+            />
           ) : (
             <PageList
               layout={layout}
