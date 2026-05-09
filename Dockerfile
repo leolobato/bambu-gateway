@@ -7,7 +7,12 @@ WORKDIR /web
 
 # Copy lockfile first for better layer caching
 COPY web/package.json web/package-lock.json ./
-RUN npm ci
+# `npm install` instead of `npm ci`: the lockfile records optional
+# platform-specific binaries (e.g. esbuild's per-OS native packages)
+# that npm 10's `ci` mode rejects with EBADPLATFORM on Linux x64
+# even though they're optional. `install` honours the lockfile but
+# tolerates the cross-platform optional entries.
+RUN npm install --no-audit --prefer-offline
 
 # Copy the rest of the frontend sources and build
 COPY web/ ./
