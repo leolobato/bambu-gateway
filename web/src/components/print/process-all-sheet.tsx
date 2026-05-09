@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react';
 import {
-  Sheet, SheetContent, SheetHeader, SheetTitle, SheetClose,
+  Sheet, SheetContent, SheetHeader, SheetTitle,
 } from '@/components/ui/sheet';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { ChevronLeft, ChevronRight, Search, RotateCcw, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Search, RotateCcw } from 'lucide-react';
 import { ProcessOptionRow } from './process-option-row';
 import {
   useProcessOptions,
@@ -57,7 +57,7 @@ export function ProcessAllSheet({ modifications }: Props) {
         side="right"
         className="w-full sm:max-w-[640px] lg:max-w-[720px] flex flex-col p-0"
       >
-        <SheetHeader className="px-4 py-3 border-b border-border/40 flex-row items-center gap-2 space-y-0">
+        <SheetHeader className="px-4 py-3 pr-10 border-b border-border/40 flex-row items-center gap-2 space-y-0">
           {selectedPage && (
             <Button
               variant="ghost"
@@ -86,11 +86,6 @@ export function ProcessAllSheet({ modifications }: Props) {
           >
             <RotateCcw className="size-4" />
           </Button>
-          <SheetClose asChild>
-            <Button variant="ghost" size="icon" aria-label="Close">
-              <X className="size-4" />
-            </Button>
-          </SheetClose>
         </SheetHeader>
 
         <div className="flex-1 overflow-y-auto">
