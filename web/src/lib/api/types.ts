@@ -1,6 +1,8 @@
 // Mirrors app/models.py — keep field names in sync with the backend.
 // No camelCase conversion: we cast JSON straight onto these types.
 
+import type { ProcessModifications, ProcessOverrideApplied } from '@/lib/process/types';
+
 export type PrinterState =
   | 'offline'
   | 'idle'
@@ -170,6 +172,8 @@ export interface ThreeMFInfo {
   has_gcode: boolean;
   /** Bed-type label as stored in the 3MF (e.g. "Textured PEI Plate"); matches `SlicerPlateType.label`. */
   bed_type: string;
+  /** Server-derived diff vs. the system process preset. Optional — older gateways omit it. */
+  process_modifications?: ProcessModifications | null;
 }
 
 // --- Slicer profile shapes (returned by GET /api/slicer/*) ---
@@ -309,6 +313,8 @@ export interface SettingsTransferInfo {
   status: string;
   transferred: TransferredSetting[];
   filaments: FilamentTransferEntry[];
+  /** Per-key result of `process_overrides` resolution, present when overrides were submitted. */
+  process_overrides_applied?: ProcessOverrideApplied[];
 }
 
 // --- Print estimate (returned by slicing/printing responses when available) ---
