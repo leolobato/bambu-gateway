@@ -167,6 +167,22 @@ export function SliceJobsList() {
   const terminalCount = sortedJobs.filter((j) => isTerminal(j.status)).length;
   const failedCount = sortedJobs.filter((j) => j.status === 'failed').length;
 
+  // Bucket jobs by filename so re-slices of the same 3MF land together.
+  // `sortedJobs` is already in created_at desc, so the Map preserves
+  // newest-project-first order and within each group the newest job is
+  // first. Filename collisions across unrelated 3MFs merge — accepted
+  // trade-off for not adding a server-side project id.
+  const projects = useMemo(() => {
+    const map = new Map<string, SliceJob[]>();
+    for (const job of sortedJobs) {
+      const key = job.filename || '(unnamed)';
+      const bucket = map.get(key);
+      if (bucket) bucket.push(job);
+      else map.set(key, [job]);
+    }
+    return Array.from(map, ([filename, items]) => ({ filename, jobs: items }));
+  }, [sortedJobs]);
+
   return (
     <Card className="p-4 bg-card border border-line flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
@@ -206,28 +222,40 @@ export function SliceJobsList() {
           No slice jobs yet. Submit a 3MF above to get started.
         </p>
       ) : (
-        <ul className="flex flex-col gap-2">
-          {sortedJobs.map((job) => (
-            <SliceJobRow
-              key={job.job_id}
-              job={job}
-              printerName={
-                job.printer_id ? printerNameById.get(job.printer_id) ?? job.printer_id : null
-              }
-              onCancel={() => cancelMut.mutate(job.job_id)}
-              onDelete={() => deleteMut.mutate(job.job_id)}
-              onPrint={() =>
-                printMut.mutate({
-                  jobId: job.job_id,
-                  printerId: job.printer_id ?? activePrinterId ?? undefined,
-                })
-              }
-              isCancelling={cancelMut.isPending && cancelMut.variables === job.job_id}
-              isDeleting={deleteMut.isPending && deleteMut.variables === job.job_id}
-              isPrinting={printMut.isPending && printMut.variables?.jobId === job.job_id}
-            />
+        <div className="flex flex-col gap-4">
+          {projects.map(({ filename, jobs: projectJobs }) => (
+            <section key={filename} className="flex flex-col gap-2">
+              <header className="flex items-baseline justify-between gap-2 px-1">
+                <h3 className="text-[13px] font-semibold text-text-0 truncate">{filename}</h3>
+                <span className="text-[11px] text-text-1 shrink-0">
+                  {projectJobs.length} {projectJobs.length === 1 ? 'job' : 'jobs'}
+                </span>
+              </header>
+              <ul className="flex flex-col gap-2">
+                {projectJobs.map((job) => (
+                  <SliceJobRow
+                    key={job.job_id}
+                    job={job}
+                    printerName={
+                      job.printer_id ? printerNameById.get(job.printer_id) ?? job.printer_id : null
+                    }
+                    onCancel={() => cancelMut.mutate(job.job_id)}
+                    onDelete={() => deleteMut.mutate(job.job_id)}
+                    onPrint={() =>
+                      printMut.mutate({
+                        jobId: job.job_id,
+                        printerId: job.printer_id ?? activePrinterId ?? undefined,
+                      })
+                    }
+                    isCancelling={cancelMut.isPending && cancelMut.variables === job.job_id}
+                    isDeleting={deleteMut.isPending && deleteMut.variables === job.job_id}
+                    isPrinting={printMut.isPending && printMut.variables?.jobId === job.job_id}
+                  />
+                ))}
+              </ul>
+            </section>
           ))}
-        </ul>
+        </div>
       )}
     </Card>
   );
