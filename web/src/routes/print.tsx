@@ -68,6 +68,7 @@ export default function PrintRoute() {
     processOverrides,
     resetAllProcessOverrides,
     setProcessBaseline,
+    setProcessSheetOpen,
   } = usePrintContext();
 
   // Slicer catalogs — load once, don't refetch automatically.
@@ -226,6 +227,9 @@ export default function PrintRoute() {
   const importIdRef = useRef<string | null>(null);
 
   const importFile = useCallback(async (file: File) => {
+    // Close the process-parameter sheet immediately so it doesn't linger
+    // over the importing state while the new 3MF is being parsed.
+    setProcessSheetOpen(false);
     // Bump the importId on every fresh pick. Stale resolutions compare
     // against importIdRef before committing — a Cancel click clears the
     // ref so any in-flight parse/match silently no-ops.
@@ -291,21 +295,10 @@ export default function PrintRoute() {
             message: 'Print as-is, or pick settings below and Preview to re-slice.',
           }
         : { variant: 'info', title: 'File parsed — slicing required.' };
-      // Process-parameter editor: clear any prior overrides and resolve the
-      // system baseline for the file's authored process profile. Failure to
-      // fetch is non-fatal — the row resolver falls back to catalogue.default.
+      // Process-parameter editor: clear any prior overrides. Baseline is
+      // resolved by the useEffect watching `settings.process` once the
+      // import propagates the new setting_id.
       resetAllProcessOverrides();
-      const settingId = info.process_modifications?.processSettingId;
-      if (settingId) {
-        try {
-          const baseline = await fetchProcessProfile(settingId);
-          setProcessBaseline(baseline);
-        } catch {
-          setProcessBaseline({});
-        }
-      } else {
-        setProcessBaseline({});
-      }
       // Only commit if this import is still the current one. A Cancel
       // click (or a fresh pick) clears/replaces importIdRef.
       if (importIdRef.current !== importId) return;
@@ -315,7 +308,7 @@ export default function PrintRoute() {
       toast.error(`Failed to parse 3MF: ${(err as Error).message}`);
       setState({ kind: 'empty' });
     }
-  }, [activePrinterId, plateTypesQuery.data, resetAllProcessOverrides, setProcessBaseline]);
+  }, [activePrinterId, plateTypesQuery.data, resetAllProcessOverrides, setProcessSheetOpen]);
 
   const onDropFile = useCallback((file: File) => void importFile(file), [importFile]);
   const { dragging } = useDropZone({ accept: '.3mf', onFile: onDropFile, enabled: ddEnabled });
@@ -326,6 +319,8 @@ export default function PrintRoute() {
     importIdRef.current = null;
     setState({ kind: 'empty' });
     setFilamentMapping({});
+    resetAllProcessOverrides();
+    setProcessSheetOpen(false);
   }
 
   function buildFilamentProfilesPayload(
@@ -473,6 +468,7 @@ export default function PrintRoute() {
         return;
       }
       if (current.status === 'ready') {
+        notifyDroppedOverrides(processOverrides, current.settings_transfer?.process_overrides_applied ?? undefined);
         if (preview) {
           setState({
             kind: 'previewReady',
@@ -482,7 +478,6 @@ export default function PrintRoute() {
             transfer: current.settings_transfer ?? null,
             estimate: current.estimate ?? null,
           });
-          notifyDroppedOverrides(processOverrides, current.settings_transfer?.process_overrides_applied ?? undefined);
           return;
         }
         // Print intent — kick off the printer upload via /api/print {job_id}
