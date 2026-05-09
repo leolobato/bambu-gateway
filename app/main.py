@@ -1033,6 +1033,27 @@ async def slicer_options_process_layout():
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@app.get("/api/slicer/processes/{setting_id}")
+async def slicer_process_profile(setting_id: str):
+    """Pass-through to orcaslicer-cli's per-profile detail endpoint.
+
+    Returns the slicer's resolved flat values for the named process
+    profile. Used by the web process-parameter editor to fill the
+    ``processBaseline`` rung between 3MF modifications and catalogue
+    defaults. Errors (including 404 for an unknown ``setting_id``)
+    propagate as 502 via the existing ``SlicingError`` path.
+    """
+    if slicer_client is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Slicer not configured: ORCASLICER_API_URL not set",
+        )
+    try:
+        return await slicer_client.get_process_profile(setting_id)
+    except SlicingError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 class _ResolveForMachineBody(BaseModel):
     machine_id: str
     process_name: str = ""

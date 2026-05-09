@@ -7,6 +7,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -641,6 +642,29 @@ class SlicerClient:
         error semantics as ``get_process_options``.
         """
         url = f"{self._base_url}/options/process/layout"
+        try:
+            async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
+                resp = await client.get(url)
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        if resp.status_code != 200:
+            raise SlicingError(
+                f"Slicer returned {resp.status_code}: {resp.text[:500]}",
+            )
+        return resp.json()
+
+    async def get_process_profile(self, setting_id: str) -> dict:
+        """GET /profiles/processes/{setting_id} — resolved profile values.
+
+        Returns the slicer's flat ``dict[str, str]`` of every key resolved
+        against the named profile. The web client uses this as the
+        ``processBaseline`` rung in the effective-value resolver chain.
+
+        Raises ``SlicingError`` on connection failure and on non-2xx
+        responses (404 included — caller treats a missing profile as
+        "no baseline" and falls back to catalogue defaults).
+        """
+        url = f"{self._base_url}/profiles/processes/{quote(setting_id, safe='')}"
         try:
             async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
                 resp = await client.get(url)
