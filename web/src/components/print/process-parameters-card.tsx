@@ -45,6 +45,39 @@ export function ProcessParametersCard({ modifications }: Props) {
 
   const modifiedCount = rowKeys.length;
 
+  // Map each option key to its parent page label so we can group rows
+  // under the same uppercase headers used in the All-sheet drill-down.
+  const layout = layoutQuery.data ?? null;
+  const pageByKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const page of layout?.pages ?? []) {
+      for (const group of page.optgroups) {
+        for (const k of group.options) map.set(k, page.label);
+      }
+    }
+    return map;
+  }, [layout]);
+
+  // Group rowKeys by parent page in layout order; keys the layout doesn't
+  // know about land in a trailing 'Other' bucket so nothing is dropped.
+  const groupedRows = useMemo(() => {
+    const buckets = new Map<string, string[]>();
+    for (const key of rowKeys) {
+      const page = pageByKey.get(key) ?? 'Other';
+      const arr = buckets.get(page);
+      if (arr) arr.push(key);
+      else buckets.set(page, [key]);
+    }
+    const ordered: Array<{ page: string; keys: string[] }> = [];
+    for (const p of layout?.pages ?? []) {
+      const keys = buckets.get(p.label);
+      if (keys && keys.length > 0) ordered.push({ page: p.label, keys });
+    }
+    const others = buckets.get('Other');
+    if (others && others.length > 0) ordered.push({ page: 'Other', keys: others });
+    return ordered;
+  }, [rowKeys, pageByKey, layout]);
+
   return (
     <Card className="p-4">
       <button
@@ -93,39 +126,48 @@ export function ProcessParametersCard({ modifications }: Props) {
           </p>
         </div>
       ) : (
-        <div className="flex flex-col">
-          {rowKeys.map((key) => {
-            const option = catalogue?.options[key];
-            if (!option) {
-              // Catalogue missing this key — render a degraded read-only row.
-              return (
-                <div key={key} className="px-3 py-2.5 text-sm font-mono">
-                  {key}: {modifications?.values[key] ?? processOverrides[key] ?? '?'}
-                </div>
-              );
-            }
-            const value = effectiveValue(key, processOverrides, modifications, processBaseline, catalogue) ?? '';
-            const revertTo = revertTarget(key, modifications, processBaseline, catalogue) ?? '';
-            const isUserEdited = key in processOverrides;
-            const isFileModified = !!modifications?.values && key in modifications.values;
-            return (
-              <ProcessOptionRow
-                key={key}
-                option={option}
-                value={value}
-                revertTo={revertTo}
-                isUserEdited={isUserEdited}
-                isFileModified={isFileModified}
-                showTooltipCaption={false}
-                isExpanded={expandedKey === key}
-                onToggleExpand={() =>
-                  setExpandedKey((prev) => (prev === key ? null : key))
-                }
-                onCommit={(next) => setProcessOverride(key, next)}
-                onRevert={() => revertProcessOverride(key)}
-              />
-            );
-          })}
+        <div className="flex flex-col gap-3">
+          {groupedRows.map(({ page, keys }) => (
+            <section key={page}>
+              <h3 className="text-xs font-semibold tracking-wide uppercase text-muted-foreground pb-2">
+                {page}
+              </h3>
+              <div className="rounded-lg border border-border/40 overflow-hidden">
+                {keys.map((key) => {
+                  const option = catalogue?.options[key];
+                  if (!option) {
+                    // Catalogue missing this key — degraded read-only row.
+                    return (
+                      <div key={key} className="px-3 py-2.5 text-sm font-mono">
+                        {key}: {modifications?.values[key] ?? processOverrides[key] ?? '?'}
+                      </div>
+                    );
+                  }
+                  const value = effectiveValue(key, processOverrides, modifications, processBaseline, catalogue) ?? '';
+                  const revertTo = revertTarget(key, modifications, processBaseline, catalogue) ?? '';
+                  const isUserEdited = key in processOverrides;
+                  const isFileModified = !!modifications?.values && key in modifications.values;
+                  return (
+                    <ProcessOptionRow
+                      key={key}
+                      option={option}
+                      value={value}
+                      revertTo={revertTo}
+                      isUserEdited={isUserEdited}
+                      isFileModified={isFileModified}
+                      showTooltipCaption={false}
+                      isExpanded={expandedKey === key}
+                      onToggleExpand={() =>
+                        setExpandedKey((prev) => (prev === key ? null : key))
+                      }
+                      onCommit={(next) => setProcessOverride(key, next)}
+                      onRevert={() => revertProcessOverride(key)}
+                    />
+                  );
+                })}
+              </div>
+            </section>
+          ))}
         </div>
       )}
     </Card>
