@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useMemo,
   useRef,
@@ -89,6 +90,17 @@ type Ctx = {
    * cancels the polling loop wherever it's running.
    */
   sliceAbortRef: MutableRefObject<AbortController | null>;
+  /** User-edited overrides, keyed by option key, libslic3r-stringified values. */
+  processOverrides: Record<string, string>;
+  setProcessOverride(key: string, value: string): void;
+  revertProcessOverride(key: string): void;
+  resetAllProcessOverrides(): void;
+  /** Resolved system baseline for the active process profile, fetched on 3MF import. */
+  processBaseline: Record<string, string>;
+  setProcessBaseline: Dispatch<SetStateAction<Record<string, string>>>;
+  /** All-settings sheet open/close. */
+  processSheetOpen: boolean;
+  setProcessSheetOpen: Dispatch<SetStateAction<boolean>>;
 };
 
 const PrintContext = createContext<Ctx | undefined>(undefined);
@@ -103,6 +115,26 @@ export function PrintProvider({ children }: { children: ReactNode }) {
   const [selectedPlateId, setSelectedPlateId] = useState<number>(1);
   const [filamentMapping, setFilamentMapping] = useState<FilamentMapping>({});
   const sliceAbortRef = useRef<AbortController | null>(null);
+  const [processOverrides, setProcessOverrides] = useState<Record<string, string>>({});
+  const [processBaseline, setProcessBaseline] = useState<Record<string, string>>({});
+  const [processSheetOpen, setProcessSheetOpen] = useState(false);
+
+  const setProcessOverride = useCallback((key: string, value: string) => {
+    setProcessOverrides((prev) => ({ ...prev, [key]: value }));
+  }, []);
+
+  const revertProcessOverride = useCallback((key: string) => {
+    setProcessOverrides((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  const resetAllProcessOverrides = useCallback(() => {
+    setProcessOverrides({});
+  }, []);
 
   const value = useMemo<Ctx>(
     () => ({
@@ -115,8 +147,16 @@ export function PrintProvider({ children }: { children: ReactNode }) {
       filamentMapping,
       setFilamentMapping,
       sliceAbortRef,
+      processOverrides,
+      setProcessOverride,
+      revertProcessOverride,
+      resetAllProcessOverrides,
+      processBaseline,
+      setProcessBaseline,
+      processSheetOpen,
+      setProcessSheetOpen,
     }),
-    [state, settings, selectedPlateId, filamentMapping],
+    [state, settings, selectedPlateId, filamentMapping, processOverrides, processBaseline, processSheetOpen],
   );
 
   return <PrintContext.Provider value={value}>{children}</PrintContext.Provider>;
