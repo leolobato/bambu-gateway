@@ -9,6 +9,8 @@ import { PlateCard } from '@/components/print/plate-card';
 import { SlicingSettingsGroup } from '@/components/print/slicing-settings-group';
 import type { SettingOption } from '@/components/print/setting-row';
 import { FilamentsGroup, type FilamentMapping } from '@/components/print/filaments-group';
+import { ProcessParametersCard } from '@/components/print/process-parameters-card';
+import { ProcessAllSheet } from '@/components/print/process-all-sheet';
 import { InfoBanner } from '@/components/print/info-banner';
 import { SlicingProgressCard } from '@/components/print/slicing-progress-card';
 import { ImportingCard } from '@/components/print/importing-card';
@@ -32,6 +34,8 @@ import {
   submitSliceJob,
   sliceJobOutputUrl,
 } from '@/lib/api/slice-jobs';
+import { fetchProcessProfile } from '@/lib/api/process-options';
+import { notifyDroppedOverrides } from '@/lib/process/drop-notice';
 import { useDropZone } from '@/lib/use-drop-zone';
 import { usePrinterContext } from '@/lib/printer-context';
 import { usePrintContext, type BannerData } from '@/lib/print-context';
@@ -61,6 +65,9 @@ export default function PrintRoute() {
     filamentMapping,
     setFilamentMapping,
     sliceAbortRef,
+    processOverrides,
+    resetAllProcessOverrides,
+    setProcessBaseline,
   } = usePrintContext();
 
   // Slicer catalogs — load once, don't refetch automatically.
@@ -137,6 +144,24 @@ export default function PrintRoute() {
       setSettings((prev) => ({ ...prev, process: byName.setting_id }));
     }
   }, [processesQuery.data, settings.process]);
+
+  // Process-baseline refetch: whenever the active process profile changes
+  // (initial load, 3MF import, user picker change), pull its system
+  // baseline so the row resolver has a fallback rung between 3MF
+  // modifications and catalogue defaults. User overrides are preserved
+  // across profile swaps — redundant ones are harmless server-side.
+  useEffect(() => {
+    if (!settings.process) return;
+    let cancelled = false;
+    fetchProcessProfile(settings.process)
+      .then((baseline) => {
+        if (!cancelled) setProcessBaseline(baseline);
+      })
+      .catch(() => {
+        if (!cancelled) setProcessBaseline({});
+      });
+    return () => { cancelled = true; };
+  }, [settings.process, setProcessBaseline]);
 
   // GUI-equivalent profile fallback when the user retargets a 3MF to a
   // different printer. The slicer's `/profiles/resolve-for-machine` mirrors
@@ -266,6 +291,21 @@ export default function PrintRoute() {
             message: 'Print as-is, or pick settings below and Preview to re-slice.',
           }
         : { variant: 'info', title: 'File parsed — slicing required.' };
+      // Process-parameter editor: clear any prior overrides and resolve the
+      // system baseline for the file's authored process profile. Failure to
+      // fetch is non-fatal — the row resolver falls back to catalogue.default.
+      resetAllProcessOverrides();
+      const settingId = info.process_modifications?.processSettingId;
+      if (settingId) {
+        try {
+          const baseline = await fetchProcessProfile(settingId);
+          setProcessBaseline(baseline);
+        } catch {
+          setProcessBaseline({});
+        }
+      } else {
+        setProcessBaseline({});
+      }
       // Only commit if this import is still the current one. A Cancel
       // click (or a fresh pick) clears/replaces importIdRef.
       if (importIdRef.current !== importId) return;
@@ -275,7 +315,7 @@ export default function PrintRoute() {
       toast.error(`Failed to parse 3MF: ${(err as Error).message}`);
       setState({ kind: 'empty' });
     }
-  }, [activePrinterId, plateTypesQuery.data]);
+  }, [activePrinterId, plateTypesQuery.data, resetAllProcessOverrides, setProcessBaseline]);
 
   const onDropFile = useCallback((file: File) => void importFile(file), [importFile]);
   const { dragging } = useDropZone({ accept: '.3mf', onFile: onDropFile, enabled: ddEnabled });
@@ -355,6 +395,7 @@ export default function PrintRoute() {
         filamentProfiles: buildFilamentProfilesPayload(info),
         plateType: settings.plateType || undefined,
         autoPrint: false,
+        processOverrides,
       });
     } catch (err) {
       setState({
@@ -441,6 +482,7 @@ export default function PrintRoute() {
             transfer: current.settings_transfer ?? null,
             estimate: current.estimate ?? null,
           });
+          notifyDroppedOverrides(processOverrides, current.settings_transfer?.process_overrides_applied ?? undefined);
           return;
         }
         // Print intent — kick off the printer upload via /api/print {job_id}
@@ -790,6 +832,7 @@ export default function PrintRoute() {
             activeMachineModel={activePrinter?.machine_model || null}
             disabled={state.kind === 'previewReady'}
           />
+          <ProcessParametersCard modifications={state.info.process_modifications ?? null} />
           <FilamentsGroup
             projectFilaments={state.info.filaments}
             usedFilamentIndices={
@@ -831,6 +874,7 @@ export default function PrintRoute() {
             onConfirmPrint={confirmPrint}
             onDownload={downloadPreview}
           />
+          <ProcessAllSheet modifications={state.info.process_modifications ?? null} />
         </div>
       )}
     </div>
