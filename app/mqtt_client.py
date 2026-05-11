@@ -438,8 +438,11 @@ class BambuMQTTClient:
 
             with self._lock:
                 self._status.online = True
-                if self._status.state == PrinterState.offline:
-                    self._status.state = PrinterState.idle
+                # Leave `state` alone — the upcoming pushall reply will derive
+                # it from `gcode_state`. Flipping to `idle` here would mask the
+                # `offline → real` transition that NotificationHub relies on to
+                # suppress phantom alerts on reconnect (e.g. a stale "Print
+                # complete" each time a browser tab wakes up the gateway).
                 self._schedule_disconnect_locked()
 
             self.request_version()
