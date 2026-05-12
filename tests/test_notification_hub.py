@@ -52,13 +52,14 @@ class FakeApns:
 
 def _status(
     state: PrinterState = PrinterState.printing, progress: int = 50,
-    online: bool = True,
+    online: bool = True, gcode_start_time: str = "100",
 ) -> PrinterStatus:
     return PrinterStatus(
         id="P01", name="X1C", state=state, online=online,
         job=PrintJob(
             file_name="test.3mf", progress=progress,
             current_layer=10, total_layers=100, remaining_minutes=30,
+            gcode_start_time=gcode_start_time,
         ),
     )
 
@@ -287,5 +288,120 @@ def test_print_started_thumbnail_is_none_when_no_slice_job_matches(tmp_path):
         )
         _wait_for(lambda: len(apns.starts) == 1)
         assert apns.starts[0]["attributes"]["thumbnailData"] is None
+    finally:
+        hub.stop()
+
+
+def test_offline_to_printing_fires_print_started_for_externally_started_print(
+    tmp_path,
+):
+    """User starts a print from OrcaSlicer GUI while the gateway sits
+    disconnected after the 20s idle timer. When the gateway reconnects and
+    discovers the new print, it must fire `print_started` so the iOS live
+    activity gets pushed.
+    """
+    apns = FakeApns()
+    hub, store, _slice_store = _make_hub(tmp_path, apns)
+    store.upsert_device(DeviceRecord(
+        id="dev", name="iPhone", device_token="tok",
+        live_activity_start_token="start-tok", subscribed_printers=["*"],
+    ))
+    try:
+        hub.on_status_change(
+            _status(PrinterState.offline, progress=0, online=False),
+            _status(
+                PrinterState.printing, progress=1, gcode_start_time="9999",
+            ),
+        )
+        _wait_for(lambda: len(apns.starts) == 1)
+        assert apns.starts[0]["start_token"] == "start-tok"
+    finally:
+        hub.stop()
+
+
+def test_reconnect_does_not_refire_print_started_for_same_job(tmp_path):
+    """After firing `print_started` for a job, an idle-disconnect/reconnect
+    cycle that surfaces the same job (same `gcode_start_time`) must NOT
+    re-fire the start push.
+    """
+    apns = FakeApns()
+    hub, store, _slice_store = _make_hub(tmp_path, apns)
+    store.upsert_device(DeviceRecord(
+        id="dev", name="iPhone", device_token="tok",
+        live_activity_start_token="start-tok", subscribed_printers=["*"],
+    ))
+    try:
+        # Online: fresh print starts.
+        hub.on_status_change(
+            _status(PrinterState.idle, progress=0),
+            _status(PrinterState.printing, progress=1, gcode_start_time="100"),
+        )
+        _wait_for(lambda: len(apns.starts) == 1)
+        # Offline → printing for the SAME gcode_start_time (idle-disconnect
+        # then reconnect mid-print). No second start push.
+        hub.on_status_change(
+            _status(PrinterState.offline, progress=0, online=False),
+            _status(PrinterState.printing, progress=42, gcode_start_time="100"),
+        )
+        time.sleep(0.2)
+        assert len(apns.starts) == 1
+    finally:
+        hub.stop()
+
+
+def test_reconnect_does_not_refire_print_finished_for_same_job(tmp_path):
+    """The original ef8f6ab guarantee: a print that finished hours ago must
+    not re-fire `print_finished` every time MQTT reconnects after the 20s
+    idle disconnect.
+    """
+    apns = FakeApns()
+    hub, store, _slice_store = _make_hub(tmp_path, apns)
+    store.upsert_device(DeviceRecord(
+        id="dev", name="iPhone", device_token="tok",
+        live_activity_start_token=None, subscribed_printers=["*"],
+    ))
+    try:
+        # Online: print finishes normally.
+        hub.on_status_change(
+            _status(PrinterState.printing, progress=99, gcode_start_time="100"),
+            _status(PrinterState.finished, progress=100, gcode_start_time="100"),
+        )
+        _wait_for(lambda: len(apns.alerts) == 1)
+        # Reconnect surfaces the same stale "finished" state — must not
+        # re-alert.
+        hub.on_status_change(
+            _status(PrinterState.offline, progress=100, online=False),
+            _status(PrinterState.finished, progress=100, gcode_start_time="100"),
+        )
+        time.sleep(0.2)
+        assert len(apns.alerts) == 1
+    finally:
+        hub.stop()
+
+
+def test_reconnect_fires_print_finished_for_different_job(tmp_path):
+    """If we previously fired `print_finished` for job A and then discover a
+    different finished job B on reconnect (e.g. the gateway was offline when
+    job B started and finished), we should fire `print_finished` for B.
+    """
+    apns = FakeApns()
+    hub, store, _slice_store = _make_hub(tmp_path, apns)
+    store.upsert_device(DeviceRecord(
+        id="dev", name="iPhone", device_token="tok",
+        live_activity_start_token=None, subscribed_printers=["*"],
+    ))
+    try:
+        # Job A finishes online.
+        hub.on_status_change(
+            _status(PrinterState.printing, progress=99, gcode_start_time="100"),
+            _status(PrinterState.finished, progress=100, gcode_start_time="100"),
+        )
+        _wait_for(lambda: len(apns.alerts) == 1)
+        # Reconnect → different job (B) discovered already finished.
+        hub.on_status_change(
+            _status(PrinterState.offline, progress=100, online=False),
+            _status(PrinterState.finished, progress=100, gcode_start_time="200"),
+        )
+        _wait_for(lambda: len(apns.alerts) == 2)
     finally:
         hub.stop()

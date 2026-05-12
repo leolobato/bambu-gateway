@@ -95,6 +95,9 @@ class PrintJob(BaseModel):
     remaining_minutes: int = 0
     current_layer: int = 0
     total_layers: int = 0
+    # Unix-timestamp string reported by the printer when the print started.
+    # Stable per-print identifier used to dedupe reconnect-discovered prints.
+    gcode_start_time: str = ""
 
 
 class HMSCode(BaseModel):

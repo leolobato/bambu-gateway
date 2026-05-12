@@ -572,7 +572,7 @@ class BambuMQTTClient:
             has_job_info = any(
                 k in print_info
                 for k in ("subtask_name", "mc_percent", "mc_remaining_time",
-                          "layer_num", "total_layer_num")
+                          "layer_num", "total_layer_num", "gcode_start_time")
             )
             if has_job_info:
                 if self._status.job is None:
@@ -589,6 +589,8 @@ class BambuMQTTClient:
                     job.current_layer = int(print_info["layer_num"])
                 if "total_layer_num" in print_info:
                     job.total_layers = int(print_info["total_layer_num"])
+                if "gcode_start_time" in print_info:
+                    job.gcode_start_time = str(print_info["gcode_start_time"])
 
             # Lights report: [{"node": "chamber_light", "mode": "on"|"off"|"flashing"}, ...]
             if "lights_report" in print_info:

@@ -138,3 +138,15 @@ def test_consecutive_updates_have_consistent_prev_new_chain():
     first_new = calls[0][1]
     second_prev = calls[1][0]
     assert first_new.temperatures.nozzle_temp == second_prev.temperatures.nozzle_temp == 100.0
+
+
+def test_update_status_parses_gcode_start_time():
+    """`gcode_start_time` from MQTT is the per-print identifier used by the
+    notification hub to dedupe re-discovered prints across reconnects."""
+    client = _make_client()
+    client._update_status({
+        "subtask_name": "test.3mf",
+        "gcode_start_time": "1715000000",
+    })
+    assert client._status.job is not None
+    assert client._status.job.gcode_start_time == "1715000000"

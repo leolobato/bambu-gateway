@@ -79,33 +79,35 @@ def test_online_to_offline_while_idle_emits_nothing():
     assert detect_events(prev, new) == []
 
 
-# Discovery transitions: when prev was offline (or otherwise unknown)
-# the next MQTT pushall reveals the printer's actual state. That's not a
-# real transition — it's just the first reading after (re)connect — and
-# must NOT fire transition events. Otherwise every reconnect after the
-# 20-second idle disconnect surfaces a phantom "Print complete" toast.
+# Discovery transitions from offline: the next MQTT pushall after reconnect
+# reveals the printer's actual state. `detect_events` now emits these as
+# regular transitions and `NotificationHub` dedupes reconnect-rediscoveries
+# of the same job via `gcode_start_time` so stale "Print complete" toasts
+# don't fire on every reconnect.
 
-def test_offline_to_finished_emits_nothing():
-    prev = _status(PrinterState.offline, online=False)
-    new = _status(PrinterState.finished, progress=100)
-    assert detect_events(prev, new) == []
-
-
-def test_offline_to_printing_emits_nothing():
+def test_offline_to_printing_emits_print_started():
     prev = _status(PrinterState.offline, online=False)
     new = _status(PrinterState.printing, progress=42)
-    assert detect_events(prev, new) == []
+    assert _types(detect_events(prev, new)) == [EventType.print_started]
+
+
+def test_offline_to_finished_emits_print_finished():
+    prev = _status(PrinterState.offline, online=False)
+    new = _status(PrinterState.finished, progress=100)
+    assert _types(detect_events(prev, new)) == [EventType.print_finished]
+
+
+def test_offline_to_error_emits_print_failed():
+    prev = _status(PrinterState.offline, online=False)
+    new = _status(PrinterState.error)
+    assert _types(detect_events(prev, new)) == [EventType.print_failed]
 
 
 def test_offline_to_paused_emits_nothing():
+    # `_state_transition_event` only emits `print_paused` when prev was
+    # `printing`. Discovering a printer mid-pause on reconnect does nothing.
     prev = _status(PrinterState.offline, online=False)
     new = _status(PrinterState.paused, progress=42)
-    assert detect_events(prev, new) == []
-
-
-def test_offline_to_error_emits_nothing():
-    prev = _status(PrinterState.offline, online=False)
-    new = _status(PrinterState.error)
     assert detect_events(prev, new) == []
 
 

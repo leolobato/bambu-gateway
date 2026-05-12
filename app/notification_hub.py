@@ -30,11 +30,12 @@ def detect_events(
 ) -> list[NotificationEvent]:
     events: list[NotificationEvent] = []
 
-    # Skip transitions out of `offline` — those are "discovery" reads after
-    # (re)connect, not real transitions. Otherwise every reconnect after the
-    # 20-second idle disconnect would surface a phantom "Print complete"
-    # notification when the printer reports its actual state.
-    if prev.state != new.state and prev.state != PrinterState.offline:
+    # Offline → real transitions are emitted; `NotificationHub` dedupes
+    # reconnect-rediscoveries of the same job via its `gcode_start_time`
+    # fingerprint, so stale "Print complete" toasts don't fire on every
+    # 20-second idle-disconnect/reconnect cycle while a legitimate new
+    # print started outside the gateway still surfaces `print_started`.
+    if prev.state != new.state:
         transition_event = _state_transition_event(prev.state, new.state)
         if transition_event is not None:
             events.append(NotificationEvent(
@@ -120,6 +121,27 @@ _DEDUPE_SECONDS = 30.0  # also covers the "error oscillation" case from the spec
 _PROGRESS_THROTTLE_SECONDS = 10.0
 
 
+_TRANSITION_EVENT_TYPES = {
+    EventType.print_started, EventType.print_paused, EventType.print_resumed,
+    EventType.print_finished, EventType.print_cancelled, EventType.print_failed,
+}
+
+
+def _job_fingerprint(status: PrinterStatus) -> str:
+    """Stable per-print identifier used to suppress reconnect-rediscoveries.
+
+    Prefers `gcode_start_time` (unique per run reported by the printer);
+    falls back to `(file_name, total_layers)` so older firmwares that don't
+    surface start_time still get some dedupe coverage.
+    """
+    job = status.job
+    if job is None:
+        return ""
+    if job.gcode_start_time:
+        return f"start:{job.gcode_start_time}"
+    return f"name:{job.file_name}|layers:{job.total_layers}"
+
+
 class _ApnsProtocol(Protocol):
     async def send_alert(self, **kwargs) -> ApnsResult: ...
     async def send_live_activity_update(self, **kwargs) -> ApnsResult: ...
@@ -175,6 +197,12 @@ class NotificationHub:
         self._queue: queue.Queue[NotificationEvent | None] = queue.Queue()
         self._dedupe: dict[tuple[str, str], float] = {}
         self._last_progress: dict[str, float] = {}
+        # Tracks the job fingerprint that last fired each transition event per
+        # printer. Used to suppress re-firing the same transition when MQTT
+        # reconnect surfaces the same print state again (e.g. stale "finished"
+        # after the 20-second idle disconnect, or an in-flight print
+        # rediscovered after a brief connection blip).
+        self._last_fired_fingerprint: dict[str, dict[EventType, str]] = {}
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._running = False
@@ -240,6 +268,8 @@ class NotificationHub:
             self._loop = None
 
     async def _handle(self, event: NotificationEvent) -> None:
+        if self._is_fingerprint_duplicate(event):
+            return
         if self._is_deduped(event):
             return
         if event.event_type == EventType.progress_tick and self._is_throttled(event):
@@ -251,6 +281,18 @@ class NotificationHub:
 
         await self._dispatch_event(event)
 
+    def _is_fingerprint_duplicate(self, event: NotificationEvent) -> bool:
+        if event.event_type not in _TRANSITION_EVENT_TYPES:
+            return False
+        fingerprint = _job_fingerprint(event.snapshot)
+        if not fingerprint:
+            return False
+        per_printer = self._last_fired_fingerprint.setdefault(event.printer_id, {})
+        if per_printer.get(event.event_type) == fingerprint:
+            return True
+        per_printer[event.event_type] = fingerprint
+        return False
+
     def _is_deduped(self, event: NotificationEvent) -> bool:
         now = time.monotonic()
         expired = [k for k, ts in self._dedupe.items() if now - ts > _DEDUPE_SECONDS]
@@ -258,7 +300,11 @@ class NotificationHub:
             del self._dedupe[k]
         if event.event_type == EventType.progress_tick:
             return False  # throttled separately
-        key = (event.printer_id, event.event_type.value + ":" + event.hms_code)
+        # Include the job fingerprint so two transitions for different jobs
+        # within the 30s window (e.g. one print finishes, another starts +
+        # finishes quickly) aren't collapsed into one alert.
+        suffix = event.hms_code or _job_fingerprint(event.snapshot)
+        key = (event.printer_id, event.event_type.value + ":" + suffix)
         if key in self._dedupe:
             return True
         self._dedupe[key] = now
