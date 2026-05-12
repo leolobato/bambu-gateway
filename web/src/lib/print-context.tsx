@@ -66,7 +66,7 @@ export type PrintState =
       uploadId: string;
       percent: number;
     }
-  | { kind: 'sent'; printerName: string | null; estimate: PrintEstimate | null };
+  | { kind: 'sent'; printerName: string | null; estimate: PrintEstimate | null; jobId: string | null };
 
 export interface BannerData {
   variant: 'info' | 'warn' | 'success' | 'error';

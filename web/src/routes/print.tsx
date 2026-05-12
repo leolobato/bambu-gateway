@@ -516,9 +516,9 @@ export default function PrintRoute() {
       const printerName = activePrinterName ?? resp.printer_id;
       toast.success(`Print started on ${printerName}`);
       if (hasPrintEstimate(resp.estimate ?? estimate)) {
-        setState({ kind: 'sent', printerName, estimate: resp.estimate ?? estimate });
+        setState({ kind: 'sent', printerName, estimate: resp.estimate ?? estimate, jobId });
       } else {
-        setState({ kind: 'sent', printerName, estimate: null });
+        setState({ kind: 'sent', printerName, estimate: null, jobId });
         navigate('/');
       }
       return;
@@ -553,9 +553,9 @@ export default function PrintRoute() {
         const printerName = activePrinterName ?? resp.printer_id;
         toast.success(`Print started on ${printerName}`);
         if (hasPrintEstimate(resp.estimate ?? estimate)) {
-          setState({ kind: 'sent', printerName, estimate: resp.estimate ?? estimate });
+          setState({ kind: 'sent', printerName, estimate: resp.estimate ?? estimate, jobId });
         } else {
-          setState({ kind: 'sent', printerName, estimate: null });
+          setState({ kind: 'sent', printerName, estimate: null, jobId });
           navigate('/');
         }
         return;
@@ -635,9 +635,10 @@ export default function PrintRoute() {
             kind: 'sent',
             printerName: activePrinterName ?? resp.printer_id,
             estimate: resp.estimate,
+            jobId: null,
           });
         } else {
-          setState({ kind: 'sent', printerName: activePrinterName ?? resp.printer_id, estimate: null });
+          setState({ kind: 'sent', printerName: activePrinterName ?? resp.printer_id, estimate: null, jobId: null });
           navigate('/');
         }
         return;
@@ -672,9 +673,10 @@ export default function PrintRoute() {
               kind: 'sent',
               printerName: activePrinterName ?? resp.printer_id,
               estimate: resp.estimate,
+              jobId: null,
             });
           } else {
-            setState({ kind: 'sent', printerName: activePrinterName ?? resp.printer_id, estimate: null });
+            setState({ kind: 'sent', printerName: activePrinterName ?? resp.printer_id, estimate: null, jobId: null });
             navigate('/');
           }
           return;
@@ -795,6 +797,7 @@ export default function PrintRoute() {
         <PrintSentReceipt
           printerName={state.printerName}
           estimate={state.estimate}
+          jobId={state.jobId}
           onDashboard={() => navigate('/')}
           onAnother={clearImport}
         />
@@ -881,11 +884,13 @@ export default function PrintRoute() {
 function PrintSentReceipt({
   printerName,
   estimate,
+  jobId,
   onDashboard,
   onAnother,
 }: {
   printerName: string | null;
   estimate: PrintEstimate | null;
+  jobId: string | null;
   onDashboard: () => void;
   onAnother: () => void;
 }) {
@@ -895,6 +900,7 @@ function PrintSentReceipt({
         variant="success"
         title={printerName ? `Print sent to ${printerName}` : 'Print sent'}
       />
+      {jobId && <PreviewThumbnail jobId={jobId} />}
       <PrintEstimationCard estimate={estimate} />
       <div className="grid grid-cols-2 gap-2.5">
         <Button
