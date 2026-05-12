@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RotateCcw } from 'lucide-react';
@@ -33,6 +33,7 @@ import {
   fetchSliceJob,
   submitSliceJob,
   sliceJobOutputUrl,
+  sliceJobThumbnailUrl,
 } from '@/lib/api/slice-jobs';
 import { fetchProcessProfile } from '@/lib/api/process-options';
 import { notifyDroppedOverrides } from '@/lib/process/drop-notice';
@@ -853,6 +854,7 @@ export default function PrintRoute() {
                 title="Preview ready"
                 message="Review the sliced file, then confirm the print."
               />
+              <PreviewThumbnail jobId={state.jobId} />
               <PrintEstimationCard estimate={state.estimate} />
               <SettingsTransferNote info={state.transfer} />
             </>
@@ -910,6 +912,23 @@ function PrintSentReceipt({
           Dashboard
         </Button>
       </div>
+    </div>
+  );
+}
+
+function PreviewThumbnail({ jobId }: { jobId: string }) {
+  const [hidden, setHidden] = useState(false);
+  if (hidden) return null;
+  return (
+    <div className="flex justify-center">
+      <img
+        src={sliceJobThumbnailUrl(jobId)}
+        alt=""
+        aria-hidden
+        onError={() => setHidden(true)}
+        className="h-24 w-24 rounded-md border border-line bg-bg-1 object-contain"
+        loading="lazy"
+      />
     </div>
   );
 }
