@@ -31,7 +31,7 @@ export function HeroCard({ printer }: { printer: PrinterStatus }) {
   ) {
     return <ActiveHero printer={printer} thumbnailUrl={thumbnailUrl} />;
   }
-  return <IdleHero printer={printer} />;
+  return <IdleHero printer={printer} thumbnailUrl={thumbnailUrl} />;
 }
 
 function ActiveHero({
@@ -103,14 +103,31 @@ function MetaLine({ job, stage }: { job: PrinterStatus['job']; stage: string | n
   );
 }
 
-function IdleHero({ printer }: { printer: PrinterStatus }) {
+function IdleHero({
+  printer,
+  thumbnailUrl,
+}: {
+  printer: PrinterStatus;
+  thumbnailUrl: string | null;
+}) {
   const lastFile = printer.job?.file_name || '';
   return (
     <Card className="p-5 bg-card border-border flex flex-col gap-4">
       <StateBadge state={printer.state} />
-      <div className="flex items-center gap-3 text-white">
-        <CheckCircle2 className="w-7 h-7 text-success" aria-hidden />
-        <div className="text-[28px] font-extrabold tracking-tight">Ready</div>
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center gap-3 text-white">
+          <CheckCircle2 className="w-7 h-7 text-success" aria-hidden />
+          <div className="text-[28px] font-extrabold tracking-tight">Ready</div>
+        </div>
+        {thumbnailUrl && (
+          <img
+            src={thumbnailUrl}
+            alt=""
+            aria-hidden
+            className="h-16 w-16 flex-shrink-0 rounded-md border border-line bg-bg-1 object-contain"
+            loading="lazy"
+          />
+        )}
       </div>
       {lastFile && (
         <div className="text-sm text-text-1 truncate" title={lastFile}>
