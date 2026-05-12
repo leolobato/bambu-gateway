@@ -892,7 +892,6 @@ function PrintSentReceipt({
       <InfoBanner
         variant="success"
         title={printerName ? `Print sent to ${printerName}` : 'Print sent'}
-        message="The printer accepted the job. Keep this summary as a receipt, or return to the dashboard."
       />
       <PrintEstimationCard estimate={estimate} />
       <div className="grid grid-cols-2 gap-2.5">
