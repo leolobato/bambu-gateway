@@ -59,7 +59,9 @@ async def test_print_preview_returns_base64_estimate_header(monkeypatch, tmp_pat
     from unittest.mock import MagicMock
     from app.slice_jobs import SliceJobManager, SliceJobStore
 
-    estimate_dict = {"total_seconds": 9356, "total_filament_grams": 29.46}
+    # Slicer binary returns these keys; the gateway translates them onto
+    # `PrintEstimate`-shaped fields when storing the job result.
+    estimate_dict = {"time_seconds": 9356, "weight_g": 29.46}
 
     async def stream_events(*args, **kwargs):
         yield {
@@ -128,7 +130,8 @@ async def test_print_stream_preview_result_includes_estimate(monkeypatch, tmp_pa
             "event": "result",
             "data": {
                 "file_base64": base64.b64encode(b"sliced-3mf").decode(),
-                "estimate": {"total_seconds": 9356},
+                # Slicer binary's native key; translated to `total_seconds`.
+                "estimate": {"time_seconds": 9356},
             },
         }
         yield {"event": "done", "data": {}}
@@ -193,10 +196,13 @@ async def test_print_stream_preview_uses_estimate_from_sse_result(monkeypatch, t
 
     sliced = _zip_bytes({})
 
+    # Slicer binary's native keys; the gateway translates `time_seconds`
+    # → `total_seconds`, `weight_g` → `total_filament_grams`, and
+    # `filament_used_m` (metres) → `total_filament_millimeters`.
     sse_estimate = {
-        "total_seconds": 120,
-        "total_filament_millimeters": 3500.0,
-        "total_filament_grams": 10.25,
+        "time_seconds": 120,
+        "weight_g": 10.25,
+        "filament_used_m": [3.5],
     }
 
     async def stream_events(*args, **kwargs):
