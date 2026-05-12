@@ -239,6 +239,13 @@ export function SliceJobsList() {
                 return next;
               });
             };
+            // Show the newest available thumbnail across this group's jobs.
+            // `projectJobs` is already newest-first (created_at desc) from the
+            // sort in `sortedJobs`.
+            const thumbnailJob = projectJobs.find((j) => j.has_thumbnail);
+            const thumbnailUrl = thumbnailJob
+              ? sliceJobThumbnailUrl(thumbnailJob.job_id)
+              : null;
             return (
               <section
                 key={filename}
@@ -250,9 +257,20 @@ export function SliceJobsList() {
                   aria-expanded={isExpanded}
                   className="flex items-center justify-between gap-2 px-3 py-2 text-left hover:bg-bg-1/40 rounded-lg"
                 >
-                  <h3 className="text-[14px] font-semibold text-text-0 truncate">
-                    {filename}
-                  </h3>
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    {thumbnailUrl && (
+                      <img
+                        src={thumbnailUrl}
+                        alt=""
+                        aria-hidden
+                        className="h-8 w-8 flex-shrink-0 rounded-md border border-line bg-bg-1 object-contain"
+                        loading="lazy"
+                      />
+                    )}
+                    <h3 className="text-[14px] font-semibold text-text-0 truncate">
+                      {filename}
+                    </h3>
+                  </div>
                   <span className="flex items-center gap-2 shrink-0">
                     <span className="text-[12px] text-text-1">
                       {projectJobs.length} {projectJobs.length === 1 ? 'job' : 'jobs'}
