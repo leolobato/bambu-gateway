@@ -2,7 +2,7 @@
 
 Pins the wire shape (request body and response parsing) using
 `httpx.MockTransport` so CI catches contract drift without needing a
-live `orcaslicer-cli` container.
+live `orcaslicer-headless` container.
 """
 from __future__ import annotations
 

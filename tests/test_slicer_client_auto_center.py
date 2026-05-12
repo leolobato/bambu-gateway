@@ -1,6 +1,6 @@
 """Auto-center decision rule for `_build_v2_slice_body`.
 
-Headless-only behaviour: the orcaslicer-cli's `auto_center` flag asks
+Headless-only behaviour: the orcaslicer-headless's `auto_center` flag asks
 libslic3r to re-anchor a project's models on the target printer's bed
 centre. The GUI has no equivalent runtime flag because a human adjusts
 placement visually after a printer change.

@@ -59,12 +59,12 @@ and **FTPS** (port 990, implicit TLS) for file uploads.
   state derivation logic. Determines granular printer state from `gcode_state`,
   `stg_cur`, and `layer_num` MQTT fields.
 - `app/parse_3mf.py` — Network adapter (`parse_3mf_via_slicer`). Uploads the
-  3MF to `orcaslicer-cli`'s `POST /3mf` endpoint, calls `GET /3mf/{token}/inspect`,
+  3MF to `orcaslicer-headless`'s `POST /3mf` endpoint, calls `GET /3mf/{token}/inspect`,
   fetches per-plate thumbnails, and adapts the response into `ThreeMFInfo`. The
   gateway no longer opens 3MF ZIPs in-process.
 - `app/filament_selection.py` — Validates and normalizes filament profile selections
   before passing them to the slicer API.
-- `app/slicer_client.py` — HTTP client for the OrcaSlicer CLI API. Supports both
+- `app/slicer_client.py` — HTTP client for the OrcaSlicer Headless API. Supports both
   the regular `/slice` endpoint and streaming `/slice-stream` (SSE) with automatic
   fallback when streaming is unavailable.
 
@@ -151,5 +151,5 @@ comma-separated for multiple printers) seed the file. After that, the JSON file
 is the source of truth and printers are managed via the `/settings` UI or
 `/api/settings/printers` endpoints.
 
-The `ORCASLICER_API_URL` env var points to a running OrcaSlicer CLI API instance
+The `ORCASLICER_API_URL` env var points to a running OrcaSlicer Headless API instance
 (e.g. `http://10.0.1.9:8070`). Required for slicing unsliced 3MF files.

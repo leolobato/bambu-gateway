@@ -1,4 +1,4 @@
-"""Live override slice against orcaslicer-cli.
+"""Live override slice against orcaslicer-headless.
 
 Slices a known fixture with a process_overrides dict; verifies
 process_overrides_applied comes back populated. Skipped when the
@@ -33,7 +33,7 @@ def _reachable() -> bool:
 pytestmark = [
     pytest.mark.skipif(
         not _reachable(),
-        reason=f"orcaslicer-cli unreachable at {API}",
+        reason=f"orcaslicer-headless unreachable at {API}",
     ),
     pytest.mark.skipif(
         not FIXTURE.exists(),

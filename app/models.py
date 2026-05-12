@@ -188,7 +188,7 @@ class PrinterDetailResponse(BaseModel):
 
 
 class SlicerFilament(BaseModel):
-    """A filament profile from the OrcaSlicer CLI API."""
+    """A filament profile from the OrcaSlicer Headless API."""
 
     name: str
     filament_id: str

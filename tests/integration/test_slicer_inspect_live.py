@@ -1,4 +1,4 @@
-"""Live HTTP test: gateway's SlicerClient.inspect against running orcaslicer-cli.
+"""Live HTTP test: gateway's SlicerClient.inspect against running orcaslicer-headless.
 
 Skipped when ``$ORCASLICER_API_URL`` isn't reachable. Uses the shared
 benchy fixture in ``../_fixture/01``.
@@ -31,7 +31,7 @@ def _reachable() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _reachable(),
-    reason=f"orcaslicer-cli unreachable at {API}",
+    reason=f"orcaslicer-headless unreachable at {API}",
 )
 
 

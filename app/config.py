@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
 
-    # OrcaSlicer CLI API
+    # OrcaSlicer Headless API
     orcaslicer_api_url: str = ""
 
     # Upload limits

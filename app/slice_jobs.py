@@ -388,7 +388,7 @@ def _last_orca_error_log_line(output: str) -> str | None:
 
 
 def _extract_slicer_error_detail(edata: Any) -> str | None:
-    """Pull a user-facing detail string out of an orcaslicer-cli error payload.
+    """Pull a user-facing detail string out of an orcaslicer-headless error payload.
 
     Combines (in order, deduped):
       1. ``result.json``'s ``error_string`` — Orca's intended user message.
@@ -647,7 +647,7 @@ class SliceJobManager:
                             await self._store.upsert(job)
                             last_write = now
                     elif etype == "status":
-                        # Coarse-phase markers from orcaslicer-cli (e.g.
+                        # Coarse-phase markers from orcaslicer-headless (e.g.
                         # "reading_3mf", "slicing"). Use them as a fallback
                         # phase when we haven't seen a more specific message
                         # yet.

@@ -1,4 +1,4 @@
-"""Async adapter from orcaslicer-cli /3mf/inspect → ThreeMFInfo.
+"""Async adapter from orcaslicer-headless /3mf/inspect → ThreeMFInfo.
 
 Replaces the in-process ZIP/XML parser. Behaviour preserved:
 - ``plate_id=None`` returns every plate's ``used_filament_indices``;

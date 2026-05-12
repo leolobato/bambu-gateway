@@ -30,7 +30,7 @@ def _reachable() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _reachable(),
-    reason=f"orcaslicer-cli unreachable at {API}",
+    reason=f"orcaslicer-headless unreachable at {API}",
 )
 
 

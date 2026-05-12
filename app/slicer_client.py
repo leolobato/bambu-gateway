@@ -1,4 +1,4 @@
-"""HTTP client for the OrcaSlicer CLI API."""
+"""HTTP client for the OrcaSlicer Headless API."""
 
 from __future__ import annotations
 
@@ -127,7 +127,7 @@ def _slice_result_from_v2(payload: dict, sliced_bytes: bytes) -> "SliceResult":
 
 
 class SlicerClient:
-    """Thin wrapper around the OrcaSlicer CLI API."""
+    """Thin wrapper around the OrcaSlicer Headless API."""
 
     def __init__(
         self,
@@ -150,7 +150,7 @@ class SlicerClient:
         plate: int = 1,
         process_overrides: dict[str, str] | None = None,
     ) -> SliceResult:
-        """Slice a 3MF via orcaslicer-cli's token-based v2 API.
+        """Slice a 3MF via orcaslicer-headless's token-based v2 API.
 
         Uploads the bytes (sha256-deduped, so a re-upload of a file already
         cached by ``parse_3mf_via_slicer`` is free server-side), posts the

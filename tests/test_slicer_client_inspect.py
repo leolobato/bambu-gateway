@@ -1,7 +1,7 @@
 """Unit tests for the inspect surface of SlicerClient.
 
 Uses ``httpx.MockTransport`` so the tests run without a live
-``orcaslicer-cli`` container.
+``orcaslicer-headless`` container.
 """
 from __future__ import annotations
 

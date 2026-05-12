@@ -1035,7 +1035,7 @@ async def slicer_options_process_layout():
 
 @app.get("/api/slicer/processes/{setting_id}")
 async def slicer_process_profile(setting_id: str):
-    """Pass-through to orcaslicer-cli's per-profile detail endpoint.
+    """Pass-through to orcaslicer-headless's per-profile detail endpoint.
 
     Returns the slicer's resolved flat values for the named process
     profile. Used by the web process-parameter editor to fill the

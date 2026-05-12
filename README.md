@@ -14,7 +14,7 @@ An iOS client is also available: **[BambuGateway iOS](https://github.com/leoloba
 - Pause, resume, cancel, and adjust speed of active prints
 - AMS unit info (humidity, temperature) and external spool holder support
 - AMS filament drying control (AMS 2 Pro and AMS HT)
-- Upload, slice and print 3MF files from the browser, including custom filament profiles through [orcaslicer-cli](https://github.com/leolobato/orcaslicer-cli)
+- Upload, slice and print 3MF files from the browser, including custom filament profiles through [orcaslicer-headless](https://github.com/leolobato/orcaslicer-headless)
 - Automatic AMS tray matching for project filaments
 - Multi-printer support
 - Optional iOS Live Activities and push notifications via APNs
@@ -111,7 +111,7 @@ python -m app -c /data/printers.json
 | `SERVER_PORT` | `4844` | Server bind port |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `MAX_FILE_SIZE_MB` | `200` | Maximum upload file size in MB |
-| `ORCASLICER_API_URL` | | OrcaSlicer CLI API URL (e.g. `http://10.0.1.9:8070`) — required for slicing |
+| `ORCASLICER_API_URL` | | OrcaSlicer Headless API URL (e.g. `http://10.0.1.9:8070`) — required for slicing |
 | `APNS_KEY_PATH` | | Path to APNs Auth Key `.p8` — see [docs/APNS.md](docs/APNS.md). All four APNS_* vars must be set to enable push |
 | `APNS_KEY_ID` | | 10-character Key ID from the Apple Developer portal |
 | `APNS_TEAM_ID` | | 10-character Team ID from the Apple Developer portal |
@@ -152,9 +152,9 @@ exists.
 
 Interactive API docs are available at `/docs` (Swagger UI).
 
-## OrcaSlicer CLI Integration
+## OrcaSlicer Headless Integration
 
-Bambu Gateway integrates with [orcaslicer-cli](https://github.com/leolobato/orcaslicer-cli),
+Bambu Gateway integrates with [orcaslicer-headless](https://github.com/leolobato/orcaslicer-headless),
 a headless slicing server built on OrcaSlicer's engine. This enables:
 
 - **Custom filament profiles** — use your own filament settings (temperature,
@@ -166,7 +166,7 @@ a headless slicing server built on OrcaSlicer's engine. This enables:
 
 ### Setup
 
-Run the orcaslicer-cli server (see the [orcaslicer-cli docs](https://github.com/leolobato/orcaslicer-cli)
+Run the orcaslicer-headless server (see the [orcaslicer-headless docs](https://github.com/leolobato/orcaslicer-headless)
 for full setup instructions), then point Bambu Gateway to it:
 
 ```env
@@ -181,7 +181,7 @@ Without it, only pre-sliced 3MF files can be printed.
 
 `bambu-gateway` does not open `.3mf` ZIPs. All metadata extraction
 (plates, filaments, thumbnails, used-filament dispatch, print
-estimates) goes through `orcaslicer-cli`'s HTTP API, which links
+estimates) goes through `orcaslicer-headless`'s HTTP API, which links
 libslic3r directly. Set `ORCASLICER_API_URL` to point at it.
 
 Required endpoints (consumed by `app/slicer_client.py`):
@@ -208,8 +208,8 @@ Bambu Gateway is the **printer control plane and slicing web app** in a suite of
 **Self-hosted services**
 
 - **Bambu Gateway** — this project.
-- **[orcaslicer-cli](https://github.com/leolobato/orcaslicer-cli)** — Headless OrcaSlicer wrapped in a REST API. Owns the filament/process/machine profile catalog (including custom user profiles) and does the actual slicing. Other services in the suite call it for slicing and profile data.
-- **[bambu-spool-helper](https://github.com/leolobato/bambu-spool-helper)** — Bridge between [Spoolman](https://github.com/Donkie/Spoolman) and the printer's AMS. Links real spools to Bambu filament profiles (via `orcaslicer-cli`) and pushes the settings to a chosen tray over MQTT.
+- **[orcaslicer-headless](https://github.com/leolobato/orcaslicer-headless)** — Headless OrcaSlicer wrapped in a REST API. Owns the filament/process/machine profile catalog (including custom user profiles) and does the actual slicing. Other services in the suite call it for slicing and profile data.
+- **[bambu-spool-helper](https://github.com/leolobato/bambu-spool-helper)** — Bridge between [Spoolman](https://github.com/Donkie/Spoolman) and the printer's AMS. Links real spools to Bambu filament profiles (via `orcaslicer-headless`) and pushes the settings to a chosen tray over MQTT.
 
 **iOS apps**
 
