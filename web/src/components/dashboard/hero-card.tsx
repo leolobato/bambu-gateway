@@ -1,31 +1,64 @@
 import { CheckCircle2 } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { Card } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { StateBadge } from '@/components/state-badge';
 import { formatRemaining } from '@/lib/format';
+import { listSliceJobs } from '@/lib/api/slice-jobs';
+import { findSliceJobThumbnailUrl } from '@/lib/project-thumbnail';
 import type { PrinterStatus } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
 
 export function HeroCard({ printer }: { printer: PrinterStatus }) {
+  // The slice-jobs query is already polled elsewhere (slice-jobs-list, print
+  // route). Sharing the cache key keeps this cheap — same data, no extra
+  // network when those pages are mounted.
+  const sliceJobsQuery = useQuery({
+    queryKey: ['slice-jobs'],
+    queryFn: listSliceJobs,
+    staleTime: 30_000,
+  });
+  const thumbnailUrl = findSliceJobThumbnailUrl(
+    printer.job?.file_name ?? '',
+    sliceJobsQuery.data ?? [],
+  );
+
   if (!printer.online) return <OfflineHero name={printer.name} />;
   if (printer.state === 'error') return <ErrorHero printer={printer} />;
   if (
     (printer.state === 'printing' || printer.state === 'preparing' || printer.state === 'paused') &&
     printer.job
   ) {
-    return <ActiveHero printer={printer} />;
+    return <ActiveHero printer={printer} thumbnailUrl={thumbnailUrl} />;
   }
   return <IdleHero printer={printer} />;
 }
 
-function ActiveHero({ printer }: { printer: PrinterStatus }) {
+function ActiveHero({
+  printer,
+  thumbnailUrl,
+}: {
+  printer: PrinterStatus;
+  thumbnailUrl: string | null;
+}) {
   const job = printer.job!;
   const progress = Math.max(0, Math.min(100, job.progress));
   return (
     <Card className="p-5 bg-card border-border flex flex-col gap-4">
       <StateBadge state={printer.state} />
-      <div className="text-[40px] sm:text-[48px] font-extrabold tracking-[-0.03em] font-mono tabular-nums text-white leading-none">
-        {progress}%
+      <div className="flex items-start justify-between gap-4">
+        <div className="text-[40px] sm:text-[48px] font-extrabold tracking-[-0.03em] font-mono tabular-nums text-white leading-none">
+          {progress}%
+        </div>
+        {thumbnailUrl && (
+          <img
+            src={thumbnailUrl}
+            alt=""
+            aria-hidden
+            className="h-16 w-16 flex-shrink-0 rounded-md border border-line bg-bg-1 object-contain"
+            loading="lazy"
+          />
+        )}
       </div>
       <MetaLine job={job} stage={printer.stage_name} />
       <Progress
