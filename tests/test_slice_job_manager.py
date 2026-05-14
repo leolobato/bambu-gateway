@@ -950,6 +950,55 @@ def test_extract_plate_thumbnail_pulls_plate_1_png():
     assert decoded == b"\x89PNG\r\n\x1a\n_thumb"
 
 
+def test_extract_plate_thumbnail_falls_back_to_auxiliary_thumbnail():
+    """`/slice/v2` outputs no longer carry `Metadata/plate_1.png`; the only
+    embedded PNGs are the project's own auxiliary thumbnails."""
+    import io
+    import zipfile
+    from app.slice_jobs import _extract_plate_thumbnail
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("Metadata/plate_1.gcode", b"; gcode")
+        zf.writestr(
+            "Auxiliaries/.thumbnails/thumbnail_middle.png",
+            b"\x89PNG\r\n\x1a\n_middle",
+        )
+        zf.writestr(
+            "Auxiliaries/.thumbnails/thumbnail_small.png",
+            b"\x89PNG\r\n\x1a\n_small",
+        )
+
+    data_url = _extract_plate_thumbnail(buf.getvalue())
+    assert data_url is not None
+    import base64
+    decoded = base64.b64decode(data_url.split(",", 1)[1])
+    # `thumbnail_middle.png` wins over `thumbnail_small.png`.
+    assert decoded == b"\x89PNG\r\n\x1a\n_middle"
+
+
+def test_extract_plate_thumbnail_prefers_plate_render_over_auxiliary():
+    """When both legacy plate renders and auxiliary thumbnails exist, the
+    plate render wins — it's the actually-sliced layout."""
+    import io
+    import zipfile
+    from app.slice_jobs import _extract_plate_thumbnail
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("Metadata/plate_1.png", b"\x89PNG\r\n\x1a\n_plate")
+        zf.writestr(
+            "Auxiliaries/.thumbnails/thumbnail_middle.png",
+            b"\x89PNG\r\n\x1a\n_middle",
+        )
+
+    data_url = _extract_plate_thumbnail(buf.getvalue())
+    assert data_url is not None
+    import base64
+    decoded = base64.b64decode(data_url.split(",", 1)[1])
+    assert decoded == b"\x89PNG\r\n\x1a\n_plate"
+
+
 def test_extract_plate_thumbnail_returns_none_for_archive_without_thumbnail():
     import io
     import zipfile

@@ -275,17 +275,26 @@ _STATUS_CALLBACK_RE = re.compile(
 
 
 def _extract_plate_thumbnail(sliced_3mf: bytes) -> str | None:
-    """Return a base64 data URL for the sliced 3MF's plate-1 thumbnail.
+    """Return a base64 data URL for a thumbnail embedded in the sliced 3MF.
 
     Sliced output is always single-plate (the gateway extracts the chosen
-    plate before slicing), so we look for `Metadata/plate_1.png` first and
-    fall back to the half-resolution version if present. Returns None when
-    no thumbnail is found or the archive can't be read.
+    plate before slicing). Preference order:
+
+    1. ``Metadata/plate_1*.png`` — post-slice plate renders. The legacy
+       orca CLI wrote these; the new ``/slice/v2`` output does not.
+    2. ``Auxiliaries/.thumbnails/thumbnail_*.png`` — project thumbnails
+       authored when the 3MF was saved in the slicer GUI. These survive
+       the round-trip through ``/slice/v2``.
+
+    Returns None when no thumbnail is found or the archive can't be read.
     """
     candidates = (
         "Metadata/plate_1.png",
         "Metadata/plate_no_light_1.png",
         "Metadata/top_1.png",
+        "Auxiliaries/.thumbnails/thumbnail_middle.png",
+        "Auxiliaries/.thumbnails/thumbnail_3mf.png",
+        "Auxiliaries/.thumbnails/thumbnail_small.png",
     )
     try:
         with zipfile.ZipFile(io.BytesIO(sliced_3mf)) as zf:
@@ -469,6 +478,8 @@ class SliceJobManager:
         - jobs in slicing/uploading -> failed("interrupted by gateway restart")
         - jobs in queued -> re-enqueued (cancel event recreated)
         - terminal jobs left alone
+        - ready jobs with output but no thumbnail: re-extract. Heals records
+          sliced before the auxiliary-thumbnail fallback existed.
         """
         for job in await self._store.list_all():
             if job.status in (
@@ -481,6 +492,19 @@ class SliceJobManager:
             elif job.status == SliceJobStatus.QUEUED:
                 self._cancel_events[job.id] = asyncio.Event()
                 await self._queue.put(job.id)
+            elif (
+                job.status == SliceJobStatus.READY
+                and not job.thumbnail
+                and job.output_path
+            ):
+                try:
+                    output_bytes = Path(job.output_path).read_bytes()
+                except OSError:
+                    continue
+                extracted = _extract_plate_thumbnail(output_bytes)
+                if extracted:
+                    job.thumbnail = extracted
+                    await self._store.upsert(job)
 
     async def submit(
         self,
