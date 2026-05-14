@@ -115,3 +115,30 @@ def upload_file(
             ftp.close()
 
     return remote_path
+
+
+def download_file(*, host: str, access_code: str, remote_path: str, port: int = 990) -> bytes:
+    """Download a single file from the printer's FTPS server, returning bytes.
+
+    Mirrors `upload_file`'s connection setup but uses RETR. Like upload, we
+    do NOT call `quit()`/`close()` cleanly because Bambu's FTPS daemon does
+    not respond to TLS close_notify, which makes graceful shutdown hang.
+    """
+    chunks: list[bytes] = []
+
+    def _on_chunk(b: bytes) -> None:
+        chunks.append(b)
+
+    ftps = ImplicitFTPS()
+    ftps.connect(host=host, port=port, timeout=30)
+    ftps.login("bblp", access_code)
+    ftps.prot_p()
+    try:
+        ftps.retrbinary(f"RETR {remote_path}", _on_chunk, blocksize=64 * 1024)
+    finally:
+        try:
+            ftps.sock.close()  # avoid the hang; intentional ungraceful close
+        except Exception:
+            pass
+
+    return b"".join(chunks)

@@ -8,7 +8,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
@@ -66,11 +66,17 @@ from app.models import (
     StartDryingRequest,
     TransferredSetting,
 )
+from app.ftp_client import download_file as ftp_download_file
 from app.parse_3mf import parse_3mf_via_slicer
 from app.printer_service import PrinterService
 from app.slice_jobs import SliceJobManager, SliceJobStatus, SliceJobStore
 from app.slicer_client import SlicerClient, SliceResult, SlicingError
 from app.upload_tracker import UploadCancelledError, tracker as upload_tracker
+
+import httpx as _httpx
+
+# Indirection so tests can monkeypatch the async client class.
+httpx_AsyncClient = _httpx.AsyncClient
 
 logging.basicConfig(
     level=settings.log_level.upper(),
@@ -411,6 +417,59 @@ async def printer_events(printer_id: str):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/api/printers/{printer_id}/current-job/file")
+async def current_job_file(printer_id: str, task_id: str | None = None):
+    """Stream the active print's 3MF.
+
+    Resolves the cached `project_file` payload's `url`. http(s)://
+    URLs are passed through; file:// and ftp:// URLs are downloaded from
+    the printer over FTPS using the stored access code.
+
+    Optional `task_id` query parameter asserts the active task matches;
+    a mismatch returns 409.
+    """
+    pid = _resolve_printer_id(printer_id)
+    client = printer_service.get_client(pid)
+    if client is None:
+        raise HTTPException(status_code=404, detail="Printer not found")
+
+    payload = client.latest_print_payload
+    if not payload or payload.get("command") != "project_file" or not payload.get("url"):
+        raise HTTPException(status_code=404, detail="No active print")
+
+    cached_task = payload.get("task_id")
+    if task_id is not None and cached_task and task_id != cached_task:
+        raise HTTPException(status_code=409, detail="Task ID mismatch")
+
+    url = payload["url"]
+    parsed = urlparse(url)
+
+    if parsed.scheme in ("http", "https"):
+        async with httpx_AsyncClient(timeout=60.0) as ac:
+            r = await ac.get(url, follow_redirects=True)
+        if r.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Upstream fetch failed: HTTP {r.status_code}",
+            )
+        return Response(content=r.content, media_type="application/zip")
+
+    if parsed.scheme in ("file", "ftp"):
+        remote_path = parsed.path
+        try:
+            data = await asyncio.to_thread(
+                ftp_download_file,
+                host=client.host,
+                access_code=client.access_code,
+                remote_path=remote_path,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"FTPS download failed: {e}")
+        return Response(content=data, media_type="application/zip")
+
+    raise HTTPException(status_code=400, detail=f"Unsupported url scheme: {parsed.scheme}")
 
 
 def _resolve_printer_id(printer_id: str) -> str:

@@ -71,6 +71,16 @@ class BambuMQTTClient:
         with self._lock:
             return self._latest_print_payload
 
+    @property
+    def host(self) -> str:
+        """Printer IP address (alias for `_config.ip`)."""
+        return self._config.ip
+
+    @property
+    def access_code(self) -> str:
+        """Printer access code for FTPS/MQTT authentication."""
+        return self._config.access_code
+
     def attach_event_broker(
         self,
         broker: "PrintEventBroker",
