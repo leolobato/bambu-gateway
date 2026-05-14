@@ -166,7 +166,7 @@ async def lifespan(app: FastAPI):
     printer_service = PrinterService(
         configs, status_change_callback=status_change_callback,
     )
-    printer_service.start()
+    await printer_service.start()
     if notification_hub is not None:
         notification_hub.set_printer_service(printer_service)
     if settings.orcaslicer_api_url:
@@ -368,6 +368,49 @@ async def get_printer(printer_id: str):
     if status is None:
         raise HTTPException(status_code=404, detail="Printer not found")
     return PrinterDetailResponse(printer=status)
+
+
+SSE_KEEPALIVE_INTERVAL_S = 15.0
+
+
+@app.get("/api/printers/{printer_id}/events")
+async def printer_events(printer_id: str):
+    """SSE stream of raw printer `print` payloads.
+
+    First frame is an `event: snapshot` with the gateway's currently-cached
+    `print` payload (or `{}` if none). Subsequent `event: report` frames
+    fire for every MQTT message the printer sends. `event: keepalive` fires
+    every 15s.
+    """
+    pid = _resolve_printer_id(printer_id)
+    broker = printer_service.get_event_broker(pid)
+    if broker is None:
+        raise HTTPException(status_code=404, detail="Printer event broker unavailable")
+    client = printer_service.get_client(pid)
+
+    async def _gen():
+        snapshot = client.latest_print_payload or {}
+        yield _sse_event("snapshot", snapshot)
+
+        async with broker.subscribe() as queue:
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        queue.get(),
+                        timeout=SSE_KEEPALIVE_INTERVAL_S,
+                    )
+                    yield _sse_event("report", event)
+                except asyncio.TimeoutError:
+                    yield _sse_event("keepalive", {})
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _resolve_printer_id(printer_id: str) -> str:

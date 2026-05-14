@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import ssl
 import threading
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.print_event_broker import PrintEventBroker
 
 import paho.mqtt.client as mqtt
 
@@ -49,6 +54,9 @@ class BambuMQTTClient:
         self._ams_module_types: dict[int, AMSType] = {}  # ams_id -> AMSType from get_version
         # None until the printer reports its first `lights_report`.
         self._chamber_light_on: bool | None = None
+        self._latest_print_payload: dict | None = None
+        self._event_broker = None
+        self._event_loop = None
         self._lock = threading.Lock()
         self._disconnect_timer: threading.Timer | None = None
         self._status_change_callback: Callable[[PrinterStatus, PrinterStatus], None] | None = None
@@ -56,6 +64,22 @@ class BambuMQTTClient:
         # async consumers wait briefly on cold-start / lazy-connect for the
         # printer's first pushall to land in the cache before returning.
         self._data_ready_event = threading.Event()
+
+    @property
+    def latest_print_payload(self) -> dict | None:
+        """Most recently received `print` payload (raw), or None if none seen yet."""
+        with self._lock:
+            return self._latest_print_payload
+
+    def attach_event_broker(
+        self,
+        broker: "PrintEventBroker",
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Attach an async PrintEventBroker. MQTT thread schedules publishes
+        on the supplied event loop."""
+        self._event_broker = broker
+        self._event_loop = loop
 
     def set_status_change_callback(
         self, callback: Callable[[PrinterStatus, PrinterStatus], None] | None,
@@ -476,6 +500,22 @@ class BambuMQTTClient:
         print_info = payload.get("print", {})
         if not print_info:
             return
+
+        with self._lock:
+            self._latest_print_payload = print_info
+
+        if self._event_broker is not None and self._event_loop is not None:
+            future = asyncio.run_coroutine_threadsafe(
+                self._event_broker.publish(dict(print_info)),
+                self._event_loop,
+            )
+
+            def _log_publish_error(f: concurrent.futures.Future) -> None:
+                exc = f.exception()
+                if exc is not None:
+                    logger.warning("Event broker publish failed: %s", exc)
+
+            future.add_done_callback(_log_publish_error)
 
         self._update_status(print_info)
 

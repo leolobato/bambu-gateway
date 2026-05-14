@@ -10,6 +10,7 @@ from app.camera_proxy import CameraProxy
 from app.config import PrinterConfig
 from app.models import CameraInfo, ChamberLightInfo, PrinterStatus
 from app.mqtt_client import BambuMQTTClient
+from app.print_event_broker import PrintEventBroker
 from app import ftp_client
 
 
@@ -64,6 +65,7 @@ class PrinterService:
     ) -> None:
         self._configs: dict[str, PrinterConfig] = {}
         self._clients: dict[str, BambuMQTTClient] = {}
+        self._brokers: dict[str, PrintEventBroker] = {}
         self._proxies: dict[str, CameraProxy] = {}
         self._status_change_callback = status_change_callback
         for cfg in printer_configs:
@@ -72,12 +74,22 @@ class PrinterService:
             if status_change_callback is not None:
                 client.set_status_change_callback(status_change_callback)
             self._clients[cfg.serial] = client
+            self._brokers[cfg.serial] = PrintEventBroker()
 
-    def start(self) -> None:
-        """Initialize printer service without opening MQTT connections."""
+    async def start(self) -> None:
+        """Initialize printer service and attach event brokers to MQTT clients.
+
+        Must be called from an async context (e.g. FastAPI lifespan) so that a
+        running event loop is available for ``attach_event_broker``.
+        """
         if not self._clients:
             logger.warning("No printers configured")
             return
+
+        loop = asyncio.get_running_loop()
+        for serial, client in self._clients.items():
+            broker = self._brokers[serial]
+            client.attach_event_broker(broker, loop)
 
         logger.info("Initialized %d printer client(s) in lazy-connect mode", len(self._clients))
 
@@ -114,6 +126,7 @@ class PrinterService:
             self._clients[serial].stop()
             del self._clients[serial]
             del self._configs[serial]
+            self._brokers.pop(serial, None)
             proxy = self._proxies.pop(serial, None)
             if proxy is not None:
                 asyncio.create_task(proxy.stop())
@@ -129,6 +142,15 @@ class PrinterService:
                 if self._status_change_callback is not None:
                     new_client.set_status_change_callback(self._status_change_callback)
                 self._clients[serial] = new_client
+                self._brokers[serial] = PrintEventBroker()
+                # Re-attach the new broker if a loop is available (i.e. called
+                # from async context after start() has been awaited).
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    pass  # No event loop yet; start() will attach.
+                else:
+                    new_client.attach_event_broker(self._brokers[serial], loop)
                 proxy = self._proxies.pop(serial, None)
                 if proxy is not None:
                     asyncio.create_task(proxy.stop())
@@ -149,6 +171,14 @@ class PrinterService:
             if self._status_change_callback is not None:
                 client.set_status_change_callback(self._status_change_callback)
             self._clients[serial] = client
+            self._brokers[serial] = PrintEventBroker()
+            # Attach broker if a running loop is available.
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                pass  # No event loop yet; start() will attach.
+            else:
+                client.attach_event_broker(self._brokers[serial], loop)
 
     def get_all_statuses(self) -> list[PrinterStatus]:
         """Return status for every configured printer."""
@@ -192,6 +222,10 @@ class PrinterService:
     def get_client(self, printer_id: str) -> BambuMQTTClient | None:
         """Return the MQTT client for a printer, or None if not found."""
         return self._clients.get(printer_id)
+
+    def get_event_broker(self, printer_id: str) -> PrintEventBroker | None:
+        """Return the PrintEventBroker for a printer, or None if not found."""
+        return self._brokers.get(printer_id)
 
     def get_camera_proxy(self, printer_id: str) -> CameraProxy | None:
         """Return (and lazily create) the camera proxy for a printer.
