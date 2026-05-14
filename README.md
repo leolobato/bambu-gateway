@@ -132,6 +132,8 @@ exists.
 | `POST` | `/api/printers/{id}/resume` | Resume paused print |
 | `POST` | `/api/printers/{id}/cancel` | Cancel current print |
 | `POST` | `/api/printers/{id}/speed` | Set print speed (1–4: silent/standard/sport/ludicrous) |
+| `GET` | `/api/printers/{id}/events` | Server-Sent Events stream of printer `print` payloads |
+| `GET` | `/api/printers/{id}/current-job/file` | Stream active print's 3MF file |
 | `GET` | `/api/ams` | AMS units, trays, and external spool info |
 | `POST` | `/api/printers/{id}/ams/{ams_id}/start-drying` | Start AMS filament drying |
 | `POST` | `/api/printers/{id}/ams/{ams_id}/stop-drying` | Stop AMS filament drying |
