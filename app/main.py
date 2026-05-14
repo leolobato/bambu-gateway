@@ -1904,6 +1904,11 @@ async def create_slice_job(
             status_code=400,
             detail=f"File exceeds {settings.max_file_size_mb} MB limit",
         )
+    if not (1 <= copies <= 100):
+        raise HTTPException(
+            status_code=400,
+            detail=f"copies must be between 1 and 100 (got {copies})",
+        )
     try:
         info = await parse_3mf_via_slicer(
             file_data, slicer_client, plate_id=plate_id or 1,
@@ -1915,11 +1920,6 @@ async def create_slice_job(
         raise HTTPException(
             status_code=400,
             detail="printer_id is required when auto_print=true",
-        )
-    if not (1 <= copies <= 100):
-        raise HTTPException(
-            status_code=400,
-            detail=f"copies must be between 1 and 100 (got {copies})",
         )
 
     process_overrides_dict = _parse_process_overrides_form(process_overrides)
