@@ -504,6 +504,75 @@ async def test_get_thumbnail_returns_png_bytes(app_client):
     assert resp.content == b"\x89PNG\r\n\x1a\n_fake"
 
 
+async def test_copies_defaults_to_1(app_client, monkeypatch):
+    """When `copies` is omitted the endpoint passes 1 to SliceJobManager.submit."""
+    import app.main as main_mod
+
+    captured: dict = {}
+    real_submit = main_mod.slice_jobs.submit
+
+    async def spy_submit(*args, **kwargs):
+        captured.update(kwargs)
+        return await real_submit(*args, **kwargs)
+
+    monkeypatch.setattr(main_mod.slice_jobs, "submit", spy_submit)
+
+    resp = await app_client.post(
+        "/api/slice-jobs",
+        files={"file": ("cube.3mf", b"x", "application/octet-stream")},
+        data={
+            "machine_profile": "GM014",
+            "process_profile": "0.20mm",
+            "filament_profiles": "{}",
+        },
+    )
+    assert resp.status_code == 202
+    assert captured.get("copies") == 1
+
+
+async def test_copies_value_forwarded(app_client, monkeypatch):
+    """`copies=5` must reach SliceJobManager.submit verbatim."""
+    import app.main as main_mod
+
+    captured: dict = {}
+    real_submit = main_mod.slice_jobs.submit
+
+    async def spy_submit(*args, **kwargs):
+        captured.update(kwargs)
+        return await real_submit(*args, **kwargs)
+
+    monkeypatch.setattr(main_mod.slice_jobs, "submit", spy_submit)
+
+    resp = await app_client.post(
+        "/api/slice-jobs",
+        files={"file": ("cube.3mf", b"x", "application/octet-stream")},
+        data={
+            "machine_profile": "GM014",
+            "process_profile": "0.20mm",
+            "filament_profiles": "{}",
+            "copies": "5",
+        },
+    )
+    assert resp.status_code == 202
+    assert captured.get("copies") == 5
+
+
+async def test_copies_out_of_range_returns_400(app_client):
+    """`copies=101` exceeds the allowed maximum and must be rejected with 400."""
+    resp = await app_client.post(
+        "/api/slice-jobs",
+        files={"file": ("cube.3mf", b"x", "application/octet-stream")},
+        data={
+            "machine_profile": "GM014",
+            "process_profile": "0.20mm",
+            "filament_profiles": "{}",
+            "copies": "101",
+        },
+    )
+    assert resp.status_code == 400
+    assert "copies" in resp.json()["detail"].lower()
+
+
 async def test_create_rejects_invalid_filament_payload_with_400(
     tmp_path, monkeypatch
 ):
