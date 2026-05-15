@@ -36,6 +36,26 @@ MQTT_USERNAME = "bblp"
 MQTT_IDLE_TIMEOUT_SECONDS = 20
 
 
+def _recursive_merge(dst: dict, src: dict) -> None:
+    """In-place merge of `src` into `dst`.
+
+    Nested dicts merge recursively; everything else (scalars, lists, None)
+    replaces. Mirrors `bambu-spoolman`'s `recursive_merge` so the aggregate
+    printer state behaves like a long-lived mirror of MQTT push_status
+    deltas: every key the printer ever reports stays in the dict until the
+    printer reports a new value for it.
+
+    Lists replace wholesale rather than merging element-wise because Bambu's
+    AMS payload reports the entire tray array on any tray change — an
+    element-wise merge would conflate stale entries with fresh ones.
+    """
+    for key, value in src.items():
+        if isinstance(value, dict) and isinstance(dst.get(key), dict):
+            _recursive_merge(dst[key], value)
+        else:
+            dst[key] = value
+
+
 class BambuMQTTClient:
     """Manages an MQTT connection to a single Bambu Lab printer."""
 

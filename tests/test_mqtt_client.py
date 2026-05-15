@@ -69,3 +69,39 @@ async def test_on_message_publishes_to_broker():
         client._on_message(None, None, msg)
         event = await asyncio.wait_for(queue.get(), timeout=0.5)
     assert event == {"layer_num": 7}
+
+
+def test_recursive_merge_flat_keys():
+    from app.mqtt_client import _recursive_merge
+
+    dst = {"a": 1, "b": 2}
+    _recursive_merge(dst, {"b": 20, "c": 30})
+    assert dst == {"a": 1, "b": 20, "c": 30}
+
+
+def test_recursive_merge_nested_dicts():
+    from app.mqtt_client import _recursive_merge
+
+    dst = {"ams": {"version": "1.0", "trays": "untouched"}, "outer": "kept"}
+    _recursive_merge(dst, {"ams": {"version": "1.1"}})
+    assert dst == {
+        "ams": {"version": "1.1", "trays": "untouched"},
+        "outer": "kept",
+    }
+
+
+def test_recursive_merge_replaces_lists_wholesale():
+    from app.mqtt_client import _recursive_merge
+
+    dst = {"trays": [{"id": 0}, {"id": 1}]}
+    _recursive_merge(dst, {"trays": [{"id": 0, "color": "red"}]})
+    assert dst == {"trays": [{"id": 0, "color": "red"}]}
+
+
+def test_recursive_merge_dict_replaces_scalar():
+    """If dst has a scalar and src brings a dict for the same key, src wins."""
+    from app.mqtt_client import _recursive_merge
+
+    dst = {"vt_tray": None}
+    _recursive_merge(dst, {"vt_tray": {"id": 254, "color": "blue"}})
+    assert dst == {"vt_tray": {"id": 254, "color": "blue"}}
