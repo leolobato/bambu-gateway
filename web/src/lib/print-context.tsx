@@ -111,6 +111,7 @@ export function PrintProvider({ children }: { children: ReactNode }) {
     machine: '',
     process: '',
     plateType: '',
+    copies: 1,
   });
   const [selectedPlateId, setSelectedPlateId] = useState<number>(1);
   const [filamentMapping, setFilamentMapping] = useState<FilamentMapping>({});
