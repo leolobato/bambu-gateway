@@ -8,13 +8,13 @@ import pytest
 from app import main as main_mod
 
 
-def _make_stub_service(*, payload=None):
+def _make_stub_service(*, project_file_payload=None):
     """Build a minimal printer_service stub for these tests."""
     class _Client:
         def __init__(self, host="10.0.0.5", access_code="x"):
             self.host = host
             self.access_code = access_code
-            self.latest_print_payload = payload
+            self.latest_project_file_payload = project_file_payload
 
     class _Service:
         def get_client(self, pid):
@@ -27,7 +27,7 @@ def _make_stub_service(*, payload=None):
 
 @pytest.mark.asyncio
 async def test_404_when_no_cached_project_file(monkeypatch):
-    monkeypatch.setattr(main_mod, "printer_service", _make_stub_service(payload=None))
+    monkeypatch.setattr(main_mod, "printer_service", _make_stub_service(project_file_payload=None))
     transport = httpx.ASGITransport(app=main_mod.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
         resp = await ac.get("/api/printers/S1/current-job/file")
@@ -37,7 +37,7 @@ async def test_404_when_no_cached_project_file(monkeypatch):
 @pytest.mark.asyncio
 async def test_ftp_url_triggers_ftps_download(monkeypatch):
     payload = {"command": "project_file", "url": "file:///cache/model.3mf", "task_id": "T1"}
-    monkeypatch.setattr(main_mod, "printer_service", _make_stub_service(payload=payload))
+    monkeypatch.setattr(main_mod, "printer_service", _make_stub_service(project_file_payload=payload))
 
     captured = {}
     def _fake_download(*, host, access_code, remote_path, port=990):
@@ -59,7 +59,7 @@ async def test_ftp_url_triggers_ftps_download(monkeypatch):
 @pytest.mark.asyncio
 async def test_http_url_passes_through(monkeypatch):
     payload = {"command": "project_file", "url": "https://example.com/m.3mf", "task_id": "T1"}
-    monkeypatch.setattr(main_mod, "printer_service", _make_stub_service(payload=payload))
+    monkeypatch.setattr(main_mod, "printer_service", _make_stub_service(project_file_payload=payload))
 
     class _FakeAsyncClient:
         def __init__(self, *a, **kw): pass
@@ -81,8 +81,21 @@ async def test_http_url_passes_through(monkeypatch):
 @pytest.mark.asyncio
 async def test_task_id_mismatch_returns_409(monkeypatch):
     payload = {"command": "project_file", "url": "file:///cache/x.3mf", "task_id": "T1"}
-    monkeypatch.setattr(main_mod, "printer_service", _make_stub_service(payload=payload))
+    monkeypatch.setattr(main_mod, "printer_service", _make_stub_service(project_file_payload=payload))
     transport = httpx.ASGITransport(app=main_mod.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
         resp = await ac.get("/api/printers/S1/current-job/file?task_id=OTHER")
     assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_404_after_finish_clears_cache(monkeypatch):
+    """Once the project_file cache is None (e.g. after FINISH), endpoint 404s."""
+    monkeypatch.setattr(
+        main_mod, "printer_service",
+        _make_stub_service(project_file_payload=None),
+    )
+    transport = httpx.ASGITransport(app=main_mod.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        resp = await ac.get("/api/printers/S1/current-job/file")
+    assert resp.status_code == 404

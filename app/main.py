@@ -435,8 +435,8 @@ async def current_job_file(printer_id: str, task_id: str | None = None):
     if client is None:
         raise HTTPException(status_code=404, detail="Printer not found")
 
-    payload = client.latest_print_payload
-    if not payload or payload.get("command") != "project_file" or not payload.get("url"):
+    payload = client.latest_project_file_payload
+    if not payload or not payload.get("url"):
         raise HTTPException(status_code=404, detail="No active print")
 
     cached_task = payload.get("task_id")
