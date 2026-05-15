@@ -74,7 +74,14 @@ class BambuMQTTClient:
         self._ams_module_types: dict[int, AMSType] = {}  # ams_id -> AMSType from get_version
         # None until the printer reports its first `lights_report`.
         self._chamber_light_on: bool | None = None
-        self._latest_print_payload: dict | None = None
+        # Long-lived mirror of every push_status delta the printer reports.
+        # Late SSE subscribers read this so they see full state, not just
+        # whatever single field the printer happened to update last.
+        self._aggregate_print_state: dict = {}
+        # Holds the active print's `project_file` payload (url, param,
+        # task_id, ams_mapping, etc.). None when no print is active.
+        # Cleared on `gcode_state` reaching FINISH or FAILURE.
+        self._latest_project_file_payload: dict | None = None
         self._event_broker = None
         self._event_loop = None
         self._lock = threading.Lock()
@@ -86,10 +93,30 @@ class BambuMQTTClient:
         self._data_ready_event = threading.Event()
 
     @property
-    def latest_print_payload(self) -> dict | None:
-        """Most recently received `print` payload (raw), or None if none seen yet."""
+    def latest_print_payload(self) -> dict:
+        """Aggregate of every push_status `print` payload received since connect.
+
+        Replaces the previous "last single delta" semantics. Returns a shallow
+        copy so callers don't race with concurrent merges on the MQTT thread.
+        An empty dict means no push_status has arrived yet (cold start before
+        the printer's first pushall response lands).
+        """
         with self._lock:
-            return self._latest_print_payload
+            return dict(self._aggregate_print_state)
+
+    @property
+    def latest_project_file_payload(self) -> dict | None:
+        """The active print's cached `project_file` payload, or None.
+
+        Set whenever the printer reports `command == "project_file"`; cleared
+        when `gcode_state` reaches FINISH or FAILURE. Survives intervening
+        push_status deltas so `/api/printers/{id}/current-job/file` resolves
+        for the full lifetime of an active print.
+        """
+        with self._lock:
+            if self._latest_project_file_payload is None:
+                return None
+            return dict(self._latest_project_file_payload)
 
     @property
     def host(self) -> str:
@@ -531,8 +558,15 @@ class BambuMQTTClient:
         if not print_info:
             return
 
+        command = print_info.get("command")
         with self._lock:
-            self._latest_print_payload = print_info
+            if command == "project_file":
+                self._latest_project_file_payload = dict(print_info)
+            elif command in (None, "push_status"):
+                _recursive_merge(self._aggregate_print_state, print_info)
+            # Other commands (gcode_line, etc.) still flow through to live
+            # subscribers via the broker below, but do not pollute either
+            # cache — they aren't durable state.
 
         if self._event_broker is not None and self._event_loop is not None:
             future = asyncio.run_coroutine_threadsafe(
@@ -613,6 +647,10 @@ class BambuMQTTClient:
             gcode_state = print_info.get("gcode_state")
             if gcode_state is not None:
                 self._gcode_state = gcode_state
+                if gcode_state in ("FINISH", "FAILURE"):
+                    # The active print is over; drop the cached project_file
+                    # so a late SSE subscriber doesn't see stale resume context.
+                    self._latest_project_file_payload = None
 
             if "stg_cur" in print_info:
                 try:

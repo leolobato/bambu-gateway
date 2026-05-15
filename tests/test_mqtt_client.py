@@ -22,13 +22,19 @@ def _make_client() -> BambuMQTTClient:
     return BambuMQTTClient(config)
 
 
-def test_on_message_caches_latest_print_payload():
+def test_on_message_caches_first_push_status_into_aggregate():
     client = _make_client()
     msg = MagicMock()
-    msg.payload = json.dumps({"print": {"layer_num": 42, "gcode_state": "RUNNING"}}).encode()
+    msg.payload = json.dumps({
+        "print": {"command": "push_status", "layer_num": 42, "gcode_state": "RUNNING"}
+    }).encode()
     msg.topic = "device/S01/report"
     client._on_message(None, None, msg)
-    assert client.latest_print_payload == {"layer_num": 42, "gcode_state": "RUNNING"}
+    assert client.latest_print_payload == {
+        "command": "push_status",
+        "layer_num": 42,
+        "gcode_state": "RUNNING",
+    }
 
 
 def test_on_message_ignores_non_print_payload():
@@ -37,20 +43,32 @@ def test_on_message_ignores_non_print_payload():
     msg.payload = json.dumps({"info": {"command": "get_version"}}).encode()
     msg.topic = "device/S01/report"
     client._on_message(None, None, msg)
-    assert client.latest_print_payload is None
+    assert client.latest_print_payload == {}
 
 
-def test_on_message_overwrites_previous_payload():
+def test_on_message_merges_subsequent_push_status_into_aggregate():
+    """The aggregate accumulates fields across deltas instead of overwriting."""
     client = _make_client()
     first = MagicMock()
-    first.payload = json.dumps({"print": {"layer_num": 1}}).encode()
+    first.payload = json.dumps({
+        "print": {"command": "push_status", "layer_num": 1, "wifi_signal": "-60dBm"}
+    }).encode()
     first.topic = "device/S01/report"
     second = MagicMock()
-    second.payload = json.dumps({"print": {"layer_num": 2, "gcode_state": "RUNNING"}}).encode()
+    second.payload = json.dumps({
+        "print": {"command": "push_status", "layer_num": 2, "gcode_state": "RUNNING"}
+    }).encode()
     second.topic = "device/S01/report"
     client._on_message(None, None, first)
     client._on_message(None, None, second)
-    assert client.latest_print_payload == {"layer_num": 2, "gcode_state": "RUNNING"}
+    # `wifi_signal` survives from the first delta; `layer_num` overwrites;
+    # `gcode_state` is added.
+    assert client.latest_print_payload == {
+        "command": "push_status",
+        "layer_num": 2,
+        "wifi_signal": "-60dBm",
+        "gcode_state": "RUNNING",
+    }
 
 
 @pytest.mark.asyncio
@@ -105,3 +123,139 @@ def test_recursive_merge_dict_replaces_scalar():
     dst = {"vt_tray": None}
     _recursive_merge(dst, {"vt_tray": {"id": 254, "color": "blue"}})
     assert dst == {"vt_tray": {"id": 254, "color": "blue"}}
+
+
+def test_on_message_caches_project_file_separately():
+    """`project_file` payloads go into their own cache, not the aggregate."""
+    client = _make_client()
+    pf = MagicMock()
+    pf.payload = json.dumps({
+        "print": {
+            "command": "project_file",
+            "url": "file:///cache/m.3mf",
+            "param": "Metadata/plate_1.gcode",
+            "task_id": "T1",
+            "subtask_id": "ST1",
+            "ams_mapping": [0, 1],
+            "use_ams": True,
+            "gcode_state": "RUNNING",
+        }
+    }).encode()
+    pf.topic = "device/S01/report"
+    client._on_message(None, None, pf)
+
+    assert client.latest_project_file_payload == {
+        "command": "project_file",
+        "url": "file:///cache/m.3mf",
+        "param": "Metadata/plate_1.gcode",
+        "task_id": "T1",
+        "subtask_id": "ST1",
+        "ams_mapping": [0, 1],
+        "use_ams": True,
+        "gcode_state": "RUNNING",
+    }
+    # Aggregate is NOT polluted with the project_file one-shot fields.
+    assert "url" not in client.latest_print_payload
+    assert "param" not in client.latest_print_payload
+
+
+def test_project_file_cache_survives_subsequent_push_status_deltas():
+    client = _make_client()
+    pf = MagicMock()
+    pf.payload = json.dumps({
+        "print": {
+            "command": "project_file",
+            "url": "file:///cache/m.3mf",
+            "task_id": "T1",
+        }
+    }).encode()
+    pf.topic = "device/S01/report"
+    delta = MagicMock()
+    delta.payload = json.dumps({
+        "print": {"command": "push_status", "wifi_signal": "-65dBm"}
+    }).encode()
+    delta.topic = "device/S01/report"
+
+    client._on_message(None, None, pf)
+    client._on_message(None, None, delta)
+
+    assert client.latest_project_file_payload is not None
+    assert client.latest_project_file_payload["task_id"] == "T1"
+
+
+def test_finish_clears_project_file_cache():
+    client = _make_client()
+    pf = MagicMock()
+    pf.payload = json.dumps({
+        "print": {
+            "command": "project_file",
+            "url": "file:///cache/m.3mf",
+            "task_id": "T1",
+            "gcode_state": "RUNNING",
+        }
+    }).encode()
+    pf.topic = "device/S01/report"
+    finish = MagicMock()
+    finish.payload = json.dumps({
+        "print": {"command": "push_status", "gcode_state": "FINISH"}
+    }).encode()
+    finish.topic = "device/S01/report"
+
+    client._on_message(None, None, pf)
+    assert client.latest_project_file_payload is not None
+    client._on_message(None, None, finish)
+    assert client.latest_project_file_payload is None
+
+
+def test_failure_clears_project_file_cache():
+    client = _make_client()
+    pf = MagicMock()
+    pf.payload = json.dumps({
+        "print": {
+            "command": "project_file",
+            "url": "file:///cache/m.3mf",
+            "task_id": "T1",
+            "gcode_state": "RUNNING",
+        }
+    }).encode()
+    pf.topic = "device/S01/report"
+    failure = MagicMock()
+    failure.payload = json.dumps({
+        "print": {"command": "push_status", "gcode_state": "FAILURE"}
+    }).encode()
+    failure.topic = "device/S01/report"
+
+    client._on_message(None, None, pf)
+    client._on_message(None, None, failure)
+    assert client.latest_project_file_payload is None
+
+
+def test_aggregate_preserves_nested_ams_siblings():
+    """An update to one nested block doesn't clobber a sibling block."""
+    client = _make_client()
+    first = MagicMock()
+    first.payload = json.dumps({
+        "print": {
+            "command": "push_status",
+            "ams": {"version": "1.0", "tray_now": "0"},
+            "vt_tray": {"id": 254, "color": "red"},
+        }
+    }).encode()
+    first.topic = "device/S01/report"
+    second = MagicMock()
+    second.payload = json.dumps({
+        "print": {
+            "command": "push_status",
+            "vt_tray": {"color": "blue"},
+        }
+    }).encode()
+    second.topic = "device/S01/report"
+
+    client._on_message(None, None, first)
+    client._on_message(None, None, second)
+
+    agg = client.latest_print_payload
+    # `ams` block untouched by the vt_tray-only update.
+    assert agg["ams"] == {"version": "1.0", "tray_now": "0"}
+    # `vt_tray.color` updated; `vt_tray.id` preserved.
+    assert agg["vt_tray"] == {"id": 254, "color": "blue"}
