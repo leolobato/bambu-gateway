@@ -139,6 +139,8 @@ class PrinterStatus(BaseModel):
     stage_category: str | None = None
     speed_level: int = 0
     active_tray: int | None = None
+    ams_auto_refill_enabled: bool | None = None
+    ams_auto_refill_supported: bool | None = None
     temperatures: TemperatureInfo = TemperatureInfo()
     job: PrintJob | None = None
     hms_codes: list[HMSCode] = []
@@ -236,6 +238,8 @@ class AMSResponse(BaseModel):
     trays: list[AMSTray]
     units: list[AMSUnit] = []
     vt_tray: AMSTray | None = None
+    auto_refill_enabled: bool | None = None
+    auto_refill_supported: bool | None = None
 
 
 # --- Filament matching models ---
@@ -439,6 +443,12 @@ class StartDryingRequest(BaseModel):
 
     temperature: int = 55
     duration_minutes: int = 480
+
+
+class AmsAutoRefillRequest(BaseModel):
+    """Request body for toggling printer-level AMS auto-refill."""
+
+    enabled: bool
 
 
 class LightRequest(BaseModel):

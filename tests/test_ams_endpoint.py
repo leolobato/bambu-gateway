@@ -30,6 +30,13 @@ def client(monkeypatch):
             # _resolve_printer_id calls this to verify existence
             return object() if pid in self._known else None
 
+        def get_status(self, pid: str):
+            if pid not in self._known:
+                return None
+            from app.models import PrinterStatus
+
+            return PrinterStatus(id=pid, name="Printer", online=True)
+
     service = _StubService()
     monkeypatch.setattr(app_main, "printer_service", service)
 

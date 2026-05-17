@@ -31,6 +31,28 @@ MQTT_USERNAME = "bblp"
 MQTT_IDLE_TIMEOUT_SECONDS = 20
 
 
+def _bit_enabled(value: object, bit: int) -> bool | None:
+    """Return a bit from Bambu integer-like report fields.
+
+    OrcaSlicer reads AMS auto-refill from `home_flag` bit 10 and `cfg` bit 18
+    in `DeviceManager.cpp:999` and `DeviceManager.cpp:4951`.
+    """
+    if value is None:
+        return None
+    try:
+        if isinstance(value, int):
+            raw = value
+        else:
+            text = str(value).strip()
+            if not text:
+                return None
+            base = 16 if text.lower().startswith("0x") else 10
+            raw = int(text, base)
+    except (TypeError, ValueError):
+        return None
+    return ((raw >> bit) & 0x1) != 0
+
+
 class BambuMQTTClient:
     """Manages an MQTT connection to a single Bambu Lab printer."""
 
@@ -56,6 +78,7 @@ class BambuMQTTClient:
         # async consumers wait briefly on cold-start / lazy-connect for the
         # printer's first pushall to land in the cache before returning.
         self._data_ready_event = threading.Event()
+        self._ams_auto_refill_hold_until = 0.0
 
     def set_status_change_callback(
         self, callback: Callable[[PrinterStatus, PrinterStatus], None] | None,
@@ -308,6 +331,24 @@ class BambuMQTTClient:
             }
         })
 
+    def send_ams_auto_refill(self, enabled: bool) -> None:
+        """Toggle AMS auto-refill.
+
+        Mirrors OrcaSlicer's `MachineObject::command_ams_switch_filament`,
+        which publishes `print_option.auto_switch_filament` instead of adding
+        this setting to a `project_file` print payload.
+        """
+        self.publish({
+            "print": {
+                "sequence_id": "0",
+                "command": "print_option",
+                "auto_switch_filament": enabled,
+            }
+        })
+        with self._lock:
+            self._status.ams_auto_refill_enabled = enabled
+            self._ams_auto_refill_hold_until = time.monotonic() + 3.0
+
     def send_ams_filament_setting(
         self,
         ams_id: int,
@@ -556,6 +597,20 @@ class BambuMQTTClient:
                     self._status.speed_level = int(print_info["spd_lvl"])
                 except (ValueError, TypeError):
                     pass
+
+            if "support_filament_backup" in print_info:
+                raw_supported = print_info.get("support_filament_backup")
+                if isinstance(raw_supported, bool):
+                    self._status.ams_auto_refill_supported = raw_supported
+
+            if time.monotonic() >= self._ams_auto_refill_hold_until:
+                parsed_auto_refill = None
+                if "cfg" in print_info:
+                    parsed_auto_refill = _bit_enabled(print_info.get("cfg"), 18)
+                if parsed_auto_refill is None and "home_flag" in print_info:
+                    parsed_auto_refill = _bit_enabled(print_info.get("home_flag"), 10)
+                if parsed_auto_refill is not None:
+                    self._status.ams_auto_refill_enabled = parsed_auto_refill
 
             # Temperatures
             temps = self._status.temperatures

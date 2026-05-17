@@ -353,6 +353,22 @@ class PrinterService:
         client.send_stop_drying(ams_id)
         logger.info("Drying stopped on printer %s AMS %d", printer_id, ams_id)
 
+    def set_ams_auto_refill(self, printer_id: str, enabled: bool) -> None:
+        """Toggle printer-level AMS auto-refill."""
+        client = self._clients.get(printer_id)
+        if client is None:
+            raise ValueError(f"Printer {printer_id} not found")
+        client.ensure_connected()
+        status = client.get_status()
+        if not status.online:
+            raise ConnectionError(f"Printer {printer_id} is offline")
+        client.send_ams_auto_refill(enabled)
+        logger.info(
+            "AMS auto-refill set to %s on printer %s",
+            "enabled" if enabled else "disabled",
+            printer_id,
+        )
+
     def set_ams_filament(
         self,
         printer_id: str,

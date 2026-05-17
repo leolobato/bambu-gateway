@@ -113,6 +113,8 @@ export interface AMSResponse {
   trays: AMSTray[];
   units: AMSUnit[];
   vt_tray: AMSTray | null;
+  auto_refill_enabled: boolean | null;
+  auto_refill_supported: boolean | null;
 }
 
 // --- 3MF parse models (mirror app/models.py 3MF parse section) ---

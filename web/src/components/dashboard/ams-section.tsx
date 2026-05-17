@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import { TrayRow } from '@/components/tray-row';
 import { Badge } from '@/components/ui/badge';
 import { TraySheet, type TraySheetSelection } from '@/components/dashboard/tray-sheet';
+import { AmsAutoRefillCard } from '@/components/dashboard/ams-auto-refill-card';
 import { normalizeTrayColor } from '@/lib/filament-color';
 import type { AMSResponse, AMSTray, AMSUnit } from '@/lib/api/types';
 
@@ -14,10 +15,12 @@ export function AmsSection({
   printerId,
   ams,
   activeTrayId,
+  printerOnline,
 }: {
   printerId: string;
   ams: AMSResponse;
   activeTrayId: number | null;
+  printerOnline: boolean;
 }) {
   const [selection, setSelection] = useState<TraySheetSelection | null>(null);
 
@@ -26,6 +29,12 @@ export function AmsSection({
   return (
     <>
       <section className="flex flex-col gap-4">
+        <AmsAutoRefillCard
+          printerId={printerId}
+          enabled={ams.auto_refill_enabled}
+          supported={ams.auto_refill_supported}
+          online={printerOnline}
+        />
         {ams.units.map((unit) => (
           <AmsUnitGroup
             key={unit.id}

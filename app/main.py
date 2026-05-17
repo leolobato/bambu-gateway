@@ -30,6 +30,7 @@ from app.notification_hub import NotificationHub
 from app.models import (
     ActivityRegisterRequest,
     ActivityRegisterResponse,
+    AmsAutoRefillRequest,
     AMSResponse,
     AMSTray,
     AMSUnit,
@@ -514,6 +515,24 @@ async def stop_drying(printer_id: str, ams_id: int):
     return CommandResponse(printer_id=pid, command=f"stop_drying:ams{ams_id}")
 
 
+@app.post(
+    "/api/printers/{printer_id}/ams/auto-refill",
+    response_model=CommandResponse,
+)
+async def set_ams_auto_refill(printer_id: str, body: AmsAutoRefillRequest):
+    pid = _resolve_printer_id(printer_id)
+    try:
+        printer_service.set_ams_auto_refill(pid, body.enabled)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ConnectionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return CommandResponse(
+        printer_id=pid,
+        command=f"ams_auto_refill:{'on' if body.enabled else 'off'}",
+    )
+
+
 def _first_str(value: object) -> str:
     """Pull a scalar string out of an OrcaSlicer config option that may be a
     list-of-strings, a bare string, or missing entirely. Returns "" on miss."""
@@ -903,7 +922,19 @@ async def get_ams(printer_id: str | None = Query(default=None)):
     if raw_vt_tray is not None:
         vt_tray = _build_ams_tray(raw_vt_tray, filaments_by_id)
 
-    return AMSResponse(printer_id=pid, trays=trays, units=units, vt_tray=vt_tray)
+    status = printer_service.get_status(pid)
+    return AMSResponse(
+        printer_id=pid,
+        trays=trays,
+        units=units,
+        vt_tray=vt_tray,
+        auto_refill_enabled=(
+            status.ams_auto_refill_enabled if status is not None else None
+        ),
+        auto_refill_supported=(
+            status.ams_auto_refill_supported if status is not None else None
+        ),
+    )
 
 
 def _build_ams_tray(raw: dict, filaments_by_id: dict) -> AMSTray:

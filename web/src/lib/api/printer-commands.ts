@@ -62,6 +62,20 @@ export async function stopDrying(printerId: string, amsId: number): Promise<void
   );
 }
 
+export async function setAmsAutoRefill(
+  printerId: string,
+  enabled: boolean,
+): Promise<void> {
+  await fetchJson<unknown>(
+    `/api/printers/${encodeURIComponent(printerId)}/ams/auto-refill`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    },
+  );
+}
+
 export interface SetAmsFilamentParams {
   /** Slicer profile setting_id (e.g. "GFSA00"). The gateway resolves the rest. */
   settingId: string;

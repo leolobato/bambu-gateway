@@ -70,6 +70,7 @@ export default function DashboardRoute() {
           printerId={active.id}
           ams={amsQuery.data}
           activeTrayId={active.active_tray}
+          printerOnline={active.online}
         />
       )}
     </div>
