@@ -6,11 +6,12 @@ import asyncio
 import base64
 import json
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import FastAPI, Form, HTTPException, Query, UploadFile
+from fastapi import Body, FastAPI, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -94,6 +95,55 @@ DEFAULT_PLATE_TYPES = [
     {"value": "textured_cool_plate", "label": "Textured Cool Plate"},
     {"value": "supertack_plate", "label": "Supertack Plate"},
 ]
+_SAFE_STL_DRAFT_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
+
+
+class StlDraftLayoutRequest(BaseModel):
+    action: str
+
+
+def _stl_draft_dir() -> Path:
+    root = config_store._config_path.parent / "stl_drafts"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _stl_draft_source_path(draft_token: str) -> Path:
+    if not _SAFE_STL_DRAFT_TOKEN_RE.fullmatch(draft_token):
+        raise HTTPException(status_code=400, detail="Invalid STL draft token")
+    return _stl_draft_dir() / f"{draft_token}.stl"
+
+
+_STL_DRAFT_MAX_AGE_SECONDS = 24 * 60 * 60  # 24h — matches /tmp/bambu-gateway-previews cleanup cadence
+
+
+def _sweep_stl_drafts() -> None:
+    """Delete `<data>/stl_drafts/*.stl` older than the TTL.
+
+    Best-effort: per-file errors are logged but do not stop the sweep.
+    Called from `lifespan` startup so abandoned previews don't accumulate
+    across restarts.
+    """
+    import time as _time
+
+    drafts_dir = config_store._config_path.parent / "stl_drafts"
+    if not drafts_dir.exists():
+        return
+    cutoff = _time.time() - _STL_DRAFT_MAX_AGE_SECONDS
+    for path in drafts_dir.glob("*.stl"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError as e:
+            logger.warning("Failed to sweep STL draft %s: %s", path, e)
+
+
+def _stl_scene_with_source_url(scene: dict) -> dict:
+    token = str(scene.get("draft_token") or "")
+    out = dict(scene)
+    if token:
+        out["source_url"] = f"/api/stl-drafts/{quote(token, safe='')}/source.stl"
+    return out
 
 def _estimate_response_header(estimate: PrintEstimate | None) -> str | None:
     if estimate is None or estimate.is_empty:
@@ -172,6 +222,8 @@ async def lifespan(app: FastAPI):
         notification_hub.set_printer_service(printer_service)
     if settings.orcaslicer_api_url:
         slicer_client = SlicerClient(settings.orcaslicer_api_url)
+
+    _sweep_stl_drafts()
 
     if slicer_client is not None:
         slice_jobs = SliceJobManager(
@@ -1138,6 +1190,117 @@ async def parse_3mf_file(file: UploadFile, plate_id: int | None = None):
         raise HTTPException(status_code=422, detail=f"Failed to parse 3MF: {e}")
 
     return info
+
+
+@app.post("/api/stl-drafts")
+async def create_stl_draft(
+    file: UploadFile,
+    machine_profile: str = Form(...),
+    process_profile: str = Form(...),
+    plate_type: str = Form(""),
+    auto_orient: bool = Form(False),
+    arrange: bool = Form(True),
+    center: bool = Form(True),
+):
+    if slicer_client is None:
+        raise HTTPException(
+            status_code=400,
+            detail="STL preview not available: ORCASLICER_API_URL not configured",
+        )
+    if not file.filename or not file.filename.lower().endswith(".stl"):
+        raise HTTPException(status_code=400, detail="File must be an STL file")
+
+    file_data = await file.read()
+    if len(file_data) > MAX_FILE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File exceeds {settings.max_file_size_mb} MB limit",
+        )
+    if not file_data:
+        raise HTTPException(status_code=400, detail="STL file is empty")
+
+    try:
+        scene = await slicer_client.import_stl_draft(
+            file_data,
+            filename=file.filename,
+            machine_profile=machine_profile,
+            process_profile=process_profile,
+            plate_type=plate_type.strip(),
+            auto_orient=auto_orient,
+            arrange=arrange,
+            center=center,
+        )
+    except SlicingError as e:
+        raise HTTPException(status_code=502, detail=f"STL import failed: {e}")
+
+    token = str(scene.get("draft_token") or "")
+    if not token:
+        raise HTTPException(status_code=502, detail="STL import did not return a draft token")
+    _stl_draft_source_path(token).write_bytes(file_data)
+    return _stl_scene_with_source_url(scene)
+
+
+@app.get("/api/stl-drafts/{draft_token}/source.stl")
+async def get_stl_draft_source(draft_token: str):
+    path = _stl_draft_source_path(draft_token)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="STL draft source not found")
+    return Response(
+        content=path.read_bytes(),
+        media_type="model/stl",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+@app.post("/api/stl-drafts/{draft_token}/layout")
+async def layout_stl_draft(draft_token: str, body: StlDraftLayoutRequest):
+    if slicer_client is None:
+        raise HTTPException(
+            status_code=400,
+            detail="STL preview not available: ORCASLICER_API_URL not configured",
+        )
+    source_path = _stl_draft_source_path(draft_token)
+    if not source_path.exists():
+        raise HTTPException(
+            status_code=410,
+            detail="STL draft source no longer available; re-upload to continue",
+        )
+    try:
+        scene = await slicer_client.layout_stl_draft(draft_token, body.action)
+    except SlicingError as e:
+        raise HTTPException(status_code=502, detail=f"STL layout failed: {e}")
+    return _stl_scene_with_source_url(scene)
+
+
+@app.post("/api/stl-drafts/{draft_token}/3mf")
+async def materialize_stl_draft(draft_token: str):
+    if slicer_client is None:
+        raise HTTPException(
+            status_code=400,
+            detail="STL preview not available: ORCASLICER_API_URL not configured",
+        )
+    source_path = _stl_draft_source_path(draft_token)
+    if not source_path.exists():
+        raise HTTPException(
+            status_code=410,
+            detail="STL draft source no longer available; re-upload to continue",
+        )
+    try:
+        materialized = await slicer_client.materialize_stl_draft(draft_token)
+    except SlicingError as e:
+        raise HTTPException(status_code=502, detail=f"STL materialize failed: {e}")
+    try:
+        source_path.unlink()
+    except OSError as e:
+        logger.warning("Failed to delete materialized STL draft %s: %s", source_path, e)
+    return Response(
+        content=materialized["content"],
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": _attachment_disposition(f"{draft_token}.3mf"),
+            "X-Slicer-Input-Token": str(materialized.get("input_token") or ""),
+        },
+    )
 
 
 def _background_submit(

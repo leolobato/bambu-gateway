@@ -682,6 +682,81 @@ class SlicerClient:
             )
         return resp.json()
 
+    async def import_stl_draft(
+        self,
+        data: bytes,
+        *,
+        filename: str,
+        machine_profile: str,
+        process_profile: str,
+        plate_type: str = "",
+        auto_orient: bool = False,
+        arrange: bool = True,
+        center: bool = True,
+    ) -> dict:
+        """POST /stl/import and return the preview scene."""
+        files = {"file": (filename, data, "model/stl")}
+        form = {
+            "machine_id": machine_profile,
+            "process_id": process_profile,
+            "auto_orient": "true" if auto_orient else "false",
+            "arrange": "true" if arrange else "false",
+            "center": "true" if center else "false",
+        }
+        if plate_type:
+            form["plate_type"] = plate_type
+        try:
+            async with httpx.AsyncClient(timeout=120.0, transport=self._transport) as client:
+                resp = await client.post(f"{self._base_url}/stl/import", data=form, files=files)
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        if resp.status_code != 200:
+            raise SlicingError(self._format_slicer_error(resp))
+        return resp.json()
+
+    async def layout_stl_draft(self, draft_token: str, action: str) -> dict:
+        """POST /stl/{draft_token}/layout and return the updated scene."""
+        url = f"{self._base_url}/stl/{quote(draft_token, safe='')}/layout"
+        try:
+            async with httpx.AsyncClient(timeout=120.0, transport=self._transport) as client:
+                resp = await client.post(url, json={"action": action})
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        if resp.status_code != 200:
+            raise SlicingError(self._format_slicer_error(resp))
+        return resp.json()
+
+    async def materialize_stl_draft(self, draft_token: str) -> dict[str, Any]:
+        """Materialize an STL draft to 3MF bytes via orcaslicer-headless."""
+        url = f"{self._base_url}/stl/{quote(draft_token, safe='')}/3mf"
+        try:
+            async with httpx.AsyncClient(timeout=120.0, transport=self._transport) as client:
+                resp = await client.post(url)
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        if resp.status_code != 200:
+            raise SlicingError(self._format_slicer_error(resp))
+        payload = resp.json()
+        input_token = str(payload.get("input_token") or "")
+        if not input_token:
+            raise SlicingError("Slicer STL materialize response did not include input_token")
+        return {
+            "input_token": input_token,
+            "draft_token": payload.get("draft_token", draft_token),
+            "content": await self._download_3mf(input_token),
+        }
+
+    def _format_slicer_error(self, resp: httpx.Response) -> str:
+        try:
+            payload = resp.json()
+        except ValueError:
+            return f"Slicer returned {resp.status_code}: {resp.text[:500]}"
+        code = payload.get("code") or payload.get("error")
+        message = payload.get("message") or payload.get("detail") or resp.text[:500]
+        if code:
+            return f"Slicer returned {resp.status_code} ({code}): {message}"
+        return f"Slicer returned {resp.status_code}: {message}"
+
     async def upload_3mf(self, data: bytes, *, filename: str = "input.3mf") -> dict:
         """POST /3mf — upload bytes, get a token + sha256.
 
