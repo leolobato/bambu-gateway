@@ -24,8 +24,12 @@ import type {
 
 const ACTION_LABELS: Record<StlLayoutAction, { label: string; icon: typeof Compass }> = {
   auto_orient: { label: 'Auto-orient', icon: Compass },
-  rotate_z_90: { label: 'Rotate +90°', icon: RotateCw },
-  rotate_z_minus_90: { label: 'Rotate −90°', icon: RotateCcw },
+  rotate_x_90: { label: 'X +90°', icon: RotateCw },
+  rotate_x_minus_90: { label: 'X −90°', icon: RotateCcw },
+  rotate_y_90: { label: 'Y +90°', icon: RotateCw },
+  rotate_y_minus_90: { label: 'Y −90°', icon: RotateCcw },
+  rotate_z_90: { label: 'Z +90°', icon: RotateCw },
+  rotate_z_minus_90: { label: 'Z −90°', icon: RotateCcw },
   center: { label: 'Center', icon: Move },
   arrange: { label: 'Arrange', icon: Grid3x3 },
   reset: { label: 'Reset', icon: Undo2 },
@@ -33,6 +37,10 @@ const ACTION_LABELS: Record<StlLayoutAction, { label: string; icon: typeof Compa
 
 const ACTION_ORDER: StlLayoutAction[] = [
   'auto_orient',
+  'rotate_x_90',
+  'rotate_x_minus_90',
+  'rotate_y_90',
+  'rotate_y_minus_90',
   'rotate_z_90',
   'rotate_z_minus_90',
   'center',

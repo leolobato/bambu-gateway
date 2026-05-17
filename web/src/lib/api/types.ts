@@ -257,6 +257,10 @@ export interface ResolveForMachineResponse {
 
 export type StlLayoutAction =
   | 'auto_orient'
+  | 'rotate_x_90'
+  | 'rotate_x_minus_90'
+  | 'rotate_y_90'
+  | 'rotate_y_minus_90'
   | 'rotate_z_90'
   | 'rotate_z_minus_90'
   | 'center'

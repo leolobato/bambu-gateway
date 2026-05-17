@@ -71,6 +71,26 @@ describe('stl draft api', () => {
     });
   });
 
+  test('layoutStlDraft supports X-axis rotation actions', async () => {
+    const fetchMock = mockFetch(Response.json({
+      draft_token: 'draft1234',
+      source_filename: 'part.stl',
+      source_url: '/api/stl-drafts/draft1234/source.stl',
+      bed: { width: 180, depth: 180, printable_area: [] },
+      objects: [],
+      warnings: [],
+      actions: ['rotate_x_90'],
+    }));
+
+    await layoutStlDraft('draft1234', 'rotate_x_90');
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/stl-drafts/draft1234/layout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'rotate_x_90' }),
+    });
+  });
+
   test('materializeStlDraft returns 3mf blob', async () => {
     mockFetch(new Response('3mf-bytes', { status: 200 }));
 

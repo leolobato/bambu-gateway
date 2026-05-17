@@ -51,6 +51,7 @@ const StlPreviewCard = lazy(() =>
 import type {
   AMSTray,
   PrintEstimate,
+  SlicerProcess,
   StlLayoutAction,
   ThreeMFInfo,
 } from '@/lib/api/types';
@@ -61,8 +62,23 @@ import { hasPrintEstimate } from '@/lib/print-estimate';
 // machine and any in-flight slice/upload polling survive navigation away
 // from /print (e.g. flipping to /jobs and back).
 
+function pickDefaultProcess(processes: SlicerProcess[] | undefined): string {
+  const usable = (processes ?? []).filter((p) => p.setting_id);
+  const isNormalLayer = (p: SlicerProcess) => {
+    const layerHeight = Number.parseFloat(p.layer_height ?? '');
+    return Number.isFinite(layerHeight) && Math.abs(layerHeight - 0.2) < 0.0001;
+  };
+  const standard = usable.find(
+    (p) => isNormalLayer(p) && p.name.toLowerCase().includes('standard'),
+  );
+  return standard?.setting_id
+    ?? usable.find(isNormalLayer)?.setting_id
+    ?? usable[0]?.setting_id
+    ?? '';
+}
+
 export default function PrintRoute() {
-  const { activePrinterId } = usePrinterContext();
+  const { activePrinterId, setActivePrinterId } = usePrinterContext();
   const navigate = useNavigate();
 
   const {
@@ -87,39 +103,55 @@ export default function PrintRoute() {
     queryFn: getSlicerMachines,
     staleTime: Infinity,
   });
-  // 3MF import seeds `settings.machine` with the printer's display name
-  // (e.g. "Bambu Lab P2S 0.4 nozzle"); a separate effect rewrites it to a
-  // setting_id once `machinesQuery` resolves. The slicer only accepts
-  // setting_ids on `?machine=`, so wait for that translation before firing.
-  const machineIsSettingId = !!settings.machine
-    && !!machinesQuery.data?.some((m) => m.setting_id === settings.machine);
-  const processesQuery = useQuery({
-    queryKey: ['slicer', 'processes', settings.machine],
-    queryFn: () => getSlicerProcesses(settings.machine || undefined),
-    staleTime: Infinity,
-    enabled: machineIsSettingId,
-  });
-  const plateTypesQuery = useQuery({
-    queryKey: ['slicer', 'plate-types'],
-    queryFn: getSlicerPlateTypes,
-    staleTime: Infinity,
-  });
-
   // Active printer's name (for the "Target printer" subtitle).
   const printersQuery = useQuery({
     queryKey: ['printers'],
     queryFn: listPrinters,
     refetchInterval: 4_000,
   });
-  const activePrinter = printersQuery.data?.printers.find((p) => p.id === activePrinterId);
+  const printers = printersQuery.data?.printers ?? [];
+  useEffect(() => {
+    if (printers.length === 0) return;
+    const stillExists = activePrinterId && printers.some((p) => p.id === activePrinterId);
+    if (stillExists) return;
+    setActivePrinterId(printers[0].id);
+  }, [activePrinterId, printers, setActivePrinterId]);
+  const activePrinter = printers.find((p) => p.id === activePrinterId) ?? printers[0];
+  const requestPrinterId = activePrinter?.id ?? activePrinterId ?? null;
   const activePrinterName = activePrinter?.name ?? null;
+  const defaultMachine = useMemo(() => {
+    const configuredMachine = activePrinter?.machine_model?.trim() ?? '';
+    if (!configuredMachine) return '';
+    const matchById = machinesQuery.data?.some((m) => m.setting_id === configuredMachine);
+    return matchById ? configuredMachine : '';
+  }, [activePrinter?.machine_model, machinesQuery.data]);
+  const effectiveMachine = settings.machine || defaultMachine;
+  // 3MF import seeds `settings.machine` with the printer's display name
+  // (e.g. "Bambu Lab P2S 0.4 nozzle"); a separate effect rewrites it to a
+  // setting_id once `machinesQuery` resolves. The slicer only accepts
+  // setting_ids on `?machine=`, so wait for that translation before firing.
+  const machineIsSettingId = !!effectiveMachine
+    && !!machinesQuery.data?.some((m) => m.setting_id === effectiveMachine);
+  const processesQuery = useQuery({
+    queryKey: ['slicer', 'processes', effectiveMachine],
+    queryFn: () => getSlicerProcesses(effectiveMachine || undefined),
+    staleTime: Infinity,
+    enabled: machineIsSettingId,
+  });
+  const defaultProcess = pickDefaultProcess(processesQuery.data);
+  const effectiveProcess = settings.process || defaultProcess;
+  const plateTypesQuery = useQuery({
+    queryKey: ['slicer', 'plate-types'],
+    queryFn: getSlicerPlateTypes,
+    staleTime: Infinity,
+  });
 
   // AMS for the active printer (for tray dropdowns).
   const amsQuery = useQuery({
-    queryKey: ['ams', activePrinterId],
-    queryFn: () => getAms(activePrinterId ?? undefined),
+    queryKey: ['ams', requestPrinterId],
+    queryFn: () => getAms(requestPrinterId ?? undefined),
     refetchInterval: 4_000,
-    enabled: !!activePrinterId,
+    enabled: !!requestPrinterId,
     retry: false,
   });
   const trays: AMSTray[] = useMemo(() => {
@@ -272,9 +304,9 @@ export default function PrintRoute() {
         ? info.filaments.filter((f) => f.used)
         : info.filaments;
       const initialMapping: FilamentMapping = {};
-      if (activePrinterId) {
+      if (requestPrinterId) {
         try {
-          const matches = await getFilamentMatches(activePrinterId, usedFilaments);
+          const matches = await getFilamentMatches(requestPrinterId, usedFilaments);
           for (const m of matches.matches) {
             initialMapping[m.index] = m.preferred_tray_slot ?? -1;
           }
@@ -319,11 +351,11 @@ export default function PrintRoute() {
       toast.error(`Failed to parse 3MF: ${(err as Error).message}`);
       setState({ kind: 'empty' });
     }
-  }, [activePrinterId, plateTypesQuery.data, resetAllProcessOverrides, setProcessSheetOpen]);
+  }, [requestPrinterId, plateTypesQuery.data, resetAllProcessOverrides, setProcessSheetOpen]);
 
   const importStl = useCallback(
     async (file: File) => {
-      if (!settings.machine || !settings.process) {
+      if (!effectiveMachine || !effectiveProcess) {
         toast.error('Pick a machine and process before importing STL.');
         return;
       }
@@ -335,8 +367,8 @@ export default function PrintRoute() {
       try {
         const scene = await createStlDraft({
           file,
-          machineProfile: settings.machine,
-          processProfile: settings.process,
+          machineProfile: effectiveMachine,
+          processProfile: effectiveProcess,
           plateType: settings.plateType || undefined,
           autoOrient: false,
           arrange: true,
@@ -356,7 +388,7 @@ export default function PrintRoute() {
         setState({ kind: 'empty' });
       }
     },
-    [settings.machine, settings.process, settings.plateType, setProcessSheetOpen, setState],
+    [effectiveMachine, effectiveProcess, settings.plateType, setProcessSheetOpen, setState],
   );
 
   const onDropFile = useCallback(
@@ -443,7 +475,7 @@ export default function PrintRoute() {
     try {
       job = await submitSliceJob({
         file,
-        printerId: activePrinterId ?? undefined,
+        printerId: requestPrinterId ?? undefined,
         plateId: selectedPlateId,
         machineProfile: settings.machine,
         processProfile: settings.process,
@@ -556,7 +588,7 @@ export default function PrintRoute() {
   ) {
     let resp;
     try {
-      resp = await printFromJob(jobId, activePrinterId ?? undefined);
+      resp = await printFromJob(jobId, requestPrinterId ?? undefined);
     } catch (err) {
       setState({
         kind: 'imported',
@@ -739,7 +771,7 @@ export default function PrintRoute() {
     try {
       const resp = await printGcodeFile(
         file,
-        activePrinterId ?? undefined,
+        requestPrinterId ?? undefined,
         buildFilamentProfilesPayload(info),
         selectedPlateId,
       );
