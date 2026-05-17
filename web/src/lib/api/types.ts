@@ -253,6 +253,54 @@ export interface ResolveForMachineResponse {
   plate_type: ResolvedPlateType | null;
 }
 
+// --- STL draft preview ---
+
+export type StlLayoutAction =
+  | 'auto_orient'
+  | 'rotate_z_90'
+  | 'rotate_z_minus_90'
+  | 'center'
+  | 'arrange'
+  | 'reset';
+
+export interface StlTransform {
+  offset: [number, number, number];
+  rotation: [number, number, number];
+  scale: [number, number, number];
+}
+
+export interface StlDraftObject {
+  id: string;
+  name: string;
+  transform: StlTransform;
+  mesh_transform: StlTransform;
+  bbox: {
+    min: [number, number, number];
+    max: [number, number, number];
+  };
+  printable: boolean;
+}
+
+export interface StlDraftWarning {
+  code: string;
+  message: string;
+  count?: number;
+}
+
+export interface StlDraftScene {
+  draft_token: string;
+  source_filename: string;
+  source_url: string;
+  bed: {
+    width: number;
+    depth: number;
+    printable_area: [number, number][];
+  };
+  objects: StlDraftObject[];
+  warnings: StlDraftWarning[];
+  actions: StlLayoutAction[];
+}
+
 // --- Filament matching ---
 
 export type FilamentMatchReason = 'exact_filament_id' | 'type_fallback' | 'none';

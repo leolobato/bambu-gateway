@@ -7,9 +7,11 @@ import { cn } from '@/lib/utils';
 export function DropZoneCard({
   onFile,
   targetPrinterName,
+  accept = '.3mf,.stl',
 }: {
   onFile: (file: File) => void;
   targetPrinterName: string | null;
+  accept?: string;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -22,12 +24,12 @@ export function DropZoneCard({
       )}
       <div className="rounded-2xl border border-dashed border-text-2 bg-card flex flex-col items-center gap-3 py-12 px-6 text-center">
         <Upload className="w-7 h-7 text-text-1" aria-hidden />
-        <div className="text-[18px] font-semibold text-white">Drop a .3mf file here</div>
+        <div className="text-[18px] font-semibold text-white">Drop a .3mf or .stl file here</div>
         <div className="text-sm text-text-1">Or import from your device</div>
         <input
           ref={inputRef}
           type="file"
-          accept=".3mf"
+          accept={accept}
           className="hidden"
           onChange={(e) => {
             const f = e.target.files?.[0];
@@ -62,7 +64,7 @@ export function DropOverlay({ visible }: { visible: boolean }) {
       <div className="relative rounded-2xl border-2 border-dashed border-accent bg-card px-8 py-10 flex flex-col items-center gap-3">
         <Upload className="w-8 h-8 text-accent" aria-hidden />
         <div className="text-[18px] font-semibold text-white">Drop to import</div>
-        <div className="text-sm text-text-1">Releases a .3mf file</div>
+        <div className="text-sm text-text-1">Releases a .3mf or .stl file</div>
       </div>
     </div>,
     document.body,

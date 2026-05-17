@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RotateCcw } from 'lucide-react';
@@ -40,9 +40,18 @@ import { notifyDroppedOverrides } from '@/lib/process/drop-notice';
 import { useDropZone } from '@/lib/use-drop-zone';
 import { usePrinterContext } from '@/lib/printer-context';
 import { usePrintContext, type BannerData } from '@/lib/print-context';
+import {
+  createStlDraft,
+  layoutStlDraft,
+  materializeStlDraft,
+} from '@/lib/api/stl-drafts';
+const StlPreviewCard = lazy(() =>
+  import('@/components/print/stl-preview-card').then((m) => ({ default: m.StlPreviewCard })),
+);
 import type {
   AMSTray,
   PrintEstimate,
+  StlLayoutAction,
   ThreeMFInfo,
 } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
@@ -312,8 +321,57 @@ export default function PrintRoute() {
     }
   }, [activePrinterId, plateTypesQuery.data, resetAllProcessOverrides, setProcessSheetOpen]);
 
-  const onDropFile = useCallback((file: File) => void importFile(file), [importFile]);
-  const { dragging } = useDropZone({ accept: '.3mf', onFile: onDropFile, enabled: ddEnabled });
+  const importStl = useCallback(
+    async (file: File) => {
+      if (!settings.machine || !settings.process) {
+        toast.error('Pick a machine and process before importing STL.');
+        return;
+      }
+      setProcessSheetOpen(false);
+      // Reuse importId so a fresh STL pick mid-preview supersedes the prior one.
+      const importId = `stl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      importIdRef.current = importId;
+      setState({ kind: 'importing', file, importId });
+      try {
+        const scene = await createStlDraft({
+          file,
+          machineProfile: settings.machine,
+          processProfile: settings.process,
+          plateType: settings.plateType || undefined,
+          autoOrient: false,
+          arrange: true,
+          center: true,
+        });
+        if (importIdRef.current !== importId) return;
+        setState({
+          kind: 'stlPreview',
+          file,
+          scene,
+          autoOrient: false,
+          applyingAction: null,
+        });
+      } catch (err) {
+        if (importIdRef.current !== importId) return;
+        toast.error(`Failed to import STL: ${(err as Error).message}`);
+        setState({ kind: 'empty' });
+      }
+    },
+    [settings.machine, settings.process, settings.plateType, setProcessSheetOpen, setState],
+  );
+
+  const onDropFile = useCallback(
+    (file: File) => {
+      const lower = file.name.toLowerCase();
+      if (lower.endsWith('.stl')) void importStl(file);
+      else void importFile(file);
+    },
+    [importFile, importStl],
+  );
+  const { dragging } = useDropZone({
+    accept: ['.3mf', '.stl'],
+    onFile: onDropFile,
+    enabled: ddEnabled,
+  });
 
   function clearImport() {
     sliceAbortRef.current?.abort();
@@ -587,6 +645,62 @@ export default function PrintRoute() {
     await startPrintUploadFromJob(state.jobId, state.file, state.info, state.estimate);
   }
 
+  async function applyStlLayoutAction(action: StlLayoutAction) {
+    if (state.kind !== 'stlPreview') return;
+    const previous = state;
+    setState({ ...previous, applyingAction: action });
+    try {
+      const scene = await layoutStlDraft(previous.scene.draft_token, action);
+      setState((cur) =>
+        cur.kind === 'stlPreview' && cur.scene.draft_token === previous.scene.draft_token
+          ? { ...cur, scene, applyingAction: null, banner: undefined }
+          : cur,
+      );
+    } catch (err) {
+      setState((cur) =>
+        cur.kind === 'stlPreview' && cur.scene.draft_token === previous.scene.draft_token
+          ? {
+              ...cur,
+              applyingAction: null,
+              banner: {
+                variant: 'error',
+                title: 'Layout failed',
+                details: (err as Error).message,
+              },
+            }
+          : cur,
+      );
+    }
+  }
+
+  async function acceptStlPreview() {
+    if (state.kind !== 'stlPreview') return;
+    const draftToken = state.scene.draft_token;
+    const originalName = state.file.name;
+    try {
+      const blob = await materializeStlDraft(draftToken);
+      const threeMf = new File(
+        [blob],
+        originalName.replace(/\.stl$/i, '.3mf'),
+        { type: 'application/octet-stream' },
+      );
+      await importFile(threeMf);
+    } catch (err) {
+      setState((cur) =>
+        cur.kind === 'stlPreview' && cur.scene.draft_token === draftToken
+          ? {
+              ...cur,
+              banner: {
+                variant: 'error',
+                title: 'Could not create 3MF',
+                details: (err as Error).message,
+              },
+            }
+          : cur,
+      );
+    }
+  }
+
   function cancelSlicing() {
     if (state.kind !== 'slicing') return;
     const jobId = state.jobId;
@@ -793,6 +907,20 @@ export default function PrintRoute() {
 
       {state.kind === 'importing' && (
         <ImportingCard filename={state.file.name} onCancel={clearImport} />
+      )}
+
+      {state.kind === 'stlPreview' && (
+        <Suspense fallback={<ImportingCard filename={state.file.name} onCancel={clearImport} />}>
+          <StlPreviewCard
+            filename={state.file.name}
+            scene={state.scene}
+            applyingAction={state.applyingAction}
+            banner={state.banner}
+            onAction={applyStlLayoutAction}
+            onAccept={acceptStlPreview}
+            onCancel={clearImport}
+          />
+        </Suspense>
       )}
 
       {state.kind === 'sent' && (

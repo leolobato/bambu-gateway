@@ -15,6 +15,8 @@ import type { FilamentMapping } from '@/components/print/filaments-group';
 import type {
   PrintEstimate,
   SettingsTransferInfo,
+  StlDraftScene,
+  StlLayoutAction,
   ThreeMFInfo,
 } from '@/lib/api/types';
 
@@ -35,6 +37,18 @@ export type PrintState =
       // Bumped on every fresh pick. Stale resolutions check this against
       // the current state to decide whether to commit their result.
       importId: string;
+    }
+  | {
+      // STL files first land in a draft preview owned by orcaslicer-headless.
+      // The user picks layout actions (auto-orient/rotate/arrange/...) and
+      // accepts; on accept we materialize the draft to a real 3MF and run it
+      // through the normal `importFile`/`imported` flow.
+      kind: 'stlPreview';
+      file: File;
+      scene: StlDraftScene;
+      autoOrient: boolean;
+      applyingAction: StlLayoutAction | null;
+      banner?: BannerData;
     }
   | {
       kind: 'imported';
