@@ -140,6 +140,10 @@ exists.
 | `POST` | `/api/print-stream` | Upload and print with SSE progress |
 | `POST` | `/api/print-preview` | Slice and preview without printing |
 | `POST` | `/api/parse-3mf` | Parse 3MF metadata without printing |
+| `POST` | `/api/stl-drafts` | Import an STL into an orcaslicer-headless draft for preview |
+| `GET` | `/api/stl-drafts/{id}/source.stl` | Stream the cached STL bytes for browser rendering |
+| `POST` | `/api/stl-drafts/{id}/layout` | Apply a preset layout action (auto-orient, rotate, center, arrange, reset) |
+| `POST` | `/api/stl-drafts/{id}/3mf` | Materialize the draft to a 3MF the print flow can consume |
 | `GET` | `/api/slicer/machines` | List slicer machine profiles |
 | `GET` | `/api/slicer/processes` | List slicer process profiles |
 | `GET` | `/api/slicer/filaments` | List slicer filament profiles |
@@ -190,6 +194,32 @@ Required endpoints (consumed by `app/slicer_client.py`):
 - `GET /3mf/{token}/plates/{n}/thumbnail` — PNG bytes
 - `DELETE /3mf/{token}` — drop cached upload
 - `POST /slice/v2` — slice, returns estimate + output token
+
+## STL preview workflow
+
+Dropping a `.stl` on the Print page kicks off a draft preview owned by
+`orcaslicer-headless`. The gateway proxies the import, caches the source
+STL bytes locally so the browser can render them with Three.js, and
+forwards layout actions to the slicer:
+
+1. **Upload** — `POST /api/stl-drafts` (with `machine_profile`,
+   `process_profile`, optional `plate_type`, `auto_orient`, `arrange`,
+   `center`) imports the STL into the slicer and returns the initial
+   scene plus a `source_url` for the cached STL bytes.
+2. **Preview** — the SPA loads `source_url` with `STLLoader`, draws the
+   printable bed, and applies each object's `mesh_transform` then its
+   instance `transform` so the browser shows what the slicer sees.
+3. **Layout** — `POST /api/stl-drafts/{id}/layout` runs preset actions
+   (`auto_orient`, `rotate_z_90`, `rotate_z_minus_90`, `center`,
+   `arrange`, `reset`) and returns the updated scene.
+4. **Accept** — `POST /api/stl-drafts/{id}/3mf` materializes the draft
+   into a 3MF that is fed straight into the existing
+   `/api/parse-3mf` → slice → upload flow, so filament mapping,
+   slicing settings, and printer upload are unchanged.
+
+V1 supports preset actions only — there is no freehand drag/rotate/scale
+in the browser; orcaslicer-headless remains the authority for STL
+orientation, arrange, and 3MF generation.
 
 ## How It Works
 

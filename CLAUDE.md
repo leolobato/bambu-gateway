@@ -139,6 +139,14 @@ Previews are stored in `/tmp/bambu-gateway-previews/` and cleaned up on restart.
 - `GET /api/slicer/{machines,processes,filaments,plate-types}` — proxy slicer profiles
 - `GET/POST/PUT/DELETE /api/settings/printers` — printer CRUD
 
+## AMS auto refill
+
+AMS auto refill is a printer-level setting, not a per-print option. This mirrors
+OrcaSlicer GUI behavior: print submission sends only `use_ams` and AMS mapping,
+while the AMS settings toggle sends `print_option.auto_switch_filament`. The
+gateway parses the setting from printer reports (`cfg` bit 18 or `home_flag`
+bit 10) and exposes it through `GET /api/ams` as `auto_refill_enabled`.
+
 ## Configuration
 
 Printer config is persisted to `data/printers.json` (the `data/` directory is
