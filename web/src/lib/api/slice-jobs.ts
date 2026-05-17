@@ -20,6 +20,7 @@ export interface SubmitSliceJobArgs {
   plateType?: string;
   autoPrint?: boolean;
   processOverrides?: Record<string, string>;
+  copies?: number;
 }
 
 export async function submitSliceJob(args: SubmitSliceJobArgs): Promise<SliceJob> {
@@ -35,6 +36,7 @@ export async function submitSliceJob(args: SubmitSliceJobArgs): Promise<SliceJob
   }
   if (args.plateType) fd.append('plate_type', args.plateType);
   if (args.autoPrint) fd.append('auto_print', 'true');
+  if (args.copies != null && args.copies > 1) fd.append('copies', String(args.copies));
 
   const res = await fetch('/api/slice-jobs', { method: 'POST', body: fd });
   if (!res.ok) {

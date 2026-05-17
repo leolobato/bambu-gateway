@@ -1472,6 +1472,7 @@ async def print_preview(
     filament_profiles: str = Form(""),
     plate_type: str = Form(""),
     process_overrides: str = Form(""),
+    copies: int = Form(1),
 ):
     """Slice synchronously via the job manager and return the sliced bytes.
 
@@ -1494,6 +1495,11 @@ async def print_preview(
         raise HTTPException(
             status_code=400,
             detail="machine_profile and process_profile are required",
+        )
+    if not (1 <= copies <= 100):
+        raise HTTPException(
+            status_code=400,
+            detail=f"copies must be between 1 and 100 (got {copies})",
         )
     process_overrides_dict = _parse_process_overrides_form(process_overrides)
     try:
@@ -1525,6 +1531,7 @@ async def print_preview(
         printer_id=printer_id or None,
         auto_print=False,
         process_overrides=process_overrides_dict,
+        copies=copies,
     )
 
     # Wait for terminal state (bounded — preview is meant to be sync-ish).
@@ -1592,6 +1599,7 @@ async def print_file_stream(
     slice_only: bool = Form(False),
     preview: bool = Form(False),
     process_overrides: str = Form(""),
+    copies: int = Form(1),
 ):
     """Slice and optionally print a 3MF, streaming progress via SSE.
 
@@ -1615,6 +1623,11 @@ async def print_file_stream(
         raise HTTPException(
             status_code=400,
             detail=f"File exceeds {settings.max_file_size_mb} MB limit",
+        )
+    if not (1 <= copies <= 100):
+        raise HTTPException(
+            status_code=400,
+            detail=f"copies must be between 1 and 100 (got {copies})",
         )
     process_overrides_dict = _parse_process_overrides_form(process_overrides)
     try:
@@ -1651,6 +1664,7 @@ async def print_file_stream(
         printer_id=pid or None,
         auto_print=auto_print,
         process_overrides=process_overrides_dict,
+        copies=copies,
     )
 
     async def generate():
@@ -1803,6 +1817,7 @@ async def create_slice_job(
     printer_id: str = Form(""),
     auto_print: bool = Form(False),
     process_overrides: str = Form(""),
+    copies: int = Form(1),
 ):
     if slice_jobs is None or slicer_client is None:
         raise HTTPException(
@@ -1817,6 +1832,11 @@ async def create_slice_job(
         raise HTTPException(
             status_code=400,
             detail=f"File exceeds {settings.max_file_size_mb} MB limit",
+        )
+    if not (1 <= copies <= 100):
+        raise HTTPException(
+            status_code=400,
+            detail=f"copies must be between 1 and 100 (got {copies})",
         )
     try:
         info = await parse_3mf_via_slicer(
@@ -1861,6 +1881,7 @@ async def create_slice_job(
         printer_id=printer_id or None,
         auto_print=auto_print,
         process_overrides=process_overrides_dict,
+        copies=copies,
     )
     return _slice_job_to_response(job)
 

@@ -109,6 +109,7 @@ async def test_print_preview_returns_base64_estimate_header(monkeypatch, tmp_pat
             process_profile="0.16mm",
             filament_profiles="",
             plate_type="",
+            copies=1,
         )
     finally:
         await manager.stop()
@@ -174,6 +175,7 @@ async def test_print_stream_preview_result_includes_estimate(monkeypatch, tmp_pa
             filament_profiles="",
             plate_type="",
             preview=True,
+            copies=1,
         )
 
         body = b""
@@ -253,6 +255,7 @@ async def test_print_stream_preview_uses_estimate_from_sse_result(monkeypatch, t
             filament_profiles="",
             plate_type="",
             preview=True,
+            copies=1,
         )
 
         body = b""

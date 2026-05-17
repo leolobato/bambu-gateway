@@ -68,6 +68,7 @@ class SliceJob:
     # blobs (paths as strings for JSON-friendliness; converted to Path in code)
     input_path: str
     process_overrides: dict[str, str] | None = None
+    copies: int = 1
     output_path: str | None = None
     # Authored 3MF slot index per project-filament position. For sparse 3MFs
     # (e.g. a single filament authored on AMS slot 1) position and slot
@@ -112,6 +113,7 @@ class SliceJob:
         auto_print: bool,
         input_path: Path,
         process_overrides: dict[str, str] | None = None,
+        copies: int = 1,
         slot_indices: list[int] | None = None,
     ) -> "SliceJob":
         ts = _now()
@@ -130,6 +132,7 @@ class SliceJob:
             auto_print=auto_print,
             input_path=str(input_path),
             process_overrides=process_overrides,
+            copies=copies,
             slot_indices=slot_indices,
         )
 
@@ -241,6 +244,7 @@ class _SlicerLike(Protocol):
         plate_type: str = "",
         plate: int = 1,
         process_overrides: dict[str, str] | None = None,
+        copies: int = 1,
     ): ...
 
 
@@ -520,6 +524,7 @@ class SliceJobManager:
         printer_id: str | None,
         auto_print: bool,
         process_overrides: dict[str, str] | None = None,
+        copies: int = 1,
         slot_indices: list[int] | None = None,
     ) -> SliceJob:
         # Allocate job id, then write input blob at the matching path so the
@@ -540,6 +545,7 @@ class SliceJobManager:
             auto_print=auto_print,
             input_path=input_path,
             process_overrides=process_overrides,
+            copies=copies,
             slot_indices=slot_indices,
         )
         # SliceJob.new generates its own id, but we want it to match the blob.
@@ -612,6 +618,7 @@ class SliceJobManager:
                 job.filament_profiles, plate_type=job.plate_type,
                 plate=job.plate_id or 1,
                 process_overrides=job.process_overrides,
+                copies=job.copies,
             )
             try:
                 while True:

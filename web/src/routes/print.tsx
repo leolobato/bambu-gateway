@@ -254,6 +254,7 @@ export default function PrintRoute() {
         machine: prev.machine || info.printer.printer_settings_id || '',
         process: prev.process || info.print_profile.print_settings_id || '',
         plateType: prev.plateType || matchedPlateType,
+        copies: prev.copies,
       }));
       // Filament-tray defaults via backend matcher. Only ask about filaments
       // any object actually references — declared-but-unused slots get padded
@@ -392,6 +393,7 @@ export default function PrintRoute() {
         plateType: settings.plateType || undefined,
         autoPrint: false,
         processOverrides,
+        copies: settings.copies,
       });
     } catch (err) {
       setState({
