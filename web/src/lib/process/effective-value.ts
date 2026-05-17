@@ -26,13 +26,22 @@ export function effectiveValue(
  * footers should call this.
  */
 export function displayValue(value: string, option: ProcessOption | undefined | null): string {
-  if (!option || option.type !== 'coEnum') return value;
-  const values = option.enumValues;
-  const labels = option.enumLabels;
-  if (!values || !labels) return value;
-  const i = values.indexOf(value);
-  if (i < 0 || i >= labels.length) return value;
-  return labels[i];
+  if (!option) return value;
+  if (option.type === 'coEnum') {
+    const values = option.enumValues;
+    const labels = option.enumLabels;
+    if (!values || !labels) return value;
+    const i = values.indexOf(value);
+    if (i < 0 || i >= labels.length) return value;
+    return labels[i];
+  }
+  // Strip a trailing unit that matches sidetext so the unit isn't rendered
+  // twice when callers display sidetext separately next to the value.
+  const suffix = option.sidetext;
+  if (suffix && value.length > suffix.length && value.endsWith(suffix)) {
+    return value.slice(0, -suffix.length).trimEnd();
+  }
+  return value;
 }
 
 /**
