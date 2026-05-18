@@ -1,6 +1,8 @@
 """Unit tests for _adapt() — the inspect→ThreeMFInfo mapping."""
 from __future__ import annotations
 
+import pytest
+
 from app.parse_3mf import _adapt
 
 
@@ -89,3 +91,29 @@ def test_adapter_unknown_per_plate_falls_back_to_all():
     )
     info = _adapt(insp, plate_id=None, thumbnails={})
     assert all(f.used for f in info.filaments)
+
+
+@pytest.mark.asyncio
+async def test_parse_3mf_token_uses_existing_token_without_upload_or_delete(monkeypatch):
+    from app.parse_3mf import parse_3mf_token_via_slicer
+
+    calls: list[str] = []
+
+    class FakeSlicer:
+        _base_url = "http://slicer"
+
+        async def inspect_3mf_token(self, token: str):
+            calls.append(f"inspect:{token}")
+            return {
+                "plates": [{"id": 1, "name": "", "objects": [], "used_filament_indices": []}],
+                "filaments": [],
+                "thumbnail_urls": [],
+                "print_settings_id": "GP000",
+                "printer_settings_id": "GM020",
+            }
+
+    info = await parse_3mf_token_via_slicer("tok3mf", FakeSlicer(), plate_id=1)
+
+    assert calls == ["inspect:tok3mf"]
+    assert info.print_profile.print_settings_id == "GP000"
+    assert info.printer.printer_settings_id == "GM020"

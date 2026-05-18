@@ -52,6 +52,21 @@ async def parse_3mf_via_slicer(
         await slicer.delete_token(token)
 
 
+async def parse_3mf_token_via_slicer(
+    token: str,
+    slicer: SlicerClient,
+    *,
+    plate_id: Optional[int] = None,
+    include_thumbnails: bool = True,
+) -> ThreeMFInfo:
+    """Inspect an existing slicer token and adapt it to ThreeMFInfo."""
+    insp = await slicer.inspect_3mf_token(token)
+    thumbnails: dict[int, str] = {}
+    if include_thumbnails:
+        thumbnails = await _fetch_main_thumbnails(slicer, token, insp)
+    return _adapt(insp, plate_id=plate_id, thumbnails=thumbnails)
+
+
 async def _fetch_main_thumbnails(
     slicer: SlicerClient, token: str, insp: dict,
 ) -> dict[int, str]:
