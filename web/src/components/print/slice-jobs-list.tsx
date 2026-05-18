@@ -454,8 +454,8 @@ function SliceJobRow({
           <a
             href={sliceJobInputUrl(job.job_id)}
             download
-            aria-label={`Download original 3MF for ${job.filename}`}
-            title="Download original 3MF"
+            aria-label={`Download prepared original 3MF for ${job.filename}`}
+            title="Download prepared original 3MF"
             className={cn(
               'inline-flex h-10 w-10 items-center justify-center rounded-md text-text-1 hover:text-text-0',
               rowBusy && 'pointer-events-none opacity-50',

@@ -214,9 +214,20 @@ forwards layout actions to the slicer:
    `rotate_y_minus_90`, `rotate_z_90`, `rotate_z_minus_90`, `center`,
    `arrange`, `reset`) and returns the updated scene.
 4. **Accept** — `POST /api/stl-drafts/{id}/3mf` materializes the draft
-   into a 3MF that is fed straight into the existing
-   `/api/parse-3mf` → slice → upload flow, so filament mapping,
-   slicing settings, and printer upload are unchanged.
+   inside `orcaslicer-headless` and returns a JSON payload with the
+   slicer's `input_token`, a suggested filename, and the parsed
+   `ThreeMFInfo`. The SPA forwards an optional preview-render PNG
+   (`thumbnail_png_data_url`) so the materialized 3MF carries a thumbnail
+   that matches what the user accepted. From there the imported state
+   carries the token forward — slice jobs reference the token instead of
+   re-uploading bytes — and filament mapping, slicing settings, and
+   printer upload work as with an uploaded 3MF.
+
+Slice-job “original” downloads are prepared originals. For uploaded 3MF
+files and STL-derived projects, the gateway stores a 3MF after applying
+the selected machine, process, plate type, process overrides, and any
+STL preview thumbnail, but before slicing. The Jobs page downloads that
+prepared input so it matches the settings used for the slice.
 
 V1 supports preset actions only — there is no freehand drag/rotate/scale
 in the browser; orcaslicer-headless remains the authority for STL
