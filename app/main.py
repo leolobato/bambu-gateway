@@ -2010,7 +2010,10 @@ _DEFAULT_CLEAR_STATUSES = {"ready", "failed", "cancelled"}
 
 @app.post("/api/slice-jobs", response_model=SliceJobResponse, status_code=202)
 async def create_slice_job(
-    file: UploadFile,
+    file: UploadFile | None = None,
+    input_token: str = Form(""),
+    source_filename: str = Form(""),
+    thumbnail_png_data_url: str = Form(""),
     machine_profile: str = Form(...),
     process_profile: str = Form(...),
     filament_profiles: str = Form(...),
@@ -2026,26 +2029,45 @@ async def create_slice_job(
             status_code=400,
             detail="Slicing not available: ORCASLICER_API_URL not configured",
         )
-    if not file.filename or not file.filename.lower().endswith(".3mf"):
+    if not file and not input_token:
+        raise HTTPException(status_code=400, detail="file or input_token is required")
+    if file and input_token:
+        raise HTTPException(status_code=400, detail="Provide file or input_token, not both")
+    if file and (not file.filename or not file.filename.lower().endswith(".3mf")):
         raise HTTPException(status_code=400, detail="File must be a .3mf file")
-
-    file_data = await file.read()
-    if len(file_data) > MAX_FILE_BYTES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File exceeds {settings.max_file_size_mb} MB limit",
-        )
+    if input_token and not source_filename.lower().endswith(".3mf"):
+        raise HTTPException(status_code=400, detail="source_filename must be a .3mf file")
     if not (1 <= copies <= 100):
         raise HTTPException(
             status_code=400,
             detail=f"copies must be between 1 and 100 (got {copies})",
         )
-    try:
-        info = await parse_3mf_via_slicer(
-            file_data, slicer_client, plate_id=plate_id or 1,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Failed to parse 3MF: {e}")
+
+    if file is not None:
+        file_data = await file.read()
+        if len(file_data) > MAX_FILE_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File exceeds {settings.max_file_size_mb} MB limit",
+            )
+        filename = file.filename or "input.3mf"
+        try:
+            info = await parse_3mf_via_slicer(
+                file_data, slicer_client, plate_id=plate_id or 1,
+            )
+            upload = await slicer_client.upload_3mf(file_data, filename=filename)
+            source_token = str(upload["token"])
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Failed to parse 3MF: {e}")
+    else:
+        filename = source_filename
+        source_token = input_token.strip()
+        try:
+            info = await parse_3mf_token_via_slicer(
+                source_token, slicer_client, plate_id=plate_id or 1,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Failed to parse 3MF token: {e}")
 
     if auto_print and not printer_id:
         raise HTTPException(
@@ -2070,9 +2092,22 @@ async def create_slice_job(
             detail=filament_error or "filament_profiles must be valid JSON",
         )
 
+    try:
+        prepared = await slicer_client.prepare_3mf_token(
+            source_token,
+            machine_profile=machine_profile,
+            process_profile=process_profile,
+            plate_type=plate_type.strip(),
+            process_overrides=process_overrides_dict,
+            thumbnail_png_data_url=thumbnail_png_data_url or None,
+        )
+    except SlicingError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to prepare 3MF: {e}")
+    prepared_file_data = prepared["content"]
+
     job = await slice_jobs.submit(
-        file_data=file_data,
-        filename=file.filename,
+        file_data=prepared_file_data,
+        filename=filename,
         machine_profile=machine_profile,
         process_profile=process_profile,
         filament_profiles=filament_payload,

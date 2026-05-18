@@ -43,6 +43,15 @@ async def app_client(tmp_path: Path, monkeypatch):
         yield {"event": "done", "data": {}}
 
     slicer.slice_stream = stream
+
+    async def _default_upload(data, *, filename="input.3mf"):
+        return {"token": "uploadedtok"}
+
+    async def _default_prepare(input_token, **kwargs):
+        return {"input_token": "preparedtok", "content": b"prepared"}
+
+    slicer.upload_3mf = _default_upload
+    slicer.prepare_3mf_token = _default_prepare
     main_mod.slicer_client = slicer
 
     store = SliceJobStore(tmp_path / "slice_jobs.json")
@@ -334,7 +343,7 @@ async def test_print_with_unknown_job_id_404(app_client):
     assert resp.status_code == 404
 
 
-async def test_get_input_returns_uploaded_bytes(app_client):
+async def test_get_input_returns_prepared_bytes(app_client):
     create = await app_client.post(
         "/api/slice-jobs",
         files={"file": ("cube.3mf", b"original-bytes", "application/octet-stream")},
@@ -348,7 +357,9 @@ async def test_get_input_returns_uploaded_bytes(app_client):
 
     resp = await app_client.get(f"/api/slice-jobs/{job_id}/input")
     assert resp.status_code == 200
-    assert resp.content == b"original-bytes"
+    # Slice-job input download is the prepared original (fixture's default
+    # `prepare_3mf_token` returns ``b"prepared"``), not the raw upload.
+    assert resp.content == b"prepared"
     assert resp.headers["x-job-id"] == job_id
     assert "cube.3mf" in resp.headers["content-disposition"]
 
@@ -376,7 +387,7 @@ async def test_get_input_handles_non_ascii_filename(app_client):
 
     resp = await app_client.get(f"/api/slice-jobs/{job_id}/input")
     assert resp.status_code == 200
-    assert resp.content == b"original-bytes"
+    assert resp.content == b"prepared"
     disposition = resp.headers["content-disposition"]
     # Modern UA: full filename via RFC 5987.
     assert "filename*=UTF-8''" in disposition
@@ -594,6 +605,11 @@ async def test_create_rejects_invalid_filament_payload_with_400(
 
     slicer = MagicMock()
     slicer.slice_stream = MagicMock()  # should never be called
+
+    async def _upload(data, *, filename="input.3mf"):
+        return {"token": "uploadedtok"}
+
+    slicer.upload_3mf = _upload
     main_mod.slicer_client = slicer
 
     store = SliceJobStore(tmp_path / "slice_jobs.json")
@@ -622,3 +638,95 @@ async def test_create_rejects_invalid_filament_payload_with_400(
         slicer.slice_stream.assert_not_called()
     finally:
         await main_mod.slice_jobs.stop()
+
+
+async def test_slice_job_from_input_token_prepares_and_stores_original(app_client, monkeypatch):
+    import app.main as main_mod
+
+    calls: list[tuple] = []
+
+    async def _fake_inspect_token(token: str):
+        calls.append(("inspect", token))
+        return {
+            "plates": [{"id": 1, "name": "", "objects": [], "used_filament_indices": []}],
+            "filaments": [],
+            "thumbnail_urls": [],
+            "print_settings_id": "GP000",
+            "printer_settings_id": "GM020",
+        }
+
+    async def _fake_prepare_token(input_token: str, **kwargs):
+        calls.append(("prepare", input_token, kwargs))
+        return {"input_token": "preparedtok", "content": b"prepared-original"}
+
+    monkeypatch.setattr(main_mod.slicer_client, "inspect_3mf_token", _fake_inspect_token)
+    monkeypatch.setattr(main_mod.slicer_client, "prepare_3mf_token", _fake_prepare_token)
+
+    resp = await app_client.post(
+        "/api/slice-jobs",
+        data={
+            "input_token": "tok3mf",
+            "source_filename": "part.3mf",
+            "machine_profile": "GM020",
+            "process_profile": "GP000",
+            "filament_profiles": "{}",
+            "process_overrides": '{"layer_height": "0.16"}',
+            "thumbnail_png_data_url": "data:image/png;base64,UE5H",
+        },
+    )
+
+    assert resp.status_code == 202, resp.text
+    job_id = resp.json()["job_id"]
+    assert calls == [
+        ("inspect", "tok3mf"),
+        (
+            "prepare",
+            "tok3mf",
+            {
+                "machine_profile": "GM020",
+                "process_profile": "GP000",
+                "plate_type": "",
+                "process_overrides": {"layer_height": "0.16"},
+                "thumbnail_png_data_url": "data:image/png;base64,UE5H",
+            },
+        ),
+    ]
+
+    input_resp = await app_client.get(f"/api/slice-jobs/{job_id}/input")
+    assert input_resp.status_code == 200
+    assert input_resp.content == b"prepared-original"
+
+
+async def test_slice_job_from_uploaded_file_prepares_and_stores_original(app_client, monkeypatch):
+    import app.main as main_mod
+
+    async def _fake_upload(data: bytes, *, filename: str = "input.3mf"):
+        assert data == b"raw-upload"
+        assert filename == "cube.3mf"
+        return {"token": "uploadedtok"}
+
+    async def _fake_prepare_token(input_token: str, **kwargs):
+        assert input_token == "uploadedtok"
+        assert kwargs["machine_profile"] == "GM014"
+        assert kwargs["process_profile"] == "0.20mm"
+        assert kwargs["process_overrides"] == {"wall_loops": "3"}
+        return {"input_token": "preparedtok", "content": b"prepared-upload"}
+
+    monkeypatch.setattr(main_mod.slicer_client, "upload_3mf", _fake_upload)
+    monkeypatch.setattr(main_mod.slicer_client, "prepare_3mf_token", _fake_prepare_token)
+
+    resp = await app_client.post(
+        "/api/slice-jobs",
+        files={"file": ("cube.3mf", b"raw-upload", "application/octet-stream")},
+        data={
+            "machine_profile": "GM014",
+            "process_profile": "0.20mm",
+            "filament_profiles": "{}",
+            "process_overrides": '{"wall_loops": "3"}',
+        },
+    )
+
+    assert resp.status_code == 202, resp.text
+    job_id = resp.json()["job_id"]
+    input_resp = await app_client.get(f"/api/slice-jobs/{job_id}/input")
+    assert input_resp.content == b"prepared-upload"
