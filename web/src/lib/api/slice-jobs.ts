@@ -11,7 +11,10 @@ export async function fetchSliceJob(jobId: string): Promise<SliceJob> {
 }
 
 export interface SubmitSliceJobArgs {
-  file: File;
+  file?: File;
+  inputToken?: string;
+  sourceFilename?: string;
+  thumbnailPngDataUrl?: string | null;
   printerId?: string;
   plateId: number;
   machineProfile: string;
@@ -25,7 +28,10 @@ export interface SubmitSliceJobArgs {
 
 export async function submitSliceJob(args: SubmitSliceJobArgs): Promise<SliceJob> {
   const fd = new FormData();
-  fd.append('file', args.file);
+  if (args.file) fd.append('file', args.file);
+  if (args.inputToken) fd.append('input_token', args.inputToken);
+  if (args.sourceFilename) fd.append('source_filename', args.sourceFilename);
+  if (args.thumbnailPngDataUrl) fd.append('thumbnail_png_data_url', args.thumbnailPngDataUrl);
   if (args.printerId) fd.append('printer_id', args.printerId);
   fd.append('plate_id', String(args.plateId));
   fd.append('machine_profile', args.machineProfile);

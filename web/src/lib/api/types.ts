@@ -178,6 +178,12 @@ export interface ThreeMFInfo {
   process_modifications?: ProcessModifications | null;
 }
 
+export interface StlMaterializedProject {
+  input_token: string;
+  filename: string;
+  info: ThreeMFInfo;
+}
+
 // --- Slicer profile shapes (returned by GET /api/slicer/*) ---
 
 export interface SlicerMachine {

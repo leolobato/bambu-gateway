@@ -1,5 +1,13 @@
 import { ApiError } from './client';
-import type { StlDraftScene, StlLayoutAction } from './types';
+import type {
+  StlDraftScene,
+  StlLayoutAction,
+  StlMaterializedProject,
+} from './types';
+
+export interface MaterializeStlDraftArgs {
+  thumbnailPngDataUrl?: string | null;
+}
 
 export interface CreateStlDraftArgs {
   file: File;
@@ -54,12 +62,17 @@ export async function layoutStlDraft(
   return (await res.json()) as StlDraftScene;
 }
 
-export async function materializeStlDraft(draftToken: string): Promise<Blob> {
+export async function materializeStlDraft(
+  draftToken: string,
+  args: MaterializeStlDraftArgs = {},
+): Promise<StlMaterializedProject> {
   const res = await fetch(`/api/stl-drafts/${encodeURIComponent(draftToken)}/3mf`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ thumbnail_png_data_url: args.thumbnailPngDataUrl ?? '' }),
   });
   if (!res.ok) {
     throw new ApiError(res.status, await detailFromResponse(res));
   }
-  return await res.blob();
+  return (await res.json()) as StlMaterializedProject;
 }

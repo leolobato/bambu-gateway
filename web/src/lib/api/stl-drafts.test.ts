@@ -91,11 +91,31 @@ describe('stl draft api', () => {
     });
   });
 
-  test('materializeStlDraft returns 3mf blob', async () => {
-    mockFetch(new Response('3mf-bytes', { status: 200 }));
+  test('materializeStlDraft returns token-backed project JSON', async () => {
+    const fetchMock = mockFetch(new Response(JSON.stringify({
+      input_token: 'tok3mf',
+      filename: 'part.3mf',
+      info: {
+        plates: [],
+        filaments: [],
+        print_profile: { print_settings_id: 'GP000', layer_height: '0.20' },
+        printer: { printer_settings_id: 'GM020', printer_model: '', nozzle_diameter: '' },
+        has_gcode: false,
+        bed_type: '',
+        process_modifications: null,
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
 
-    const blob = await materializeStlDraft('draft1234');
+    const out = await materializeStlDraft('draft1234', {
+      thumbnailPngDataUrl: 'data:image/png;base64,UE5H',
+    });
 
-    expect(await blob.text()).toBe('3mf-bytes');
+    expect(fetchMock).toHaveBeenCalledWith('/api/stl-drafts/draft1234/3mf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ thumbnail_png_data_url: 'data:image/png;base64,UE5H' }),
+    });
+    expect(out.input_token).toBe('tok3mf');
+    expect(out.filename).toBe('part.3mf');
   });
 });
