@@ -1441,7 +1441,7 @@ async def print_file(
         upload_state = upload_tracker.create(job.filename, pid, len(file_data_job))
         asyncio.get_running_loop().run_in_executor(None, lambda: _background_submit(
             upload_state, pid, file_data_job, job.filename,
-            plate_id=1, ams_mapping=ams_mapping, use_ams=use_ams,
+            plate_id=job.plate_id or 1, ams_mapping=ams_mapping, use_ams=use_ams,
         ))
 
         # Slice-job perspective: handed off to the printer, work is done.
@@ -1644,9 +1644,10 @@ async def print_file(
         raise HTTPException(status_code=409, detail=str(e))
 
     fname = file.filename
-    # Sliced files are always single-plate (plate extracted before slicing),
-    # so the gcode is at plate_1 regardless of the original plate_id.
-    p_id = 1 if was_sliced else (plate_id or 1)
+    # Sliced output preserves the source plate id: `Metadata/plate_{N}.gcode`
+    # where N is the plate_id we passed to /slice/v2. Unsliced uploads use
+    # the user-supplied plate_id (or 1 when omitted).
+    p_id = plate_id or 1
     state = upload_tracker.create(fname, pid, len(file_data))
     asyncio.get_running_loop().run_in_executor(None, lambda: _background_submit(
         state, pid, file_data, fname,

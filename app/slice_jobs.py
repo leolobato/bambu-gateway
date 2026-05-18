@@ -92,7 +92,8 @@ class SliceJob:
     settings_transfer: dict | None = None
     output_size: int | None = None
     # base64-encoded data URL (e.g. "data:image/png;base64,...") of the
-    # sliced output's plate_1 thumbnail, or None when not available.
+    # sliced output's thumbnail for the requested plate, or None when not
+    # available.
     thumbnail: str | None = None
 
     # failure
@@ -278,14 +279,18 @@ _STATUS_CALLBACK_RE = re.compile(
 )
 
 
-def _extract_plate_thumbnail(sliced_3mf: bytes) -> str | None:
+def _extract_plate_thumbnail(sliced_3mf: bytes, plate_id: int = 1) -> str | None:
     """Return a base64 data URL for a thumbnail embedded in the sliced 3MF.
 
-    Sliced output is always single-plate (the gateway extracts the chosen
-    plate before slicing). Preference order:
+    The slicer preserves the source plate id in its output (``/slice/v2``
+    isolates plate N via libslic3r's ``Model::update_print_volume_state``
+    and labels the output ``plater_id=N``), so ``plate_id`` here is the
+    plate that was sliced — not always 1. Preference order:
 
-    1. ``Metadata/plate_1*.png`` — post-slice plate renders. The legacy
-       orca CLI wrote these; the new ``/slice/v2`` output does not.
+    1. ``Metadata/plate_{N}*.png`` — post-slice plate renders for the
+       requested plate. The legacy orca CLI wrote these; the current
+       ``/slice/v2`` output does not, but we look for them anyway in
+       case that changes.
     2. ``Auxiliaries/.thumbnails/thumbnail_*.png`` — project thumbnails
        authored when the 3MF was saved in the slicer GUI. These survive
        the round-trip through ``/slice/v2``.
@@ -293,9 +298,9 @@ def _extract_plate_thumbnail(sliced_3mf: bytes) -> str | None:
     Returns None when no thumbnail is found or the archive can't be read.
     """
     candidates = (
-        "Metadata/plate_1.png",
-        "Metadata/plate_no_light_1.png",
-        "Metadata/top_1.png",
+        f"Metadata/plate_{plate_id}.png",
+        f"Metadata/plate_no_light_{plate_id}.png",
+        f"Metadata/top_{plate_id}.png",
         "Auxiliaries/.thumbnails/thumbnail_middle.png",
         "Auxiliaries/.thumbnails/thumbnail_3mf.png",
         "Auxiliaries/.thumbnails/thumbnail_small.png",
@@ -505,7 +510,9 @@ class SliceJobManager:
                     output_bytes = Path(job.output_path).read_bytes()
                 except OSError:
                     continue
-                extracted = _extract_plate_thumbnail(output_bytes)
+                extracted = _extract_plate_thumbnail(
+                    output_bytes, plate_id=job.plate_id or 1,
+                )
                 if extracted:
                     job.thumbnail = extracted
                     await self._store.upsert(job)
@@ -744,7 +751,9 @@ class SliceJobManager:
         job.output_size = len(result_bytes)
         job.estimate = estimate
         job.settings_transfer = settings_transfer
-        job.thumbnail = _extract_plate_thumbnail(result_bytes)
+        job.thumbnail = _extract_plate_thumbnail(
+            result_bytes, plate_id=job.plate_id or 1,
+        )
         job.progress = 100
         job.phase = None
 
@@ -818,7 +827,7 @@ class SliceJobManager:
         def do_submit() -> None:
             self._printer_service.submit_print(
                 job.printer_id, file_data, job.filename,
-                plate_id=1,
+                plate_id=job.plate_id or 1,
                 ams_mapping=ams_mapping,
                 use_ams=use_ams,
                 progress_callback=progress_cb,
