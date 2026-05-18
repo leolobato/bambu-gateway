@@ -20,6 +20,15 @@ class SlicingError(Exception):
     """Raised when the slicer API returns a non-200 response or is unreachable."""
 
 
+def _png_data_url_to_base64(data_url: str | None) -> str | None:
+    if not data_url:
+        return None
+    prefix, sep, data = data_url.partition(",")
+    if not sep or not prefix.startswith("data:image/png;base64"):
+        raise SlicingError("thumbnail_png_data_url must be a PNG data URL")
+    return data
+
+
 @dataclass
 class SliceResult:
     """Result from a slice request, including content and settings transfer info."""
@@ -726,12 +735,21 @@ class SlicerClient:
             raise SlicingError(self._format_slicer_error(resp))
         return resp.json()
 
-    async def materialize_stl_draft(self, draft_token: str) -> dict[str, Any]:
-        """Materialize an STL draft to 3MF bytes via orcaslicer-headless."""
+    async def materialize_stl_draft(
+        self,
+        draft_token: str,
+        *,
+        thumbnail_png_data_url: str | None = None,
+    ) -> dict[str, Any]:
+        """Materialize an STL draft and return the slicer input token."""
         url = f"{self._base_url}/stl/{quote(draft_token, safe='')}/3mf"
+        body: dict[str, Any] = {}
+        thumbnail_b64 = _png_data_url_to_base64(thumbnail_png_data_url)
+        if thumbnail_b64:
+            body["thumbnail_png_base64"] = thumbnail_b64
         try:
             async with httpx.AsyncClient(timeout=120.0, transport=self._transport) as client:
-                resp = await client.post(url)
+                resp = await client.post(url, json=body if body else None)
         except httpx.HTTPError as e:
             raise SlicingError(f"Slicer unreachable: {e}")
         if resp.status_code != 200:
@@ -743,7 +761,6 @@ class SlicerClient:
         return {
             "input_token": input_token,
             "draft_token": payload.get("draft_token", draft_token),
-            "content": await self._download_3mf(input_token),
         }
 
     def _format_slicer_error(self, resp: httpx.Response) -> str:
@@ -785,6 +802,55 @@ class SlicerClient:
             raise SlicingError(f"Slicer unreachable: {e}")
         r.raise_for_status()
         return r.json()
+
+    async def inspect_3mf_token(self, token: str) -> dict:
+        """Inspect an existing slicer-side 3MF token."""
+        try:
+            async with httpx.AsyncClient(timeout=60.0, transport=self._transport) as client:
+                r = await client.get(f"{self._base_url}/3mf/{quote(token, safe='')}/inspect")
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        r.raise_for_status()
+        return r.json()
+
+    async def prepare_3mf_token(
+        self,
+        input_token: str,
+        *,
+        machine_profile: str,
+        process_profile: str,
+        plate_type: str = "",
+        process_overrides: dict[str, str] | None = None,
+        thumbnail_png_data_url: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist selected project settings into a token-backed 3MF."""
+        body: dict[str, Any] = {
+            "machine_id": machine_profile,
+            "process_id": process_profile,
+        }
+        if plate_type:
+            body["plate_type"] = plate_type
+        if process_overrides:
+            body["process_overrides"] = dict(process_overrides)
+        thumbnail_b64 = _png_data_url_to_base64(thumbnail_png_data_url)
+        if thumbnail_b64:
+            body["thumbnail_png_base64"] = thumbnail_b64
+        url = f"{self._base_url}/3mf/{quote(input_token, safe='')}/prepare"
+        try:
+            async with httpx.AsyncClient(timeout=120.0, transport=self._transport) as client:
+                resp = await client.post(url, json=body)
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        if resp.status_code != 200:
+            raise SlicingError(self._format_slicer_error(resp))
+        payload = resp.json()
+        prepared_token = str(payload.get("input_token") or "")
+        if not prepared_token:
+            raise SlicingError("Slicer 3MF prepare response did not include input_token")
+        return {
+            "input_token": prepared_token,
+            "content": await self._download_3mf(prepared_token),
+        }
 
     async def delete_token(self, token: str) -> bool:
         """DELETE /3mf/{token} — drop the cached file.

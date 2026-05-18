@@ -84,24 +84,27 @@ async def test_layout_stl_draft_posts_action_json():
 
 
 @pytest.mark.asyncio
-async def test_materialize_stl_draft_downloads_returned_3mf_token():
-    paths: list[str] = []
+async def test_materialize_stl_draft_returns_token_without_downloading_3mf():
+    requests: list[tuple[str, str]] = []
+    captured: dict = {}
 
     def _handler(request: httpx.Request) -> httpx.Response:
-        paths.append(request.url.path)
+        requests.append((request.method, request.url.path))
         if request.method == "POST" and request.url.path == "/stl/draft1/3mf":
+            captured["body"] = json.loads(request.content.decode())
             return httpx.Response(200, json={"input_token": "tok3mf", "draft_token": "draft1"})
-        if request.method == "GET" and request.url.path == "/3mf/tok3mf":
-            return httpx.Response(200, content=b"3mf-bytes")
         return httpx.Response(404)
 
     client = SlicerClient("http://slicer", transport=httpx.MockTransport(_handler))
 
-    materialized = await client.materialize_stl_draft("draft1")
+    materialized = await client.materialize_stl_draft(
+        "draft1",
+        thumbnail_png_data_url="data:image/png;base64,UE5H",
+    )
 
-    assert paths == ["/stl/draft1/3mf", "/3mf/tok3mf"]
-    assert materialized["input_token"] == "tok3mf"
-    assert materialized["content"] == b"3mf-bytes"
+    assert materialized == {"input_token": "tok3mf", "draft_token": "draft1"}
+    assert captured["body"] == {"thumbnail_png_base64": "UE5H"}
+    assert requests == [("POST", "/stl/draft1/3mf")]
 
 
 @pytest.mark.asyncio
