@@ -44,12 +44,21 @@ async def app_client(tmp_path: Path, monkeypatch):
                 "actions": ["center"],
             }
 
-        async def materialize_stl_draft(self, draft_token: str):
-            self.materialize_calls.append(draft_token)
+        async def materialize_stl_draft(self, draft_token: str, **kwargs):
+            self.materialize_calls.append((draft_token, kwargs))
             return {
                 "draft_token": draft_token,
                 "input_token": "tok3mf",
-                "content": b"3mf-bytes",
+            }
+
+        async def inspect_3mf_token(self, token: str):
+            return {
+                "plates": [{"id": 1, "name": "", "objects": [], "used_filament_indices": []}],
+                "filaments": [],
+                "thumbnail_urls": [],
+                "print_settings_id": "GP000",
+                "printer_settings_id": "GM020",
+                "curr_bed_type": "Textured PEI Plate",
             }
 
     fake = FakeSlicer()
@@ -116,20 +125,31 @@ async def test_layout_stl_draft_proxies_action(app_client):
     assert resp.json()["source_url"] == "/api/stl-drafts/draft1234/source.stl"
 
 
-async def test_materialize_stl_draft_returns_3mf_bytes(app_client):
-    client, fake, _tmp_path = app_client
+async def test_materialize_stl_draft_returns_token_and_info_json(app_client):
+    client, fake, tmp_path = app_client
     await client.post(
         "/api/stl-drafts",
         files={"file": ("part.stl", b"solid part\nendsolid part\n", "model/stl")},
         data={"machine_profile": "GM020", "process_profile": "GP000"},
     )
 
-    resp = await client.post("/api/stl-drafts/draft1234/3mf")
+    resp = await client.post(
+        "/api/stl-drafts/draft1234/3mf",
+        json={"thumbnail_png_data_url": "data:image/png;base64,UE5H"},
+    )
 
     assert resp.status_code == 200, resp.text
-    assert resp.content == b"3mf-bytes"
-    assert resp.headers["x-slicer-input-token"] == "tok3mf"
-    assert fake.materialize_calls == ["draft1234"]
+    assert resp.headers["content-type"].startswith("application/json")
+    body = resp.json()
+    assert body["input_token"] == "tok3mf"
+    assert body["filename"] == "part.3mf"
+    assert body["info"]["print_profile"]["print_settings_id"] == "GP000"
+    assert body["info"]["printer"]["printer_settings_id"] == "GM020"
+    assert fake.materialize_calls[-1] == (
+        "draft1234",
+        {"thumbnail_png_data_url": "data:image/png;base64,UE5H"},
+    )
+    assert not (tmp_path / "stl_drafts" / "draft1234.stl").exists()
 
 
 async def test_create_stl_draft_rejects_non_stl(app_client):

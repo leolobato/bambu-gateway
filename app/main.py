@@ -66,9 +66,10 @@ from app.models import (
     SliceJobResponse,
     SpeedRequest,
     StartDryingRequest,
+    StlMaterializedProject,
     TransferredSetting,
 )
-from app.parse_3mf import parse_3mf_via_slicer
+from app.parse_3mf import parse_3mf_token_via_slicer, parse_3mf_via_slicer
 from app.printer_service import PrinterService
 from app.slice_jobs import SliceJobManager, SliceJobStatus, SliceJobStore
 from app.slicer_client import SlicerClient, SliceResult, SlicingError
@@ -102,6 +103,10 @@ class StlDraftLayoutRequest(BaseModel):
     action: str
 
 
+class StlDraftMaterializeRequest(BaseModel):
+    thumbnail_png_data_url: str = ""
+
+
 def _stl_draft_dir() -> Path:
     root = config_store._config_path.parent / "stl_drafts"
     root.mkdir(parents=True, exist_ok=True)
@@ -112,6 +117,12 @@ def _stl_draft_source_path(draft_token: str) -> Path:
     if not _SAFE_STL_DRAFT_TOKEN_RE.fullmatch(draft_token):
         raise HTTPException(status_code=400, detail="Invalid STL draft token")
     return _stl_draft_dir() / f"{draft_token}.stl"
+
+
+def _stl_draft_name_path(draft_token: str) -> Path:
+    if not _SAFE_STL_DRAFT_TOKEN_RE.fullmatch(draft_token):
+        raise HTTPException(status_code=400, detail="Invalid STL draft token")
+    return _stl_draft_dir() / f"{draft_token}.name"
 
 
 _STL_DRAFT_MAX_AGE_SECONDS = 24 * 60 * 60  # 24h — matches /tmp/bambu-gateway-previews cleanup cadence
@@ -130,7 +141,9 @@ def _sweep_stl_drafts() -> None:
     if not drafts_dir.exists():
         return
     cutoff = _time.time() - _STL_DRAFT_MAX_AGE_SECONDS
-    for path in drafts_dir.glob("*.stl"):
+    for path in drafts_dir.iterdir():
+        if path.suffix not in (".stl", ".name"):
+            continue
         try:
             if path.stat().st_mtime < cutoff:
                 path.unlink()
@@ -1237,6 +1250,7 @@ async def create_stl_draft(
     if not token:
         raise HTTPException(status_code=502, detail="STL import did not return a draft token")
     _stl_draft_source_path(token).write_bytes(file_data)
+    _stl_draft_name_path(token).write_text(file.filename)
     return _stl_scene_with_source_url(scene)
 
 
@@ -1272,8 +1286,11 @@ async def layout_stl_draft(draft_token: str, body: StlDraftLayoutRequest):
     return _stl_scene_with_source_url(scene)
 
 
-@app.post("/api/stl-drafts/{draft_token}/3mf")
-async def materialize_stl_draft(draft_token: str):
+@app.post("/api/stl-drafts/{draft_token}/3mf", response_model=StlMaterializedProject)
+async def materialize_stl_draft(
+    draft_token: str,
+    body: StlDraftMaterializeRequest | None = None,
+):
     if slicer_client is None:
         raise HTTPException(
             status_code=400,
@@ -1285,21 +1302,34 @@ async def materialize_stl_draft(draft_token: str):
             status_code=410,
             detail="STL draft source no longer available; re-upload to continue",
         )
+    payload = body or StlDraftMaterializeRequest()
     try:
-        materialized = await slicer_client.materialize_stl_draft(draft_token)
+        materialized = await slicer_client.materialize_stl_draft(
+            draft_token,
+            thumbnail_png_data_url=payload.thumbnail_png_data_url or None,
+        )
+        info = await parse_3mf_token_via_slicer(
+            str(materialized["input_token"]),
+            slicer_client,
+            plate_id=1,
+        )
     except SlicingError as e:
         raise HTTPException(status_code=502, detail=f"STL materialize failed: {e}")
+    name_path = _stl_draft_name_path(draft_token)
     try:
-        source_path.unlink()
-    except OSError as e:
-        logger.warning("Failed to delete materialized STL draft %s: %s", source_path, e)
-    return Response(
-        content=materialized["content"],
-        media_type="application/octet-stream",
-        headers={
-            "Content-Disposition": _attachment_disposition(f"{draft_token}.3mf"),
-            "X-Slicer-Input-Token": str(materialized.get("input_token") or ""),
-        },
+        original_filename = name_path.read_text().strip()
+    except OSError:
+        original_filename = source_path.name
+    for path in (source_path, name_path):
+        try:
+            path.unlink()
+        except OSError as e:
+            logger.warning("Failed to delete materialized STL draft %s: %s", path, e)
+    source_name = original_filename.removesuffix(".stl").removesuffix(".STL") or draft_token
+    return StlMaterializedProject(
+        input_token=str(materialized["input_token"]),
+        filename=f"{source_name}.3mf",
+        info=info,
     )
 
 
@@ -1328,7 +1358,16 @@ def _background_submit(
     except UploadCancelledError:
         logger.info("Upload cancelled by user: %s", filename)
     except Exception as e:
-        logger.error("Background upload failed: %s", e)
+        state = upload_state.to_dict()
+        logger.exception(
+            "Background upload failed for %s on printer %s "
+            "(%d/%d bytes sent): %s",
+            filename,
+            printer_id,
+            state["bytes_sent"],
+            state["total_bytes"],
+            e,
+        )
         upload_state.fail(str(e))
 
 

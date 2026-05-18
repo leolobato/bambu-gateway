@@ -339,6 +339,12 @@ class ThreeMFInfo(BaseModel):
     process_modifications: ProcessModifications = ProcessModifications()
 
 
+class StlMaterializedProject(BaseModel):
+    input_token: str
+    filename: str
+    info: ThreeMFInfo
+
+
 # --- API response models ---
 
 
