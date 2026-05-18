@@ -21,6 +21,7 @@ import type {
   StlLayoutAction,
   StlTransform,
 } from '@/lib/api/types';
+import { buildPreviewBounds, cameraPoseForBounds } from './stl-preview-frame';
 
 const ACTION_LABELS: Record<StlLayoutAction, { label: string; icon: typeof Compass }> = {
   auto_orient: { label: 'Auto-orient', icon: Compass },
@@ -56,6 +57,7 @@ export function StlPreviewCard({
   onAction,
   onAccept,
   onCancel,
+  onPreviewPng,
 }: {
   filename: string;
   scene: StlDraftScene;
@@ -64,6 +66,7 @@ export function StlPreviewCard({
   onAction: (action: StlLayoutAction) => void;
   onAccept: () => void;
   onCancel: () => void;
+  onPreviewPng?: (dataUrl: string) => void;
 }) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -88,7 +91,11 @@ export function StlPreviewCard({
     const mount = mountRef.current;
     if (!mount) return;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+      preserveDrawingBuffer: true,
+    });
     renderer.setPixelRatio(window.devicePixelRatio);
     const width = mount.clientWidth;
     const height = mount.clientHeight;
@@ -266,6 +273,34 @@ export function StlPreviewCard({
       instanceGroup.add(meshGroup);
       root.add(instanceGroup);
     }
+    afterPlacementRendered();
+  }
+
+  function framePlacedObjects() {
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    if (!camera || !controls) return;
+    const pose = cameraPoseForBounds(buildPreviewBounds(scene));
+    camera.position.set(pose.position[0], pose.position[1], pose.position[2]);
+    controls.target.set(pose.target[0], pose.target[1], pose.target[2]);
+    camera.lookAt(pose.target[0], pose.target[1], pose.target[2]);
+    controls.update();
+  }
+
+  function capturePreviewPng() {
+    const renderer = rendererRef.current;
+    const threeScene = sceneRef.current;
+    const camera = cameraRef.current;
+    if (!renderer || !threeScene || !camera || !onPreviewPng) return;
+    renderer.render(threeScene, camera);
+    onPreviewPng(renderer.domElement.toDataURL('image/png'));
+  }
+
+  function afterPlacementRendered() {
+    requestAnimationFrame(() => {
+      framePlacedObjects();
+      requestAnimationFrame(capturePreviewPng);
+    });
   }
 
   const supportedActions = useMemo(() => {
