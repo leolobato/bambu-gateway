@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MoreHorizontal } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -20,6 +20,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { TrayRow } from '@/components/tray-row';
+import { AmsAutoRefillCard } from '@/components/settings/ams-auto-refill-card';
+import { getAms } from '@/lib/api/ams';
 import { deletePrinterConfig } from '@/lib/api/printer-configs';
 import type { PrinterConfigResponse, PrinterStatus } from '@/lib/api/types';
 
@@ -50,6 +52,12 @@ export function PrinterRow({
 }) {
   const queryClient = useQueryClient();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const amsQuery = useQuery({
+    queryKey: ['ams', printer.serial],
+    queryFn: () => getAms(printer.serial),
+    refetchInterval: 4_000,
+    retry: false,
+  });
 
   const remove = useMutation({
     mutationFn: () => deletePrinterConfig(printer.serial),
@@ -98,6 +106,14 @@ export function PrinterRow({
           </DropdownMenu>
         }
       />
+      <div className="px-2 pb-2">
+        <AmsAutoRefillCard
+          printerId={printer.serial}
+          enabled={amsQuery.data?.auto_refill_enabled ?? null}
+          supported={amsQuery.data?.auto_refill_supported ?? null}
+          online={liveStatus?.online ?? false}
+        />
+      </div>
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>

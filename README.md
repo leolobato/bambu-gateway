@@ -210,7 +210,8 @@ forwards layout actions to the slicer:
    printable bed, and applies each object's `mesh_transform` then its
    instance `transform` so the browser shows what the slicer sees.
 3. **Layout** — `POST /api/stl-drafts/{id}/layout` runs preset actions
-   (`auto_orient`, `rotate_z_90`, `rotate_z_minus_90`, `center`,
+   (`auto_orient`, `rotate_x_90`, `rotate_x_minus_90`, `rotate_y_90`,
+   `rotate_y_minus_90`, `rotate_z_90`, `rotate_z_minus_90`, `center`,
    `arrange`, `reset`) and returns the updated scene.
 4. **Accept** — `POST /api/stl-drafts/{id}/3mf` materializes the draft
    into a 3MF that is fed straight into the existing
