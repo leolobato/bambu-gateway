@@ -49,12 +49,18 @@ export type PrintState =
       autoOrient: boolean;
       applyingAction: StlLayoutAction | null;
       banner?: BannerData;
+      /** PNG data URL captured from the latest preview render, embedded in the materialized 3MF. */
+      previewPngDataUrl: string | null;
     }
   | {
       kind: 'imported';
       file: File;
       info: ThreeMFInfo;
       banner?: BannerData;
+      /** Slicer-side input token when this project came from STL materialization (instead of an uploaded 3MF). */
+      sourceInputToken?: string;
+      sourceFilename?: string;
+      sourcePreviewPngDataUrl?: string | null;
     }
   | {
       kind: 'slicing';
@@ -64,6 +70,9 @@ export type PrintState =
       percent: number | null;
       statusLine: string;
       isPreview: boolean;
+      sourceInputToken?: string;
+      sourceFilename?: string;
+      sourcePreviewPngDataUrl?: string | null;
     }
   | {
       kind: 'previewReady';
@@ -72,6 +81,9 @@ export type PrintState =
       jobId: string;
       transfer: SettingsTransferInfo | null;
       estimate: PrintEstimate | null;
+      sourceInputToken?: string;
+      sourceFilename?: string;
+      sourcePreviewPngDataUrl?: string | null;
     }
   | {
       kind: 'uploading';
@@ -79,6 +91,9 @@ export type PrintState =
       info: ThreeMFInfo;
       uploadId: string;
       percent: number;
+      sourceInputToken?: string;
+      sourceFilename?: string;
+      sourcePreviewPngDataUrl?: string | null;
     }
   | { kind: 'sent'; printerName: string | null; estimate: PrintEstimate | null; jobId: string | null };
 

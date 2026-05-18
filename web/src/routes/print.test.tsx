@@ -15,7 +15,28 @@ vi.mock('sonner', () => ({
 }));
 
 vi.mock('@/components/print/stl-preview-card', () => ({
-  StlPreviewCard: ({ filename }: { filename: string }) => <div>STL preview: {filename}</div>,
+  StlPreviewCard: ({
+    filename,
+    onAccept,
+    onPreviewPng,
+  }: {
+    filename: string;
+    onAccept: () => void;
+    onPreviewPng?: (dataUrl: string) => void;
+  }) => (
+    <div>
+      <div>STL preview: {filename}</div>
+      <button
+        type="button"
+        onClick={() => {
+          onPreviewPng?.('data:image/png;base64,UE5H');
+          onAccept();
+        }}
+      >
+        Accept STL
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('@/lib/api/slicer-profiles', () => ({

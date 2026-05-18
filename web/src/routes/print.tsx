@@ -39,7 +39,7 @@ import { fetchProcessProfile } from '@/lib/api/process-options';
 import { notifyDroppedOverrides } from '@/lib/process/drop-notice';
 import { useDropZone } from '@/lib/use-drop-zone';
 import { usePrinterContext } from '@/lib/printer-context';
-import { usePrintContext, type BannerData } from '@/lib/print-context';
+import { usePrintContext, type BannerData, type PrintState } from '@/lib/print-context';
 import {
   createStlDraft,
   layoutStlDraft,
@@ -381,6 +381,7 @@ export default function PrintRoute() {
           scene,
           autoOrient: false,
           applyingAction: null,
+          previewPngDataUrl: null,
         });
       } catch (err) {
         if (importIdRef.current !== importId) return;
@@ -461,7 +462,16 @@ export default function PrintRoute() {
     return out;
   }
 
-  async function startSlicing(file: File, info: ThreeMFInfo, preview: boolean) {
+  async function startSlicing(
+    file: File,
+    info: ThreeMFInfo,
+    preview: boolean,
+    source?: {
+      inputToken?: string;
+      filename?: string;
+      previewPngDataUrl?: string | null;
+    },
+  ) {
     if (!settings.machine || !settings.process) {
       toast.error('Pick a machine and process before slicing.');
       return;
@@ -474,7 +484,10 @@ export default function PrintRoute() {
     let job;
     try {
       job = await submitSliceJob({
-        file,
+        file: source?.inputToken ? undefined : file,
+        inputToken: source?.inputToken,
+        sourceFilename: source?.filename,
+        thumbnailPngDataUrl: source?.previewPngDataUrl ?? undefined,
         printerId: requestPrinterId ?? undefined,
         plateId: selectedPlateId,
         machineProfile: settings.machine,
@@ -490,6 +503,9 @@ export default function PrintRoute() {
         kind: 'imported',
         file,
         info,
+        sourceInputToken: source?.inputToken,
+        sourceFilename: source?.filename,
+        sourcePreviewPngDataUrl: source?.previewPngDataUrl,
         banner: {
           variant: 'error',
           title: 'Slicing failed to start',
@@ -508,6 +524,9 @@ export default function PrintRoute() {
       percent: job.progress,
       statusLine: job.phase ?? job.status,
       isPreview: preview,
+      sourceInputToken: source?.inputToken,
+      sourceFilename: source?.filename,
+      sourcePreviewPngDataUrl: source?.previewPngDataUrl,
     });
 
     // Poll the job until terminal. The slice-jobs list at the bottom of the
@@ -708,15 +727,32 @@ export default function PrintRoute() {
   async function acceptStlPreview() {
     if (state.kind !== 'stlPreview') return;
     const draftToken = state.scene.draft_token;
-    const originalName = state.file.name;
+    const previewPngDataUrl = state.previewPngDataUrl;
     try {
-      const blob = await materializeStlDraft(draftToken);
-      const threeMf = new File(
-        [blob],
-        originalName.replace(/\.stl$/i, '.3mf'),
-        { type: 'application/octet-stream' },
-      );
-      await importFile(threeMf);
+      const materialized = await materializeStlDraft(draftToken, {
+        thumbnailPngDataUrl: previewPngDataUrl,
+      });
+      // The materialized project carries the slicer's authoritative machine /
+      // process IDs — surface those in the form so the user sees the same
+      // settings the slicer will receive.
+      setSelectedPlateId(materialized.info.plates[0]?.id ?? 1);
+      resetAllProcessOverrides();
+      setSettings((prev) => ({
+        machine: materialized.info.printer.printer_settings_id || effectiveMachine,
+        process: materialized.info.print_profile.print_settings_id || effectiveProcess,
+        plateType: prev.plateType,
+        copies: prev.copies,
+      }));
+      setFilamentMapping({});
+      setState({
+        kind: 'imported',
+        file: new File([], materialized.filename, { type: 'application/octet-stream' }),
+        info: materialized.info,
+        sourceInputToken: materialized.input_token,
+        sourceFilename: materialized.filename,
+        sourcePreviewPngDataUrl: previewPngDataUrl,
+        banner: { variant: 'info', title: 'File parsed — slicing required.' },
+      });
     } catch (err) {
       setState((cur) =>
         cur.kind === 'stlPreview' && cur.scene.draft_token === draftToken
@@ -951,6 +987,13 @@ export default function PrintRoute() {
             onAction={applyStlLayoutAction}
             onAccept={acceptStlPreview}
             onCancel={clearImport}
+            onPreviewPng={(previewPngDataUrl) => {
+              setState((cur) =>
+                cur.kind === 'stlPreview' && cur.scene.draft_token === state.scene.draft_token
+                  ? { ...cur, previewPngDataUrl }
+                  : cur,
+              );
+            }}
           />
         </Suspense>
       )}
@@ -1026,13 +1069,13 @@ export default function PrintRoute() {
           )}
           <ActionButtons
             kind={state.kind}
-            onPreview={() => startSlicing(state.file, state.info, true)}
+            onPreview={() => startSlicing(state.file, state.info, true, stateSourceFields(state))}
             onPrint={() =>
               state.kind === 'imported' && state.info.has_gcode
                 ? startGcodePrint(state.file, state.info)
-                : startSlicing(state.file, state.info, false)
+                : startSlicing(state.file, state.info, false, stateSourceFields(state))
             }
-            onReslice={() => startSlicing(state.file, state.info, true)}
+            onReslice={() => startSlicing(state.file, state.info, true, stateSourceFields(state))}
             onConfirmPrint={confirmPrint}
             onDownload={downloadPreview}
           />
@@ -1041,6 +1084,27 @@ export default function PrintRoute() {
       )}
     </div>
   );
+}
+
+function stateSourceFields(state: PrintState): {
+  inputToken?: string;
+  filename?: string;
+  previewPngDataUrl?: string | null;
+} | undefined {
+  if (
+    state.kind === 'imported' ||
+    state.kind === 'slicing' ||
+    state.kind === 'previewReady' ||
+    state.kind === 'uploading'
+  ) {
+    if (!state.sourceInputToken) return undefined;
+    return {
+      inputToken: state.sourceInputToken,
+      filename: state.sourceFilename,
+      previewPngDataUrl: state.sourcePreviewPngDataUrl,
+    };
+  }
+  return undefined;
 }
 
 function PrintSentReceipt({
