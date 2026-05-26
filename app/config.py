@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     bambu_cloud_enabled: bool = False
     bambu_cloud_region: Literal["US", "CN"] = "US"
     bambu_cloud_plugin_dir: Path = Path("/data/bambu-plugin")
+    bambu_cloud_host_binary: Path = Path("/usr/local/bin/bambu_cloud_host")
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

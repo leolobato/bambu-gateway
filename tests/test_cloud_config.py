@@ -60,6 +60,18 @@ def test_lifespan_calls_downloader_when_cloud_enabled(monkeypatch, tmp_path):
         mock_ensure.assert_awaited_once()
 
 
+def test_cloud_host_binary_default(monkeypatch):
+    monkeypatch.delenv("BAMBU_CLOUD_HOST_BINARY", raising=False)
+    settings = Settings()
+    assert settings.bambu_cloud_host_binary == Path("/usr/local/bin/bambu_cloud_host")
+
+
+def test_cloud_host_binary_via_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("BAMBU_CLOUD_HOST_BINARY", str(tmp_path / "host"))
+    settings = Settings()
+    assert settings.bambu_cloud_host_binary == tmp_path / "host"
+
+
 def test_lifespan_skips_downloader_when_cloud_disabled(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     import app.main as main_mod
