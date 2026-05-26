@@ -309,4 +309,36 @@ then proceed as above.
 
 ## Verified CDN reachability
 
-(unanswered — see Task 0.6)
+**With forged BambuStudio headers (listing endpoint):** `HTTP 200`
+
+Sample response body (first ~30 lines):
+```
+HTTP/2 200
+content-type: application/json; charset=utf-8
+content-length: 288
+x-bbl-be: go
+server: cloudflare
+
+{"message":"success","code":null,"error":null,"software":null,"guide":null,"resources":[{"type":"slicer/plugins/cloud","version":"02.05.02.58","description":"","url":"https://public-cdn.bblmw.com/upgrade/studio/plugins/02.05.02.58/9fb586c207/linux_02.05.02.58.zip","force_update":false}]}
+```
+
+**Without headers (control):** `HTTP 200` — also 200, but the response body is different:
+the server returned the **Windows** binary (`win_02.05.02.58.zip`) together with a `software`
+entry advertising `Bambu_Studio_win-v02.06.00.51.exe`. Without `X-BBL-OS-Type: linux`, Bambu
+defaults to Windows. The listing endpoint does not gate on identity (no 4xx), but it does use
+the headers to select the OS-appropriate payload. Without the headers the gateway would
+silently download the wrong (Windows) ZIP.
+
+**ZIP URL reachability (probed):** `HTTP 200`, `Content-Length: 20915124` (~20 MB),
+`Content-Type: binary/octet-stream`, served via CloudFront with a 1-year cache TTL.
+The CDN ZIP URL (`https://public-cdn.bblmw.com/upgrade/studio/plugins/02.05.02.58/9fb586c207/linux_02.05.02.58.zip`)
+is publicly reachable without any auth headers.
+
+**Note on version skew:** The probed version was `02.05.02.51` (currently shipped by
+orcaslicer-headless), but the listing returned `02.05.02.58` as the latest available. This
+is expected — the server always returns the current latest regardless of the client-supplied
+version. The gateway downloader should use the `version` field from the listing response, not
+the query-param version, when naming/storing the downloaded plugin.
+
+**Conclusion:** Phase 1 downloader is unblocked. Headers are required to receive the Linux
+ZIP rather than the Windows one; the ZIP CDN itself is open (no auth token needed).
