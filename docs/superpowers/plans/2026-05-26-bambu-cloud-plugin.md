@@ -2,9 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Land the foundation for cloud-direct Bambu printing: resolve the four spec §11 open questions (Phase 0) and implement the plugin downloader (Phase 1) that fetches and validates Bambu's closed-source Linux `.so`s on gateway startup.
+**Goal:** Land the foundation for cloud-direct Bambu printing: resolve the four spec §11 open questions (Phase 0, **done** — see `docs/superpowers/notes/2026-05-26-bambu-cloud-discovery.md`) and implement the plugin downloader (Phase 1) that fetches and validates Bambu's closed-source Linux `.so`s on gateway startup.
 
-**Architecture:** Cloud mode is opt-in via env vars and exclusive. The plugin downloader runs at FastAPI startup, hits Bambu's CDN with forged `BambuStudio/02.05.02.51` headers and `X-BBL-OS-Type: linux`, validates ELF magic + SHA-256 + ABI version, and writes the binaries to `${BAMBU_CLOUD_PLUGIN_DIR}/active/`. Validation failure halts startup. Subsequent phases (subprocess host, auth, status, prints, controls) get their own plan after Phase 0 discoveries are in hand.
+**Architecture:** Cloud mode is opt-in via env vars and exclusive. The plugin downloader runs at FastAPI startup, hits Bambu's CDN listing endpoint with forged `BambuStudio/02.05.02.58` headers and `X-BBL-OS-Type: linux`, parses the JSON listing for the Linux ZIP URL, downloads the ZIP, extracts it to staging, validates the bundled `linux_payload_manifest.json` + ELF magic + SHA-256 + ABI version on each `.so`, then atomically swaps staging into `${BAMBU_CLOUD_PLUGIN_DIR}/active/`. Validation failure halts startup. Subsequent phases (subprocess host, auth, status, prints, controls) get their own plan.
+
+**Phase 0 discoveries that shaped Phase 1:**
+- CDN flow is two-stage: `GET https://api.bambulab.com/v1/iot-service/api/slicer/resource?slicer/plugins/cloud=<version>` → JSON listing → `GET <url-from-listing>` → ZIP archive.
+- Manifest (`linux_payload_manifest.json`) is bundled inside the ZIP, not served separately; schema has only `{"files": [...]}` with `abi_version` present only on `libbambu_networking.so`.
+- Pinned version bumped to `02.05.02.58` (the version the CDN actively serves).
 
 **Tech Stack:** Python 3.x, FastAPI, pydantic-settings, httpx, pytest with `asyncio_mode=auto`.
 
@@ -507,7 +512,7 @@ from __future__ import annotations
 #: Used as ``X-BBL-Client-Version`` in CDN requests and as the ``abi_version``
 #: that the manifest entry for ``libbambu_networking.so`` must declare.
 #: Patch-level drift (first 8 chars, ``02.05.02``) is tolerated.
-BAMBU_NETWORK_AGENT_VERSION = "02.05.02.51"
+BAMBU_NETWORK_AGENT_VERSION = "02.05.02.58"
 
 #: ``User-Agent`` string the slicer-side wrapper uses for every CDN call.
 #: Must move together with :data:`BAMBU_NETWORK_AGENT_VERSION`.
@@ -618,7 +623,7 @@ git commit -m "Cloud plugin: forge BambuStudio identity headers"
 - Modify: `app/cloud/plugin_downloader.py`
 - Modify: `tests/test_cloud_plugin_downloader.py`
 
-> Use the exact manifest schema captured in `docs/superpowers/notes/2026-05-26-bambu-cloud-discovery.md` §Q11.3. The schema below is a placeholder — **update field names if the real manifest disagrees** before writing the test.
+> Schema confirmed by Phase 0 discovery (`docs/superpowers/notes/2026-05-26-bambu-cloud-discovery.md` §Q11.3): the manifest has only `{"files": [...]}` — **no top-level `version` field** and **no `size` per entry**. `abi_version` is present on `libbambu_networking.so` only.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -637,18 +642,15 @@ from app.cloud.plugin_downloader import (
 
 
 SAMPLE_MANIFEST = {
-    "version": "02.05.02.51",
     "files": [
         {
             "name": "libbambu_networking.so",
             "sha256": "a" * 64,
-            "abi_version": "02.05.02.51",
-            "size": 12_345_678,
+            "abi_version": "02.05.02.58",
         },
         {
             "name": "libBambuSource.so",
             "sha256": "b" * 64,
-            "size": 234_567,
         },
     ],
 }
@@ -656,14 +658,12 @@ SAMPLE_MANIFEST = {
 
 def test_parse_manifest_extracts_entries():
     manifest = parse_manifest(json.dumps(SAMPLE_MANIFEST).encode("utf-8"))
-    assert manifest.version == "02.05.02.51"
     assert len(manifest.files) == 2
     networking = manifest.find("libbambu_networking.so")
     assert networking == ManifestEntry(
         name="libbambu_networking.so",
         sha256="a" * 64,
-        abi_version="02.05.02.51",
-        size=12_345_678,
+        abi_version="02.05.02.58",
     )
     source = manifest.find("libBambuSource.so")
     assert source.abi_version is None  # libBambuSource doesn't carry one
@@ -676,13 +676,27 @@ def test_parse_manifest_rejects_invalid_json():
 
 def test_parse_manifest_rejects_missing_files_key():
     with pytest.raises(ManifestParseError):
-        parse_manifest(json.dumps({"version": "x"}).encode("utf-8"))
+        parse_manifest(json.dumps({"other": "value"}).encode("utf-8"))
 
 
 def test_parse_manifest_rejects_entry_missing_sha256():
-    bad = {"version": "x", "files": [{"name": "x.so"}]}
+    bad = {"files": [{"name": "x.so"}]}
     with pytest.raises(ManifestParseError):
         parse_manifest(json.dumps(bad).encode("utf-8"))
+
+
+def test_parse_manifest_rejects_entry_missing_name():
+    bad = {"files": [{"sha256": "x" * 64}]}
+    with pytest.raises(ManifestParseError):
+        parse_manifest(json.dumps(bad).encode("utf-8"))
+
+
+def test_parse_manifest_ignores_extra_files_not_in_manifest():
+    # The ZIP can contain additional .so files (liblive555.so, libagora_*.so)
+    # that the manifest does NOT list. parse_manifest just returns what's in
+    # the manifest; ignoring extras is the caller's responsibility.
+    manifest = parse_manifest(json.dumps(SAMPLE_MANIFEST).encode("utf-8"))
+    assert manifest.find("liblive555.so") is None
 
 
 def test_find_returns_none_for_unknown_name():
@@ -711,19 +725,25 @@ class ManifestParseError(ValueError):
 
 @dataclass(frozen=True)
 class ManifestEntry:
-    """One ``files[]`` entry from ``linux_payload_manifest.json``."""
+    """One ``files[]`` entry from ``linux_payload_manifest.json``.
+
+    Only ``libbambu_networking.so`` carries ``abi_version`` per the Bambu
+    packaging script; other entries omit it.
+    """
 
     name: str
     sha256: str
-    size: int
     abi_version: str | None = None
 
 
 @dataclass(frozen=True)
 class Manifest:
-    """Parsed ``linux_payload_manifest.json``."""
+    """Parsed ``linux_payload_manifest.json``.
 
-    version: str
+    Note: the manifest has no top-level ``version`` field — the version comes
+    from the resource-listing response, not the manifest itself.
+    """
+
     files: tuple[ManifestEntry, ...] = field(default_factory=tuple)
 
     def find(self, name: str) -> ManifestEntry | None:
@@ -737,20 +757,22 @@ def parse_manifest(blob: bytes) -> Manifest:
     """Parse the raw manifest bytes into a :class:`Manifest`.
 
     Raises :class:`ManifestParseError` if the JSON is invalid or any required
-    field is missing.
+    per-entry field is missing.
     """
     try:
         data = json.loads(blob)
     except json.JSONDecodeError as exc:
         raise ManifestParseError(f"manifest is not valid JSON: {exc}") from exc
 
-    if not isinstance(data, dict) or "files" not in data or "version" not in data:
-        raise ManifestParseError(
-            "manifest must be an object with 'version' and 'files' keys"
-        )
+    if not isinstance(data, dict) or "files" not in data:
+        raise ManifestParseError("manifest must be an object with a 'files' key")
+
+    raw_files = data["files"]
+    if not isinstance(raw_files, list):
+        raise ManifestParseError("manifest 'files' must be a list")
 
     entries: list[ManifestEntry] = []
-    for raw in data["files"]:
+    for raw in raw_files:
         if not isinstance(raw, dict):
             raise ManifestParseError("each entry in files[] must be an object")
         try:
@@ -758,7 +780,6 @@ def parse_manifest(blob: bytes) -> Manifest:
                 ManifestEntry(
                     name=raw["name"],
                     sha256=raw["sha256"],
-                    size=int(raw["size"]),
                     abi_version=raw.get("abi_version"),
                 )
             )
@@ -767,7 +788,7 @@ def parse_manifest(blob: bytes) -> Manifest:
                 f"manifest entry missing required field: {exc.args[0]}"
             ) from exc
 
-    return Manifest(version=str(data["version"]), files=tuple(entries))
+    return Manifest(files=tuple(entries))
 ```
 
 - [ ] **Step 4: Run to verify it passes**
@@ -1118,7 +1139,16 @@ git commit -m "Cloud plugin: ABI-version pin check"
 
 The driver glues everything together. Inputs: the target plugin dir and an `httpx.AsyncClient`. Output: a populated `${plugin_dir}/active/` containing both `.so`s + the manifest, all validated. Idempotent: skips work if `active/` already passes validation against the pinned version.
 
-> The exact CDN URL paths come from Phase 0 Task 0.4. **Replace the `_NETWORK_PLUGIN_URL` and `_BAMBU_SOURCE_URL` constants below with the real ones before running the integration tests.**
+**The flow (per Phase 0 discovery §Q11.3):**
+
+1. `GET v1/iot-service/api/slicer/resource?slicer/plugins/cloud=<version>` with the forged BambuStudio Linux headers → JSON listing.
+2. Parse the listing for the entry whose `type == "slicer/plugins/cloud"`. Validate its `version` is compatible with our pinned version (patch-level drift tolerated, same rules as `validate_abi_version`).
+3. `GET <url-from-listing>` (no special headers — the CDN is public) → ZIP bytes.
+4. Extract the ZIP to a staging directory (`${plugin_dir}/staging/`).
+5. Read `linux_payload_manifest.json` from staging, parse it.
+6. Validate the `abi_version` on the `libbambu_networking.so` entry against the pinned version.
+7. Validate ELF magic + SHA-256 on each `.so` listed in the manifest.
+8. Atomic swap: remove old `active/`, rename `staging/` → `active/`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1126,12 +1156,26 @@ Append to `tests/test_cloud_plugin_downloader.py`:
 
 ```python
 import hashlib
+import io
 import json as _json
+import zipfile
 from pathlib import Path
 
 import httpx
 
-from app.cloud.plugin_downloader import PluginDownloader
+from app.cloud.plugin_downloader import (
+    ListingParseError,
+    PluginDownloader,
+    parse_resource_listing,
+)
+
+
+_API_BASE = "https://api.bambulab.com"
+_LISTING_PATH = "/v1/iot-service/api/slicer/resource"
+_ZIP_URL = (
+    "https://public-cdn.bblmw.com/upgrade/studio/plugins/02.05.02.58/"
+    "abc12345/linux_02.05.02.58.zip"
+)
 
 
 def _hex_sha256(blob: bytes) -> str:
@@ -1143,50 +1187,106 @@ def _make_fake_so(name: str = "stub") -> bytes:
     return _ELF_X86_64_LE + name.encode() + b"\x00" * 64
 
 
-def _make_fake_cdn_handler(*, network_so: bytes, source_so: bytes):
-    """Return an httpx mock handler that serves a manifest + both .so files."""
-    manifest = {
-        "version": "02.05.02.51",
+def _build_fake_zip(
+    *, network_so: bytes, source_so: bytes, manifest_override: dict | None = None
+) -> bytes:
+    """Build an in-memory ZIP that mirrors Bambu's plugin payload structure.
+
+    Contains both `.so` files and `linux_payload_manifest.json`.
+    """
+    manifest = manifest_override or {
         "files": [
             {
                 "name": "libbambu_networking.so",
                 "sha256": _hex_sha256(network_so),
-                "abi_version": "02.05.02.51",
-                "size": len(network_so),
+                "abi_version": "02.05.02.58",
             },
             {
                 "name": "libBambuSource.so",
                 "sha256": _hex_sha256(source_so),
-                "size": len(source_so),
             },
         ],
     }
-    manifest_blob = _json.dumps(manifest).encode("utf-8")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("linux_payload_manifest.json", _json.dumps(manifest))
+        zf.writestr("libbambu_networking.so", network_so)
+        zf.writestr("libBambuSource.so", source_so)
+    return buffer.getvalue()
+
+
+def _build_listing(*, version: str = "02.05.02.58", url: str = _ZIP_URL) -> bytes:
+    """Build the JSON the listing endpoint returns (per Phase 0 §Q11.3)."""
+    return _json.dumps(
+        {
+            "message": "success",
+            "code": None,
+            "error": None,
+            "software": None,
+            "guide": None,
+            "resources": [
+                {
+                    "type": "slicer/plugins/cloud",
+                    "version": version,
+                    "description": "",
+                    "url": url,
+                    "force_update": False,
+                }
+            ],
+        }
+    ).encode("utf-8")
+
+
+def _make_fake_cdn_handler(*, listing: bytes, zip_blob: bytes):
+    """Return an httpx mock handler that serves the listing + the ZIP.
+
+    Asserts the listing request carries the forged BambuStudio Linux headers.
+    The ZIP request is unauthenticated (matches real CloudFront behaviour).
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        # Brand check: every request must look like Linux Bambu Studio.
-        assert request.headers["User-Agent"] == "BambuStudio/02.05.02.51"
-        assert request.headers["X-BBL-OS-Type"] == "linux"
-
         url = str(request.url)
-        if url.endswith("/manifest"):
-            return httpx.Response(200, content=manifest_blob)
-        if url.endswith("/libbambu_networking.so"):
-            return httpx.Response(200, content=network_so)
-        if url.endswith("/libBambuSource.so"):
-            return httpx.Response(200, content=source_so)
-        return httpx.Response(404)
+        if request.url.path == _LISTING_PATH:
+            # Brand check: the listing request must look like Linux Bambu Studio.
+            assert (
+                request.headers["User-Agent"] == "BambuStudio/02.05.02.58"
+            ), request.headers["User-Agent"]
+            assert request.headers["X-BBL-OS-Type"] == "linux"
+            assert request.headers["X-BBL-Client-Name"] == "BambuStudio"
+            return httpx.Response(200, content=listing)
+        if url == _ZIP_URL:
+            return httpx.Response(200, content=zip_blob)
+        return httpx.Response(404, text=f"unexpected request: {url}")
 
     return handler
+
+
+def test_parse_resource_listing_extracts_cloud_entry():
+    entry = parse_resource_listing(_build_listing())
+    assert entry.version == "02.05.02.58"
+    assert entry.url == _ZIP_URL
+
+
+def test_parse_resource_listing_rejects_no_cloud_entry():
+    blob = _json.dumps({"message": "success", "resources": []}).encode()
+    with pytest.raises(ListingParseError):
+        parse_resource_listing(blob)
+
+
+def test_parse_resource_listing_rejects_malformed_json():
+    with pytest.raises(ListingParseError):
+        parse_resource_listing(b"not json")
 
 
 async def test_downloader_fetches_and_validates(tmp_path):
     network_so = _make_fake_so("network")
     source_so = _make_fake_so("source")
-    handler = _make_fake_cdn_handler(network_so=network_so, source_so=source_so)
+    listing = _build_listing()
+    zip_blob = _build_fake_zip(network_so=network_so, source_so=source_so)
+    handler = _make_fake_cdn_handler(listing=listing, zip_blob=zip_blob)
 
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(handler), base_url="https://cdn.example"
+        transport=httpx.MockTransport(handler), base_url=_API_BASE
     ) as client:
         downloader = PluginDownloader(plugin_dir=tmp_path, client=client)
         await downloader.ensure_active()
@@ -1200,10 +1300,12 @@ async def test_downloader_fetches_and_validates(tmp_path):
 async def test_downloader_is_idempotent_when_already_valid(tmp_path):
     network_so = _make_fake_so("network")
     source_so = _make_fake_so("source")
-    handler = _make_fake_cdn_handler(network_so=network_so, source_so=source_so)
+    listing = _build_listing()
+    zip_blob = _build_fake_zip(network_so=network_so, source_so=source_so)
+    handler = _make_fake_cdn_handler(listing=listing, zip_blob=zip_blob)
 
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(handler), base_url="https://cdn.example"
+        transport=httpx.MockTransport(handler), base_url=_API_BASE
     ) as client:
         downloader = PluginDownloader(plugin_dir=tmp_path, client=client)
         await downloader.ensure_active()
@@ -1214,7 +1316,7 @@ async def test_downloader_is_idempotent_when_already_valid(tmp_path):
         transport=httpx.MockTransport(
             lambda req: httpx.Response(500, text="should not be called")
         ),
-        base_url="https://cdn.example",
+        base_url=_API_BASE,
     )
     try:
         downloader = PluginDownloader(plugin_dir=tmp_path, client=poisoned)
@@ -1226,25 +1328,54 @@ async def test_downloader_is_idempotent_when_already_valid(tmp_path):
 async def test_downloader_rejects_tampered_so(tmp_path):
     network_so = _make_fake_so("network")
     source_so = _make_fake_so("source")
-    base_handler = _make_fake_cdn_handler(
-        network_so=network_so, source_so=source_so
+    listing = _build_listing()
+    # Build a ZIP whose manifest claims the original SHAs but whose
+    # libbambu_networking.so bytes are different content. SHA validation
+    # must reject this.
+    manifest = {
+        "files": [
+            {
+                "name": "libbambu_networking.so",
+                "sha256": _hex_sha256(network_so),  # SHA of the ORIGINAL
+                "abi_version": "02.05.02.58",
+            },
+            {
+                "name": "libBambuSource.so",
+                "sha256": _hex_sha256(source_so),
+            },
+        ],
+    }
+    tampered_zip = _build_fake_zip(
+        network_so=b"\x7fELF" + b"\x00" * 200,  # tampered
+        source_so=source_so,
+        manifest_override=manifest,
     )
-
-    # Override the network .so served to be different content (manifest
-    # still claims the original SHA), so SHA validation must reject it.
-    def tampered(request: httpx.Request) -> httpx.Response:
-        if str(request.url).endswith("/libbambu_networking.so"):
-            return httpx.Response(200, content=b"\x7fELF" + b"\x00" * 200)
-        return base_handler(request)
+    handler = _make_fake_cdn_handler(listing=listing, zip_blob=tampered_zip)
 
     async with httpx.AsyncClient(
-        transport=httpx.MockTransport(tampered),
-        base_url="https://cdn.example",
+        transport=httpx.MockTransport(handler), base_url=_API_BASE
     ) as client:
         downloader = PluginDownloader(plugin_dir=tmp_path, client=client)
         with pytest.raises(IntegrityError):
             await downloader.ensure_active()
     # No artifacts left behind on failure.
+    assert not (tmp_path / "active").exists()
+
+
+async def test_downloader_rejects_listing_with_incompatible_version(tmp_path):
+    # Listing reports a major-bump version; pin check must reject it.
+    network_so = _make_fake_so("network")
+    source_so = _make_fake_so("source")
+    listing = _build_listing(version="03.00.00.00")
+    zip_blob = _build_fake_zip(network_so=network_so, source_so=source_so)
+    handler = _make_fake_cdn_handler(listing=listing, zip_blob=zip_blob)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=_API_BASE
+    ) as client:
+        downloader = PluginDownloader(plugin_dir=tmp_path, client=client)
+        with pytest.raises(IntegrityError):
+            await downloader.ensure_active()
     assert not (tmp_path / "active").exists()
 ```
 
@@ -1254,13 +1385,17 @@ Run: `.venv/bin/pytest tests/test_cloud_plugin_downloader.py -v -k downloader`
 
 Expected: FAIL — `ImportError: cannot import name 'PluginDownloader'`.
 
-- [ ] **Step 3: Implement `PluginDownloader`**
+- [ ] **Step 3: Implement listing parsing and `PluginDownloader`**
 
 Append to `app/cloud/plugin_downloader.py`:
 
 ```python
+import io
+import json
 import logging
 import shutil
+import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -1269,21 +1404,85 @@ from app.cloud import BAMBU_NETWORK_AGENT_VERSION
 
 logger = logging.getLogger("bambu.cloud.downloader")
 
-# REPLACE these with the real endpoint paths discovered in Phase 0 Task 0.4.
-_MANIFEST_URL = "/manifest"
-_NETWORK_PLUGIN_URL = "/libbambu_networking.so"
-_BAMBU_SOURCE_URL = "/libBambuSource.so"
-
+# Bambu CDN endpoint paths (per Phase 0 §Q11.3 discovery).
+_RESOURCE_TYPE = "slicer/plugins/cloud"
+_LISTING_PATH = "/v1/iot-service/api/slicer/resource"
 _NETWORK_SO = "libbambu_networking.so"
 _SOURCE_SO = "libBambuSource.so"
 _MANIFEST_FILE = "linux_payload_manifest.json"
 
 
+class ListingParseError(ValueError):
+    """Raised when the Bambu resource-listing JSON is malformed or empty."""
+
+
+@dataclass(frozen=True)
+class ResourceEntry:
+    """One entry from the Bambu resource-listing response.
+
+    Matches the schema captured in Phase 0 §Q11.3.
+    """
+
+    type: str
+    version: str
+    url: str
+    description: str = ""
+    force_update: bool = False
+
+
+def parse_resource_listing(blob: bytes) -> ResourceEntry:
+    """Parse the listing JSON and return the cloud-plugin entry.
+
+    Raises :class:`ListingParseError` if the body is invalid or contains no
+    ``type == "slicer/plugins/cloud"`` entry.
+    """
+    try:
+        data = json.loads(blob)
+    except json.JSONDecodeError as exc:
+        raise ListingParseError(f"listing is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ListingParseError("listing must be a JSON object")
+    resources = data.get("resources")
+    if not isinstance(resources, list):
+        raise ListingParseError("listing 'resources' must be a list")
+    for raw in resources:
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("type") != _RESOURCE_TYPE:
+            continue
+        try:
+            return ResourceEntry(
+                type=raw["type"],
+                version=raw["version"],
+                url=raw["url"],
+                description=raw.get("description", ""),
+                force_update=bool(raw.get("force_update", False)),
+            )
+        except KeyError as exc:
+            raise ListingParseError(
+                f"resource entry missing required field: {exc.args[0]}"
+            ) from exc
+    raise ListingParseError(
+        f"no resource of type {_RESOURCE_TYPE!r} in listing"
+    )
+
+
 class PluginDownloader:
     """Downloads, validates, and persists the Bambu network plugin.
 
+    Flow:
+      1. GET the resource listing with forged BambuStudio Linux headers.
+      2. Parse the listing for the cloud-plugin entry; validate its version
+         against the pinned ABI version.
+      3. GET the ZIP archive from the entry's URL (no special headers — the
+         CDN is public).
+      4. Extract the ZIP to staging; read and parse the bundled manifest.
+      5. Validate ELF magic + SHA-256 on each ``.so`` named in the manifest.
+      6. Atomic-ish swap: remove old ``active/``, rename ``staging/`` →
+         ``active/``.
+
     Idempotent: ``ensure_active()`` is a no-op if ``${plugin_dir}/active/``
-    already contains both ``.so`` files matching the pinned manifest.
+    already contains both ``.so`` files matching the bundled manifest.
     """
 
     def __init__(self, *, plugin_dir: Path, client: httpx.AsyncClient) -> None:
@@ -1314,8 +1513,21 @@ class PluginDownloader:
         staging.mkdir(parents=True)
 
         try:
-            manifest_blob = await self._get(_MANIFEST_URL)
-            manifest = parse_manifest(manifest_blob)
+            listing_blob = await self._get_listing()
+            entry = parse_resource_listing(listing_blob)
+            validate_abi_version(
+                entry.version, pinned=BAMBU_NETWORK_AGENT_VERSION
+            )
+
+            zip_blob = await self._get_binary(entry.url)
+            _extract_zip(zip_blob, staging)
+
+            manifest_path = staging / _MANIFEST_FILE
+            if not manifest_path.exists():
+                raise ManifestParseError(
+                    f"ZIP did not contain {_MANIFEST_FILE}"
+                )
+            manifest = parse_manifest(manifest_path.read_bytes())
 
             net_entry = manifest.find(_NETWORK_SO)
             src_entry = manifest.find(_SOURCE_SO)
@@ -1328,17 +1540,15 @@ class PluginDownloader:
                 net_entry.abi_version, pinned=BAMBU_NETWORK_AGENT_VERSION
             )
 
-            net_path = staging / _NETWORK_SO
-            src_path = staging / _SOURCE_SO
-            net_path.write_bytes(await self._get(_NETWORK_PLUGIN_URL))
-            src_path.write_bytes(await self._get(_BAMBU_SOURCE_URL))
-
-            validate_elf(net_path)
-            validate_elf(src_path)
-            validate_sha256(net_path, net_entry.sha256)
-            validate_sha256(src_path, src_entry.sha256)
-
-            (staging / _MANIFEST_FILE).write_bytes(manifest_blob)
+            for me in (net_entry, src_entry):
+                so_path = staging / me.name
+                if not so_path.exists():
+                    raise IntegrityError(
+                        f"manifest references {me.name} but ZIP did not "
+                        "contain it"
+                    )
+                validate_elf(so_path)
+                validate_sha256(so_path, me.sha256)
 
             # Atomic-ish swap: remove old active/, rename staging -> active/.
             if self._active.exists():
@@ -1346,7 +1556,7 @@ class PluginDownloader:
             staging.rename(self._active)
             logger.info(
                 "Bambu plugin %s installed to %s",
-                manifest.version,
+                entry.version,
                 self._active,
             )
         except Exception:
@@ -1354,8 +1564,19 @@ class PluginDownloader:
             shutil.rmtree(self._active, ignore_errors=True)
             raise
 
-    async def _get(self, path: str) -> bytes:
-        response = await self._client.get(path, headers=bambu_studio_headers())
+    async def _get_listing(self) -> bytes:
+        response = await self._client.get(
+            _LISTING_PATH,
+            params={_RESOURCE_TYPE: BAMBU_NETWORK_AGENT_VERSION},
+            headers=bambu_studio_headers(),
+        )
+        response.raise_for_status()
+        return response.content
+
+    async def _get_binary(self, url: str) -> bytes:
+        # The ZIP CDN is public (CloudFront), no forged headers required —
+        # but we send them anyway because httpx will reuse them harmlessly.
+        response = await self._client.get(url, headers=bambu_studio_headers())
         response.raise_for_status()
         return response.content
 
@@ -1381,6 +1602,28 @@ class PluginDownloader:
         except IntegrityError:
             return False
         return True
+
+
+def _extract_zip(blob: bytes, dest: Path) -> None:
+    """Extract ``blob`` (a ZIP archive) into ``dest`` (must already exist).
+
+    Refuses any entry whose normalised path escapes ``dest`` (zip-slip
+    guard). All extracted files land directly in ``dest`` — we flatten
+    archive subdirectories.
+    """
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            # Flatten: take just the basename so the manifest + .so files
+            # land at dest/<name> regardless of ZIP internal layout.
+            target = dest / Path(info.filename).name
+            if not target.resolve().is_relative_to(dest.resolve()):
+                raise IntegrityError(
+                    f"ZIP entry {info.filename!r} escapes target directory"
+                )
+            with zf.open(info) as src, target.open("wb") as out:
+                shutil.copyfileobj(src, out)
 ```
 
 - [ ] **Step 4: Run to verify it passes**
@@ -1524,6 +1767,6 @@ Phase 0 + Phase 1 are complete. The next plan (`docs/superpowers/plans/2026-XX-X
 
 1. `export BAMBU_CLOUD_ENABLED=true BAMBU_CLOUD_PLUGIN_DIR=$(mktemp -d)`
 2. `.venv/bin/python -m app` (or `uvicorn app.main:app --reload`)
-3. Confirm log line `Bambu plugin 02.05.02.51 installed to /tmp/.../active`
-4. `ls $BAMBU_CLOUD_PLUGIN_DIR/active/` — both `.so`s + manifest present
+3. Confirm log line `Bambu plugin 02.05.02.58 installed to /tmp/.../active`
+4. `ls $BAMBU_CLOUD_PLUGIN_DIR/active/` — both `.so`s + `linux_payload_manifest.json` present
 5. Restart the process and confirm the log says "already present and valid; skipping fetch"
