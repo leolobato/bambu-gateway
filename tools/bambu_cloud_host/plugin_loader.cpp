@@ -19,6 +19,8 @@
 #include <dlfcn.h>
 #include <sys/stat.h>
 
+#include "event_queue.hpp"
+
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -109,14 +111,18 @@ void PluginLoader::load_from_env() {
 
   // Resolve all 7 symbols.  Any missing symbol throws immediately so the
   // caller gets a clear error message before we try to call anything.
-  p_create_agent_     = must_resolve<fn_create_agent>    (dl_handle_, "bambu_network_create_agent");
-  p_init_log_         = must_resolve<fn_init_log>         (dl_handle_, "bambu_network_init_log");
-  p_set_config_dir_   = must_resolve<fn_set_config_dir>   (dl_handle_, "bambu_network_set_config_dir");
-  p_set_cert_file_    = must_resolve<fn_set_cert_file>    (dl_handle_, "bambu_network_set_cert_file");
-  p_set_country_code_ = must_resolve<fn_set_country_code> (dl_handle_, "bambu_network_set_country_code");
-  p_start_            = must_resolve<fn_start>            (dl_handle_, "bambu_network_start");
-  p_change_user_      = must_resolve<fn_change_user>      (dl_handle_, "bambu_network_change_user");
-  p_get_my_token_     = must_resolve<fn_get_my_token>     (dl_handle_, "bambu_network_get_my_token");
+  p_create_agent_      = must_resolve<fn_create_agent>     (dl_handle_, "bambu_network_create_agent");
+  p_init_log_          = must_resolve<fn_init_log>          (dl_handle_, "bambu_network_init_log");
+  p_set_config_dir_    = must_resolve<fn_set_config_dir>    (dl_handle_, "bambu_network_set_config_dir");
+  p_set_cert_file_     = must_resolve<fn_set_cert_file>     (dl_handle_, "bambu_network_set_cert_file");
+  p_set_country_code_  = must_resolve<fn_set_country_code>  (dl_handle_, "bambu_network_set_country_code");
+  p_start_             = must_resolve<fn_start>             (dl_handle_, "bambu_network_start");
+  p_change_user_       = must_resolve<fn_change_user>       (dl_handle_, "bambu_network_change_user");
+  p_get_my_token_      = must_resolve<fn_get_my_token>      (dl_handle_, "bambu_network_get_my_token");
+  p_set_on_message_fn_ = must_resolve<fn_set_on_message_fn> (dl_handle_, "bambu_network_set_on_message_fn");
+  p_connect_server_    = must_resolve<fn_connect_server>    (dl_handle_, "bambu_network_connect_server");
+  p_start_subscribe_   = must_resolve<fn_start_subscribe>   (dl_handle_, "bambu_network_start_subscribe");
+  p_add_subscribe_     = must_resolve<fn_add_subscribe>     (dl_handle_, "bambu_network_add_subscribe");
 }
 
 int PluginLoader::bootstrap() {
@@ -199,8 +205,22 @@ int PluginLoader::bootstrap() {
   // --- Step 6: start ---
   rc = p_start_(agent_);
   std::fprintf(stderr, "bambu_cloud_host: start rc=%d\n", rc);
+  if (rc != 0) return rc;
 
-  return rc;
+  // --- Step 7: register OnMessage trampoline (non-fatal) ---
+  // Wrap in try/catch: if this fails the change_user / get_my_token use case
+  // still works fine without a subscription callback.
+  try {
+    register_message_callback();
+    std::fprintf(stderr, "bambu_cloud_host: register_message_callback OK\n");
+  } catch (const std::exception& e) {
+    std::fprintf(stderr,
+                 "bambu_cloud_host: register_message_callback WARN: %s\n",
+                 e.what());
+    // Non-fatal — continue without the callback.
+  }
+
+  return 0;
 }
 
 int PluginLoader::change_user(const std::string& canonical_login_json) {
@@ -270,6 +290,59 @@ nlohmann::json PluginLoader::get_my_token(const std::string& ticket) {
   // Surface http_code alongside the token fields so the caller can log it.
   body_j["http_code"] = http_code;
   return body_j;
+}
+
+// register_message_callback — installs a trampoline that pushes every incoming
+// cloud MQTT message into the process-global EventQueue.
+//
+// The trampoline captures nothing (pure function with global side-effect) so it
+// is safe to call from multiple plugin threads concurrently.  EventQueue::push
+// takes a mutex, ensuring thread safety.
+//
+// Discovery (Phase A): OnMessageFn is std::function<void(string, string)> — ONLY
+// 2 params (dev_id, msg).  There is NO chan/channel parameter.  See:
+//   bambu_networking.hpp:120, BBLNetworkPlugin.hpp:39
+void PluginLoader::register_message_callback() {
+  if (!agent_ || !p_set_on_message_fn_) {
+    throw std::runtime_error("register_message_callback: agent not bootstrapped");
+  }
+  // Trampoline: capture nothing — push into the process-global queue.
+  on_message_fn cb = [](std::string dev_id, std::string msg) {
+    json event = {
+      {"kind",    "OnMessage"},
+      {"dev_id",  std::move(dev_id)},
+      {"payload", std::move(msg)},
+    };
+    global_event_queue().push(std::move(event));
+  };
+  int rc = p_set_on_message_fn_(agent_, std::move(cb));
+  if (rc != 0) {
+    throw std::runtime_error(
+        "set_on_message_fn rc=" + std::to_string(rc));
+  }
+}
+
+int PluginLoader::connect_server() {
+  if (!agent_) return -1;
+  int rc = p_connect_server_(agent_);
+  std::fprintf(stderr, "bambu_cloud_host: connect_server rc=%d\n", rc);
+  return rc;
+}
+
+int PluginLoader::start_subscribe(const std::string& module) {
+  if (!agent_) return -1;
+  int rc = p_start_subscribe_(agent_, module);
+  std::fprintf(stderr, "bambu_cloud_host: start_subscribe module=%s rc=%d\n",
+               module.c_str(), rc);
+  return rc;
+}
+
+int PluginLoader::add_subscribe(const std::vector<std::string>& dev_ids) {
+  if (!agent_) return -1;
+  int rc = p_add_subscribe_(agent_, dev_ids);
+  std::fprintf(stderr, "bambu_cloud_host: add_subscribe n=%zu rc=%d\n",
+               dev_ids.size(), rc);
+  return rc;
 }
 
 }  // namespace bambu_host

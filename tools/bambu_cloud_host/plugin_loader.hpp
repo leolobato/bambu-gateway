@@ -10,7 +10,9 @@
 //   docs/superpowers/notes/2026-05-27-bambu-cloud-host-discovery.md
 #pragma once
 
+#include <functional>
 #include <string>
+#include <vector>
 
 #include "third_party/nlohmann/json.hpp"
 
@@ -44,6 +46,35 @@ class PluginLoader {
   // refresh_expires_in, http_code}.  Throws std::runtime_error on plugin
   // error (non-zero rc) or if the response body cannot be parsed.
   nlohmann::json get_my_token(const std::string& ticket);
+
+  // Registers a trampoline with the plugin that pushes every incoming cloud
+  // MQTT message into the process-global EventQueue.
+  //
+  // The OnMessageFn callback is invoked from the plugin's internal MQTT thread.
+  // Our trampoline only calls EventQueue::push (mutex-guarded) so it is
+  // reentrant and safe for concurrent invocations.
+  //
+  // Discovery note: OnMessageFn has 2 params (dev_id, msg) — no chan param.
+  // Source: bambu_networking.hpp:120
+  //
+  // Throws std::runtime_error if bootstrap() was not called first or if the
+  // plugin returns a non-zero error code.
+  void register_message_callback();
+
+  // Calls bambu_network_connect_server(agent).
+  // Initiates the cloud MQTT broker handshake asynchronously.
+  // Returns 0 = initiated; negative = error.
+  int connect_server();
+
+  // Calls bambu_network_start_subscribe(agent, module).
+  // module — e.g. "printer" or "studio".
+  // Returns 0 = ok; negative = error.
+  int start_subscribe(const std::string& module);
+
+  // Calls bambu_network_add_subscribe(agent, dev_ids).
+  // Adds a list of device serials to the active MQTT subscription.
+  // Returns 0 = ok; negative = error.
+  int add_subscribe(const std::vector<std::string>& dev_ids);
 
  private:
   void* dl_handle_  = nullptr;
@@ -84,14 +115,39 @@ class PluginLoader {
   // Source: BBLNetworkPlugin.hpp:109, BBLCloudServiceAgent.cpp:620-629.
   using fn_get_my_token      = int(*)(void*, std::string, unsigned int*, std::string*);
 
-  fn_create_agent     p_create_agent_    = nullptr;
-  fn_init_log         p_init_log_        = nullptr;
-  fn_set_config_dir   p_set_config_dir_  = nullptr;
-  fn_set_cert_file    p_set_cert_file_   = nullptr;
-  fn_set_country_code p_set_country_code_= nullptr;
-  fn_start            p_start_           = nullptr;
-  fn_change_user      p_change_user_     = nullptr;
-  fn_get_my_token     p_get_my_token_    = nullptr;
+  // OnMessageFn — std::function callback type matching bambu_networking.hpp:120.
+  // EXACTLY 2 parameters: dev_id and msg (NO chan).
+  using on_message_fn = std::function<void(std::string dev_id, std::string msg)>;
+
+  // int bambu_network_set_on_message_fn(void *agent, OnMessageFn fn)
+  // Registers a callback invoked from the plugin's internal MQTT thread.
+  // Source: BBLNetworkPlugin.hpp:39, bambu_networking.hpp:120
+  using fn_set_on_message_fn = int(*)(void*, on_message_fn);
+
+  // int bambu_network_connect_server(void *agent)
+  // Source: BBLNetworkPlugin.hpp:44
+  using fn_connect_server    = int(*)(void*);
+
+  // int bambu_network_start_subscribe(void *agent, std::string module)
+  // Source: BBLNetworkPlugin.hpp:47
+  using fn_start_subscribe   = int(*)(void*, std::string);
+
+  // int bambu_network_add_subscribe(void *agent, std::vector<std::string> dev_list)
+  // Source: BBLNetworkPlugin.hpp:49
+  using fn_add_subscribe     = int(*)(void*, std::vector<std::string>);
+
+  fn_create_agent       p_create_agent_       = nullptr;
+  fn_init_log           p_init_log_           = nullptr;
+  fn_set_config_dir     p_set_config_dir_     = nullptr;
+  fn_set_cert_file      p_set_cert_file_      = nullptr;
+  fn_set_country_code   p_set_country_code_   = nullptr;
+  fn_start              p_start_              = nullptr;
+  fn_change_user        p_change_user_        = nullptr;
+  fn_get_my_token       p_get_my_token_       = nullptr;
+  fn_set_on_message_fn  p_set_on_message_fn_  = nullptr;
+  fn_connect_server     p_connect_server_     = nullptr;
+  fn_start_subscribe    p_start_subscribe_    = nullptr;
+  fn_add_subscribe      p_add_subscribe_      = nullptr;
 };
 
 }  // namespace bambu_host
