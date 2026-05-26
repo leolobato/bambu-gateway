@@ -114,6 +114,43 @@ def validate_sha256(path: Path, expected_hex: str) -> None:
         )
 
 
+_ELF_MAGIC = b"\x7fELF"
+_ELFCLASS64 = 2
+_ELFDATA2LSB = 1
+_EV_CURRENT = 1
+_EM_X86_64 = 0x3E
+
+
+def validate_elf(path: Path) -> None:
+    """Sanity-check that ``path`` is a 64-bit little-endian x86_64 ELF.
+
+    Does not parse program headers — only the first 20 bytes of the file are
+    inspected. This catches "the CDN served us the wrong binary" without
+    pulling in a full ELF parser. Mirrors OrcaSlicer-bambulab's
+    ``validate_linux_so_binary`` (``PJarczakLinuxBridgeConfig.cpp:293+``).
+
+    Raises :class:`IntegrityError` on any mismatch.
+    """
+    try:
+        head = path.read_bytes()[:20]
+    except OSError as exc:
+        raise IntegrityError(f"cannot read {path}: {exc}") from exc
+
+    if len(head) < 20 or head[:4] != _ELF_MAGIC:
+        raise IntegrityError(f"{path.name} is not an ELF file")
+    if head[4] != _ELFCLASS64:
+        raise IntegrityError(f"{path.name} is not 64-bit ELF")
+    if head[5] != _ELFDATA2LSB:
+        raise IntegrityError(f"{path.name} is not little-endian")
+    if head[6] != _EV_CURRENT:
+        raise IntegrityError(f"{path.name} has unexpected ELF version")
+    machine = int.from_bytes(head[18:20], "little")
+    if machine != _EM_X86_64:
+        raise IntegrityError(
+            f"{path.name} is for machine 0x{machine:x}, expected x86_64 (0x3E)"
+        )
+
+
 def bambu_studio_headers() -> dict[str, str]:
     """Headers that brand the request as a Linux build of Bambu Studio.
 

@@ -123,3 +123,65 @@ def test_validate_sha256_rejects_mismatch(tmp_path):
 def test_validate_sha256_rejects_missing_file(tmp_path):
     with pytest.raises(IntegrityError):
         validate_sha256(tmp_path / "absent.so", "0" * 64)
+
+
+# ---------------------------------------------------------------------------
+# ELF magic + arch validation
+# ---------------------------------------------------------------------------
+
+from app.cloud.plugin_downloader import validate_elf
+
+
+# A minimal valid ELF64 little-endian x86_64 header (52 bytes is enough; we
+# only inspect the first 20). Bytes 0-3: magic. Byte 4: class (2 = ELF64).
+# Byte 5: data encoding (1 = LE). Byte 6: version (1 = EV_CURRENT).
+# Bytes 18-19: e_machine (0x3E = x86_64, little-endian).
+_ELF_X86_64_LE = (
+    b"\x7fELF"            # magic
+    + b"\x02"             # EI_CLASS = ELFCLASS64
+    + b"\x01"             # EI_DATA  = ELFDATA2LSB
+    + b"\x01"             # EI_VERSION
+    + b"\x00" * 9         # EI_OSABI..EI_PAD
+    + b"\x03\x00"         # e_type   = ET_DYN
+    + b"\x3e\x00"         # e_machine = EM_X86_64 (0x3E little-endian)
+)
+
+
+def test_validate_elf_accepts_x86_64_le(tmp_path):
+    p = tmp_path / "x.so"
+    p.write_bytes(_ELF_X86_64_LE + b"\x00" * 128)
+    validate_elf(p)  # does not raise
+
+
+def test_validate_elf_rejects_non_elf(tmp_path):
+    p = tmp_path / "x.so"
+    p.write_bytes(b"not an ELF file at all")
+    with pytest.raises(IntegrityError):
+        validate_elf(p)
+
+
+def test_validate_elf_rejects_32bit(tmp_path):
+    p = tmp_path / "x.so"
+    blob = bytearray(_ELF_X86_64_LE)
+    blob[4] = 1  # ELFCLASS32
+    p.write_bytes(bytes(blob) + b"\x00" * 128)
+    with pytest.raises(IntegrityError):
+        validate_elf(p)
+
+
+def test_validate_elf_rejects_big_endian(tmp_path):
+    p = tmp_path / "x.so"
+    blob = bytearray(_ELF_X86_64_LE)
+    blob[5] = 2  # ELFDATA2MSB
+    p.write_bytes(bytes(blob) + b"\x00" * 128)
+    with pytest.raises(IntegrityError):
+        validate_elf(p)
+
+
+def test_validate_elf_rejects_non_x86_64_machine(tmp_path):
+    p = tmp_path / "x.so"
+    blob = bytearray(_ELF_X86_64_LE)
+    blob[18] = 0xB7  # EM_AARCH64
+    p.write_bytes(bytes(blob) + b"\x00" * 128)
+    with pytest.raises(IntegrityError):
+        validate_elf(p)
