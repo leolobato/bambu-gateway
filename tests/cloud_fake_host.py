@@ -11,6 +11,9 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections import deque
+
+_PENDING_EVENTS: deque = deque()
 
 
 def _record(request: dict) -> None:
@@ -46,6 +49,19 @@ def _dispatch(method: str, params: dict) -> dict:
             "expires_in": "3600",
             "refresh_expires_in": "86400",
         }
+    if method == "connect_server":
+        return {"rc": 0}
+    if method == "start_subscribe":
+        return {"rc": 0}
+    if method == "add_subscribe":
+        return {"rc": 0}
+    if method == "bridge.poll_events":
+        events = list(_PENDING_EVENTS)
+        _PENDING_EVENTS.clear()
+        return {"events": events}
+    if method == "_test_push_event":
+        _PENDING_EVENTS.append(params)
+        return {"queued": True}
     raise ValueError(f"unknown method: {method}")
 
 
