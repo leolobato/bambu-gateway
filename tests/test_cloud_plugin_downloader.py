@@ -328,6 +328,10 @@ def _make_fake_cdn_handler(*, listing: bytes, zip_blob: bytes):
             ), request.headers["User-Agent"]
             assert request.headers["X-BBL-OS-Type"] == "linux"
             assert request.headers["X-BBL-Client-Name"] == "BambuStudio"
+            # Confirm the query string preserves literal slashes (not %2F)
+            assert "slicer/plugins/cloud=" in str(request.url), (
+                f"query slashes were encoded: {request.url}"
+            )
             return httpx.Response(200, content=listing)
         if url == _ZIP_URL:
             return httpx.Response(200, content=zip_blob)
@@ -452,3 +456,29 @@ async def test_downloader_rejects_listing_with_incompatible_version(tmp_path):
         with pytest.raises(IntegrityError):
             await downloader.ensure_active()
     assert not (tmp_path / "active").exists()
+
+
+async def test_downloader_recovers_from_corrupt_active_manifest(tmp_path):
+    """If active/ exists but has a corrupt manifest, re-download cleanly."""
+    network_so = _make_fake_so("network")
+    source_so = _make_fake_so("source")
+    listing = _build_listing()
+    zip_blob = _build_fake_zip(network_so=network_so, source_so=source_so)
+    handler = _make_fake_cdn_handler(listing=listing, zip_blob=zip_blob)
+
+    # Pre-populate active/ with garbage so _active_is_valid() must
+    # reject it without raising.
+    active = tmp_path / "active"
+    active.mkdir()
+    (active / "linux_payload_manifest.json").write_bytes(b"not valid json")
+    (active / "libbambu_networking.so").write_bytes(b"stale")
+    (active / "libBambuSource.so").write_bytes(b"stale")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=_API_BASE
+    ) as client:
+        downloader = PluginDownloader(plugin_dir=tmp_path, client=client)
+        await downloader.ensure_active()
+
+    # Re-downloaded files replace the stale ones.
+    assert (active / "libbambu_networking.so").read_bytes() == network_so

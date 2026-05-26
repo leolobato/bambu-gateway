@@ -212,7 +212,11 @@ async def lifespan(app: FastAPI):
                 plugin_dir=settings.bambu_cloud_plugin_dir,
                 client=cdn_client,
             )
-            await downloader.ensure_active()
+            try:
+                await downloader.ensure_active()
+            except Exception as exc:
+                logger.error("Bambu cloud plugin startup failed: %s", exc)
+                raise
 
     # Device registry + APNs
     device_store_path = config_store._config_path.parent / "devices.json"

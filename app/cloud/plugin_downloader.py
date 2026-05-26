@@ -366,17 +366,20 @@ class PluginDownloader:
             raise
 
     async def _get_listing(self) -> bytes:
+        # Use a literal-slash query string to match the OrcaSlicer client
+        # exactly; httpx would percent-encode `/` in a `params=` dict.
+        path_with_query = (
+            f"{_LISTING_PATH}?{_RESOURCE_TYPE}={BAMBU_NETWORK_AGENT_VERSION}"
+        )
         response = await self._client.get(
-            _LISTING_PATH,
-            params={_RESOURCE_TYPE: BAMBU_NETWORK_AGENT_VERSION},
-            headers=bambu_studio_headers(),
+            path_with_query, headers=bambu_studio_headers()
         )
         response.raise_for_status()
         return response.content
 
     async def _get_binary(self, url: str) -> bytes:
-        # The ZIP CDN is public (CloudFront), no forged headers required.
-        response = await self._client.get(url, headers=bambu_studio_headers())
+        # The ZIP CDN is public (CloudFront); no forged headers needed.
+        response = await self._client.get(url)
         response.raise_for_status()
         return response.content
 
@@ -399,7 +402,7 @@ class PluginDownloader:
             )
             validate_sha256(self._active / _NETWORK_SO, net_entry.sha256)
             validate_sha256(self._active / _SOURCE_SO, src_entry.sha256)
-        except IntegrityError:
+        except (IntegrityError, ManifestParseError):
             return False
         return True
 
