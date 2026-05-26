@@ -185,3 +185,43 @@ def test_validate_elf_rejects_non_x86_64_machine(tmp_path):
     p.write_bytes(bytes(blob) + b"\x00" * 128)
     with pytest.raises(IntegrityError):
         validate_elf(p)
+
+
+# ---------------------------------------------------------------------------
+# ABI version pin check
+# ---------------------------------------------------------------------------
+
+from app.cloud.plugin_downloader import (
+    AbiVersionMismatch,
+    validate_abi_version,
+)
+
+
+def test_abi_version_accepts_exact_match():
+    validate_abi_version("02.05.02.51", pinned="02.05.02.51")
+
+
+def test_abi_version_accepts_patch_level_drift():
+    # First 8 chars (02.05.02) must match; the 4th component is patch.
+    validate_abi_version("02.05.02.99", pinned="02.05.02.51")
+    validate_abi_version("02.05.02.00", pinned="02.05.02.51")
+
+
+def test_abi_version_rejects_minor_drift():
+    with pytest.raises(AbiVersionMismatch):
+        validate_abi_version("02.05.03.51", pinned="02.05.02.51")
+
+
+def test_abi_version_rejects_major_drift():
+    with pytest.raises(AbiVersionMismatch):
+        validate_abi_version("03.05.02.51", pinned="02.05.02.51")
+
+
+def test_abi_version_rejects_missing():
+    with pytest.raises(AbiVersionMismatch):
+        validate_abi_version(None, pinned="02.05.02.51")
+
+
+def test_abi_version_rejects_garbage():
+    with pytest.raises(AbiVersionMismatch):
+        validate_abi_version("xyz", pinned="02.05.02.51")

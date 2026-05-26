@@ -151,6 +151,35 @@ def validate_elf(path: Path) -> None:
         )
 
 
+class AbiVersionMismatch(IntegrityError):
+    """Raised when the manifest's abi_version diverges from the pinned one."""
+
+
+def validate_abi_version(manifest_abi: str | None, *, pinned: str) -> None:
+    """Confirm that the manifest declares a compatible ABI version.
+
+    Compatibility rule mirrors OrcaSlicer-bambulab
+    (``PJarczakLinuxBridgeConfig.cpp:293-490``): the first 8 chars
+    (``02.05.02``) must match. The 4th component is patch-level and may
+    drift.
+
+    Raises :class:`AbiVersionMismatch` if the value is missing or
+    incompatible.
+    """
+    if manifest_abi is None:
+        raise AbiVersionMismatch(
+            f"manifest entry is missing abi_version; expected {pinned}"
+        )
+    if len(manifest_abi) < 8 or len(pinned) < 8:
+        raise AbiVersionMismatch(
+            f"abi_version {manifest_abi!r} has unexpected shape"
+        )
+    if manifest_abi[:8] != pinned[:8]:
+        raise AbiVersionMismatch(
+            f"abi_version {manifest_abi!r} incompatible with pinned {pinned!r}"
+        )
+
+
 def bambu_studio_headers() -> dict[str, str]:
     """Headers that brand the request as a Linux build of Bambu Studio.
 
