@@ -116,6 +116,7 @@ void PluginLoader::load_from_env() {
   p_set_country_code_ = must_resolve<fn_set_country_code> (dl_handle_, "bambu_network_set_country_code");
   p_start_            = must_resolve<fn_start>            (dl_handle_, "bambu_network_start");
   p_change_user_      = must_resolve<fn_change_user>      (dl_handle_, "bambu_network_change_user");
+  p_get_my_token_     = must_resolve<fn_get_my_token>     (dl_handle_, "bambu_network_get_my_token");
 }
 
 int PluginLoader::bootstrap() {
@@ -212,6 +213,63 @@ int PluginLoader::change_user(const std::string& canonical_login_json) {
   int rc = p_change_user_(agent_, canonical_login_json);
   std::fprintf(stderr, "bambu_cloud_host: change_user rc=%d\n", rc);
   return rc;
+}
+
+// bambu_network_get_my_token — synchronous ticket-to-token exchange.
+//
+// C signature (BBLNetworkPlugin.hpp:109):
+//   typedef int (*func_get_my_token)(void *agent, std::string ticket,
+//                                    unsigned int *http_code,
+//                                    std::string *http_body);
+//
+// The plugin makes an HTTPS call to Bambu's token endpoint, fills *http_code
+// with the HTTP status code (200 on success) and *http_body with a JSON
+// string containing the token fields (accessToken / access_token, etc.).
+// Returns 0 on success, negative on error.  This matches the "sync with
+// out-params" pattern used by change_user and all other plugin functions.
+//
+// OrcaSlicer call site (HttpServer.cpp:294-304):
+//   const int token_result = agent->get_my_token(ticket, &token_http_code,
+//                                                &token_http_body);
+//   if (token_result == 0) {
+//       token_j = json::parse(token_http_body);
+//       access_token = json_string_first(token_j,
+//                          {"accessToken", "access_token", "token"});
+//   }
+nlohmann::json PluginLoader::get_my_token(const std::string& ticket) {
+  if (!agent_) {
+    throw std::runtime_error("get_my_token: agent not bootstrapped");
+  }
+
+  unsigned int http_code = 0;
+  std::string  http_body;
+
+  // Call is synchronous — blocks until the HTTPS round-trip completes.
+  int rc = p_get_my_token_(agent_, ticket, &http_code, &http_body);
+  std::fprintf(stderr,
+               "bambu_cloud_host: get_my_token rc=%d http_code=%u body_len=%zu\n",
+               rc, http_code, http_body.size());
+
+  if (rc != 0) {
+    throw std::runtime_error("get_my_token rc=" + std::to_string(rc) +
+                             " http_code=" + std::to_string(http_code));
+  }
+
+  // Parse the JSON body returned by the plugin.  OrcaSlicer (HttpServer.cpp:304)
+  // normalises via json_string_first({"accessToken","access_token","token"});
+  // we return the raw parsed object so the Python side can normalise the same way.
+  nlohmann::json body_j;
+  try {
+    body_j = nlohmann::json::parse(http_body);
+  } catch (const std::exception& e) {
+    throw std::runtime_error(
+        std::string("get_my_token: failed to parse response body: ") + e.what() +
+        " body=" + http_body.substr(0, 200));
+  }
+
+  // Surface http_code alongside the token fields so the caller can log it.
+  body_j["http_code"] = http_code;
+  return body_j;
 }
 
 }  // namespace bambu_host

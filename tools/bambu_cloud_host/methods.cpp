@@ -43,12 +43,23 @@ json method_change_user(const json& params) {
   return {{"rc", rc}};
 }
 
+// get_my_token — exchange a Bambu ticket for an access-token bundle.
+// Params: {"ticket": "<ticket string from OAuth redirect>"}
+// Returns the token JSON returned by the plugin (accessToken/access_token,
+// refresh_token, expires_in, refresh_expires_in, http_code).
+// Throws (→ RPC error response) if the plugin call fails.
+json method_get_my_token(const json& params) {
+  std::string ticket = params.at("ticket").get<std::string>();
+  return loader().get_my_token(ticket);
+}
+
 }  // namespace
 
 json dispatch_method(const std::string& method, const json& params) {
-  if (method == "echo")         return method_echo(params);
-  if (method == "init_plugin")  return method_init_plugin(params);
-  if (method == "change_user")  return method_change_user(params);
+  if (method == "echo")           return method_echo(params);
+  if (method == "init_plugin")    return method_init_plugin(params);
+  if (method == "change_user")    return method_change_user(params);
+  if (method == "get_my_token")   return method_get_my_token(params);
   throw std::runtime_error("unknown method: " + method);
 }
 

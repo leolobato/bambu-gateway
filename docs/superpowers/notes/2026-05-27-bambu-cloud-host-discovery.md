@@ -200,3 +200,57 @@ unaffected.
 | `HttpServer.cpp` | 318–319, 357–358, 401–402 | three call sites |
 | `GUI_App.cpp` | 3875–3889 | bootstrap call order |
 | `bambu_networking.hpp` | 22–50 | error code `#define`s |
+| `BBLNetworkPlugin.hpp` | 109 | `func_get_my_token` typedef |
+| `BBLNetworkPlugin.hpp` | 364 | accessor `get_get_my_token()` |
+| `BBLNetworkPlugin.hpp` | 500 | member `m_get_my_token` |
+| `BBLNetworkPlugin.cpp` | 760 | `dlsym` call: `"bambu_network_get_my_token"` |
+| `BBLCloudServiceAgent.cpp` | 620–629 | wrapper that calls the pointer |
+| `HttpServer.cpp` | 90–125 | `do_request_login_info` — ticket flow call site |
+| `HttpServer.cpp` | 290–340 | `thirdparty_login` — second ticket flow call site |
+
+---
+
+## get_my_token
+
+**Symbol name:** `bambu_network_get_my_token`
+
+**Exact C typedef (verbatim from `BBLNetworkPlugin.hpp:109`):**
+```cpp
+typedef int (*func_get_my_token)(void *agent, std::string ticket, unsigned int *http_code, std::string *http_body);
+```
+
+**Sync or async/callback:** Synchronous with out-params. The plugin makes an
+HTTPS call to Bambu's token endpoint on the calling thread and fills `*http_code`
+(HTTP status, e.g. 200) and `*http_body` (JSON string with token fields) before
+returning. No background thread, no callback registration.
+
+**Call shape (verbatim from `BBLCloudServiceAgent.cpp:620-629`):**
+```cpp
+int BBLCloudServiceAgent::get_my_token(std::string ticket, unsigned int* http_code, std::string* http_body)
+{
+    auto& plugin = BBLNetworkPlugin::instance();
+    auto agent = plugin.get_agent();
+    auto func = plugin.get_get_my_token();
+    if (func && agent) {
+        return func(agent, ticket, http_code, http_body);
+    }
+    return -1;
+}
+```
+
+**Response body JSON shape** (from `HttpServer.cpp:304` — `json_string_first` normalises the key):
+```json
+{
+  "accessToken":  "<access_token>",
+  "refresh_token": "<refresh_token>",
+  "expires_in": "<seconds>",
+  "refresh_expires_in": "<seconds>"
+}
+```
+OrcaSlicer normalises via `json_string_first(token_j, {"accessToken", "access_token", "token"})` —
+the exact key name may vary; all three aliases are tried in order.
+
+**RPC pattern chosen:** Sync passthrough. Since the plugin call is synchronous,
+the `method_get_my_token` RPC handler calls `loader().get_my_token(ticket)`
+directly and returns the parsed JSON body. No `std::promise`/`std::future`
+bridge required.
