@@ -120,7 +120,74 @@ previews. The headless binary currently exposes only the `send_gcode` equivalent
 
 ## Q11.3 — Plugin CDN endpoint
 
-(unanswered — see Task 0.4)
+**Base URL:** `https://api.bambulab.com/` (China: `https://api.bambulab.cn/`)
+
+**Endpoint(s):**
+
+- `GET v1/iot-service/api/slicer/resource?slicer/plugins/cloud=<current_version>` — returns a JSON listing of available resource versions; the client sends the currently-installed version as a query param and the server replies with newer versions if any exist.
+- `GET <url-from-listing>` — direct download of a ZIP archive containing the plugin `.so` files and `linux_payload_manifest.json`; the URL is opaque (provided by the listing response).
+
+**Listing response shape:**
+```json
+{
+  "message": "success",
+  "resources": [
+    {
+      "type": "slicer/plugins/cloud",
+      "version": "02.05.02.51",
+      "url": "https://...",
+      "force_update": false,
+      "description": ""
+    }
+  ]
+}
+```
+The `url` value is the direct-download ZIP URL. The client compares `version` against the currently-installed version (semver major/minor/patch-CC must match; patch-DD must be newer) before downloading.
+
+**Citations:**
+- `GUI_App.cpp:1141-1164` — `get_http_url()`: base URL selection by `country_code`; default path appended is `v1/iot-service/api/slicer/resource`
+- `PresetUpdater.cpp:980-985` — resource key `"slicer/plugins/cloud"` passed to `sync_resources()`; changelog file is `"network_plugins.json"`
+- `PresetUpdater.cpp:484-554` — `sync_resources()`: builds `?slicer/plugins/cloud=<version>` query, GETs listing, parses `resources[]` array (fields: `type`, `version`, `url`, `force_update`, `description`), then GETs `url` and extracts ZIP
+- `PresetUpdater.cpp:948-985` — `sync_plugins()` bridge path: overrides `X-BBL-OS-Type` to `"linux"`, `X-BBL-Client-Name` to `"BambuStudio"`, and `X-BBL-Client-Version` before calling `sync_resources()`
+
+**Manifest schema (`linux_payload_manifest.json`):**
+
+The manifest is **constructed locally by the packaging script** (`tools/pjarczak_bambu_linux_host/package_linux_host_runtime.sh`) and bundled inside the downloaded ZIP. It is not a separate CDN download. Its schema:
+
+```json
+{
+  "files": [
+    {
+      "name": "libbambu_networking.so",
+      "sha256": "<hex-sha256-of-the-.so>",
+      "abi_version": "02.05.02.51"
+    },
+    {
+      "name": "libBambuSource.so",
+      "sha256": "<hex-sha256-of-the-.so>"
+    }
+  ]
+}
+```
+
+Key points:
+- Top-level key is `files` (array); there is **no top-level `version` field** in the manifest itself.
+- Only `libbambu_networking.so` carries `abi_version`; `libBambuSource.so` has only `name` and `sha256`.
+- `sha256` is a lowercase hex string (SHA-256 of the raw `.so` bytes).
+- The ZIP may also contain `liblive555.so`, `libagora_rtc_sdk.so`, `libagora-fdkaac.so` but these are not in the manifest.
+- The local `network_plugins.json` (written by `sync_resources()` after extraction) holds `{"version": "...", "description": "...", "force": false}` — this is separate from the manifest and used only for version bookkeeping.
+
+**Citation:**
+- `package_linux_host_runtime.sh:96-109` — Python snippet that builds and writes `linux_payload_manifest.json`; confirms `files[]` array with `name`, `sha256`, optional `abi_version` (only for `libbambu_networking.so`)
+- `PJarczakLinuxBridgeConfig.cpp:95-107` — `find_manifest_entry()`: parses `root["files"]` array, matches by `entry["name"]`
+- `PJarczakLinuxBridgeConfig.cpp:400-446` — `validate_linux_payload_file_against_manifest()`: reads `sha256` and `abi_version` fields per entry
+
+**Required request headers (confirming §5.1):**
+- `User-Agent: BambuStudio/02.05.02.51`
+- `X-BBL-Client-Type: slicer`
+- `X-BBL-Client-Name: BambuStudio`
+- `X-BBL-Client-Version: 02.05.02.51`
+- `X-BBL-OS-Type: linux`
 
 ## Q11.4 — change_user() payload shape
 
