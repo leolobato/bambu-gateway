@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.apns_client import ApnsClient
 from app.apns_jwt import ApnsJwtSigner
+from app.cloud.event_pump import EventPump
 from app.cloud.plugin_downloader import PluginDownloader
 from app.cloud.plugin_host import PluginHost
 from app.config import PrinterConfig, settings
@@ -241,6 +242,11 @@ async def lifespan(app: FastAPI):
                 raise RuntimeError(f"Bambu plugin bootstrap failed: {boot}")
             app.state.cloud_host = host
             logger.info("Bambu plugin host ready")
+
+            pump = EventPump(host=host, handlers={})  # handlers wired in Phase G
+            await pump.start()
+            app.state.cloud_event_pump = pump
+            stack.push_async_callback(pump.stop)
 
         # Device registry + APNs
         device_store_path = config_store._config_path.parent / "devices.json"

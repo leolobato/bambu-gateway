@@ -180,6 +180,50 @@ def test_lifespan_exposes_plugin_host_on_app_state(monkeypatch, tmp_path):
             assert getattr(main_mod.app.state, "cloud_host", None) is fake_instance
 
 
+def test_lifespan_starts_event_pump_when_cloud_enabled(monkeypatch, tmp_path):
+    """The EventPump must be started after PluginHost.init_plugin succeeds."""
+    import app.main as main_mod
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(main_mod.settings, "bambu_cloud_enabled", True)
+    monkeypatch.setattr(main_mod.settings, "bambu_cloud_plugin_dir", tmp_path)
+    monkeypatch.setattr(main_mod.settings, "bambu_cloud_host_binary", tmp_path)
+
+    started = []
+    stopped = []
+
+    class FakePump:
+        def __init__(self, **kwargs):
+            self._kwargs = kwargs
+        async def start(self):
+            started.append(self._kwargs)
+        async def stop(self):
+            stopped.append(True)
+
+    class FakeHost:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): pass
+        async def call(self, *_a, **_k): return {"bootstrap_rc": 0}
+
+    with (
+        patch(
+            "app.cloud.plugin_downloader.PluginDownloader.ensure_active",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("app.printer_service.PrinterService.start", new=MagicMock()),
+        patch("app.main.PluginHost", FakeHost),
+        patch("app.main.EventPump", FakePump),
+    ):
+        from fastapi.testclient import TestClient
+        with TestClient(main_mod.app):
+            pass
+
+    assert len(started) == 1
+    assert len(stopped) == 1
+
+
 def test_lifespan_skips_downloader_when_cloud_disabled(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     import app.main as main_mod
