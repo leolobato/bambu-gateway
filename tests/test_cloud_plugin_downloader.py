@@ -262,29 +262,14 @@ def _make_fake_so(name: str = "stub") -> bytes:
     return _ELF_X86_64_LE + name.encode() + b"\x00" * 64
 
 
-def _build_fake_zip(
-    *, network_so: bytes, source_so: bytes, manifest_override: dict | None = None
-) -> bytes:
-    """Build an in-memory ZIP that mirrors Bambu's plugin payload structure.
+def _build_fake_zip(*, network_so: bytes, source_so: bytes) -> bytes:
+    """Build an in-memory ZIP that mirrors Bambu's CDN payload.
 
-    Contains both `.so` files and `linux_payload_manifest.json`.
+    The real CDN ZIP contains only ``.so`` files — no manifest. The
+    downloader writes its own manifest after extraction.
     """
-    manifest = manifest_override or {
-        "files": [
-            {
-                "name": "libbambu_networking.so",
-                "sha256": _hex_sha256(network_so),
-                "abi_version": "02.05.02.58",
-            },
-            {
-                "name": "libBambuSource.so",
-                "sha256": _hex_sha256(source_so),
-            },
-        ],
-    }
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("linux_payload_manifest.json", _json.dumps(manifest))
         zf.writestr("libbambu_networking.so", network_so)
         zf.writestr("libBambuSource.so", source_so)
     return buffer.getvalue()
@@ -357,6 +342,36 @@ def test_parse_resource_listing_rejects_malformed_json():
         parse_resource_listing(b"not json")
 
 
+async def test_downloader_listing_query_uses_patch_zero(tmp_path):
+    """The bootstrap query must send patch-DD=00 so the CDN replies with
+    the current resource entry instead of an empty list."""
+    network_so = _make_fake_so("network")
+    source_so = _make_fake_so("source")
+    listing = _build_listing()
+    zip_blob = _build_fake_zip(network_so=network_so, source_so=source_so)
+
+    seen_queries: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == _LISTING_PATH:
+            seen_queries.append(str(request.url.query, "utf-8"))
+            return httpx.Response(200, content=listing)
+        if str(request.url) == _ZIP_URL:
+            return httpx.Response(200, content=zip_blob)
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=_API_BASE
+    ) as client:
+        downloader = PluginDownloader(plugin_dir=tmp_path, client=client)
+        await downloader.ensure_active()
+
+    assert len(seen_queries) == 1
+    # The query must NOT use the pinned patch level; it must downshift to .00
+    assert seen_queries[0].endswith(".00"), seen_queries[0]
+    assert "slicer/plugins/cloud=" in seen_queries[0]
+
+
 async def test_downloader_fetches_and_validates(tmp_path):
     network_so = _make_fake_so("network")
     source_so = _make_fake_so("source")
@@ -373,7 +388,18 @@ async def test_downloader_fetches_and_validates(tmp_path):
     active = tmp_path / "active"
     assert (active / "libbambu_networking.so").read_bytes() == network_so
     assert (active / "libBambuSource.so").read_bytes() == source_so
-    assert (active / "linux_payload_manifest.json").exists()
+    # The downloader synthesises its own manifest after extraction (the
+    # CDN ZIP doesn't ship one). Verify the manifest records both .so files
+    # with their correct SHAs and the networking entry's abi_version.
+    manifest_blob = (active / "linux_payload_manifest.json").read_bytes()
+    manifest = parse_manifest(manifest_blob)
+    net = manifest.find("libbambu_networking.so")
+    src = manifest.find("libBambuSource.so")
+    assert net is not None and src is not None
+    assert net.sha256 == _hex_sha256(network_so)
+    assert src.sha256 == _hex_sha256(source_so)
+    assert net.abi_version == "02.05.02.58"
+    assert src.abi_version is None  # libBambuSource does not carry abi_version
 
 
 async def test_downloader_is_idempotent_when_already_valid(tmp_path):
@@ -404,32 +430,15 @@ async def test_downloader_is_idempotent_when_already_valid(tmp_path):
         await poisoned.aclose()
 
 
-async def test_downloader_rejects_tampered_so(tmp_path):
-    network_so = _make_fake_so("network")
+async def test_downloader_rejects_non_elf_so(tmp_path):
+    # If the CDN serves a ZIP whose libbambu_networking.so is not a real
+    # ELF binary, the ELF magic check must reject it before the file gets
+    # promoted to active/.
+    not_elf = b"definitely not an ELF" + b"\x00" * 200
     source_so = _make_fake_so("source")
     listing = _build_listing()
-    # Build a ZIP whose manifest claims the original SHAs but whose
-    # libbambu_networking.so bytes are different content. SHA validation
-    # must reject this.
-    manifest = {
-        "files": [
-            {
-                "name": "libbambu_networking.so",
-                "sha256": _hex_sha256(network_so),  # SHA of the ORIGINAL
-                "abi_version": "02.05.02.58",
-            },
-            {
-                "name": "libBambuSource.so",
-                "sha256": _hex_sha256(source_so),
-            },
-        ],
-    }
-    tampered_zip = _build_fake_zip(
-        network_so=b"\x7fELF" + b"\x00" * 200,  # tampered
-        source_so=source_so,
-        manifest_override=manifest,
-    )
-    handler = _make_fake_cdn_handler(listing=listing, zip_blob=tampered_zip)
+    zip_blob = _build_fake_zip(network_so=not_elf, source_so=source_so)
+    handler = _make_fake_cdn_handler(listing=listing, zip_blob=zip_blob)
 
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler), base_url=_API_BASE
@@ -439,6 +448,56 @@ async def test_downloader_rejects_tampered_so(tmp_path):
             await downloader.ensure_active()
     # No artifacts left behind on failure.
     assert not (tmp_path / "active").exists()
+
+
+async def test_downloader_rejects_zip_missing_required_so(tmp_path):
+    # Build a ZIP that omits libbambu_networking.so entirely. The downloader
+    # must surface this as IntegrityError rather than silently succeeding.
+    source_so = _make_fake_so("source")
+    listing = _build_listing()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("libBambuSource.so", source_so)
+    incomplete_zip = buffer.getvalue()
+    handler = _make_fake_cdn_handler(listing=listing, zip_blob=incomplete_zip)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=_API_BASE
+    ) as client:
+        downloader = PluginDownloader(plugin_dir=tmp_path, client=client)
+        with pytest.raises(IntegrityError):
+            await downloader.ensure_active()
+    assert not (tmp_path / "active").exists()
+
+
+async def test_downloader_detects_post_install_so_tampering(tmp_path):
+    # The downloader writes a self-manifest after install. Subsequent calls
+    # validate active/ against that manifest, so tampering with a .so after
+    # install should trigger a re-download.
+    network_so = _make_fake_so("network")
+    source_so = _make_fake_so("source")
+    listing = _build_listing()
+    zip_blob = _build_fake_zip(network_so=network_so, source_so=source_so)
+    handler = _make_fake_cdn_handler(listing=listing, zip_blob=zip_blob)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=_API_BASE
+    ) as client:
+        downloader = PluginDownloader(plugin_dir=tmp_path, client=client)
+        await downloader.ensure_active()
+
+        # Tamper with the .so on disk.
+        (tmp_path / "active" / "libbambu_networking.so").write_bytes(
+            _ELF_X86_64_LE + b"tampered" + b"\x00" * 64
+        )
+
+        # Second call must NOT skip — should detect mismatch and re-fetch.
+        await downloader.ensure_active()
+
+    # File should be back to its pristine state after re-download.
+    assert (
+        tmp_path / "active" / "libbambu_networking.so"
+    ).read_bytes() == network_so
 
 
 async def test_downloader_rejects_listing_with_incompatible_version(tmp_path):

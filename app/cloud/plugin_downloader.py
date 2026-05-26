@@ -122,6 +122,15 @@ def validate_sha256(path: Path, expected_hex: str) -> None:
         )
 
 
+def _hex_sha256_of_file(path: Path) -> str:
+    """Return the lowercase hex SHA-256 of ``path`` (chunked read)."""
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 _ELF_MAGIC = b"\x7fELF"
 _ELFCLASS64 = 2
 _ELFDATA2LSB = 1
@@ -268,6 +277,21 @@ def parse_resource_listing(blob: bytes) -> ResourceEntry:
     )
 
 
+def _bootstrap_query_version() -> str:
+    """Build the version string to send on the listing query.
+
+    Bambu's CDN responds with a resource entry only when the query version is
+    older than the latest within the same MM.mm.pp.CC prefix. We send patch-DD
+    of ``00`` so the CDN always returns the current entry — e.g., pinned
+    ``02.05.02.58`` becomes ``02.05.02.00``. ``ensure_active()`` then
+    validates the *returned* version against the actual pin.
+    """
+    parts = BAMBU_NETWORK_AGENT_VERSION.rsplit(".", 1)
+    if len(parts) != 2:
+        return BAMBU_NETWORK_AGENT_VERSION
+    return f"{parts[0]}.00"
+
+
 class PluginDownloader:
     """Downloads, validates, and persists the Bambu network plugin.
 
@@ -277,13 +301,18 @@ class PluginDownloader:
          against the pinned ABI version.
       3. GET the ZIP archive from the entry's URL (no special headers — the
          CDN is public).
-      4. Extract the ZIP to staging; read and parse the bundled manifest.
-      5. Validate ELF magic + SHA-256 on each ``.so`` named in the manifest.
-      6. Atomic-ish swap: remove old ``active/``, rename ``staging/`` →
+      4. Extract the ZIP to staging. The CDN ZIP contains only ``.so``
+         files; there is no bundled manifest.
+      5. Validate ELF magic on both required ``.so`` files.
+      6. Compute SHA-256 of each ``.so`` and write our own
+         ``linux_payload_manifest.json`` to staging as a local-integrity
+         record so subsequent startups can detect on-disk corruption.
+      7. Atomic-ish swap: remove old ``active/``, rename ``staging/`` →
          ``active/``.
 
     Idempotent: ``ensure_active()`` is a no-op if ``${plugin_dir}/active/``
-    already contains both ``.so`` files matching the bundled manifest.
+    already contains both ``.so`` files matching the locally-written
+    manifest.
     """
 
     def __init__(self, *, plugin_dir: Path, client: httpx.AsyncClient) -> None:
@@ -323,33 +352,34 @@ class PluginDownloader:
             zip_blob = await self._get_binary(entry.url)
             _extract_zip(zip_blob, staging)
 
-            manifest_path = staging / _MANIFEST_FILE
-            if not manifest_path.exists():
-                raise ManifestParseError(
-                    f"ZIP did not contain {_MANIFEST_FILE}"
-                )
-            manifest = parse_manifest(manifest_path.read_bytes())
-
-            net_entry = manifest.find(_NETWORK_SO)
-            src_entry = manifest.find(_SOURCE_SO)
-            if net_entry is None or src_entry is None:
-                raise ManifestParseError(
-                    f"manifest missing required files: {_NETWORK_SO}, "
-                    f"{_SOURCE_SO}"
-                )
-            validate_abi_version(
-                net_entry.abi_version, pinned=BAMBU_NETWORK_AGENT_VERSION
-            )
-
-            for me in (net_entry, src_entry):
-                so_path = staging / me.name
+            for name in (_NETWORK_SO, _SOURCE_SO):
+                so_path = staging / name
                 if not so_path.exists():
                     raise IntegrityError(
-                        f"manifest references {me.name} but ZIP did not "
-                        "contain it"
+                        f"ZIP did not contain required file {name!r}"
                     )
                 validate_elf(so_path)
-                validate_sha256(so_path, me.sha256)
+
+            # The Bambu CDN ZIP does not ship a manifest — write our own,
+            # mirroring the schema OrcaSlicer-bambulab's packaging script
+            # produces, so the on-disk layout matches what callers (e.g.
+            # subprocess hosts) expect to find.
+            self_manifest = {
+                "files": [
+                    {
+                        "name": _NETWORK_SO,
+                        "sha256": _hex_sha256_of_file(staging / _NETWORK_SO),
+                        "abi_version": entry.version,
+                    },
+                    {
+                        "name": _SOURCE_SO,
+                        "sha256": _hex_sha256_of_file(staging / _SOURCE_SO),
+                    },
+                ],
+            }
+            (staging / _MANIFEST_FILE).write_text(
+                json.dumps(self_manifest, indent=2)
+            )
 
             # Atomic-ish swap: remove old active/, rename staging -> active/.
             if self._active.exists():
@@ -366,10 +396,17 @@ class PluginDownloader:
             raise
 
     async def _get_listing(self) -> bytes:
-        # Use a literal-slash query string to match the OrcaSlicer client
-        # exactly; httpx would percent-encode `/` in a `params=` dict.
+        # The CDN behaves as a patch-DD update server: it returns a resource
+        # entry only when the query version is older than the latest in the
+        # same MM.mm.pp.CC prefix. Querying with our pinned version returns
+        # empty resources[] (we're "already up to date"), which breaks the
+        # bootstrap case where active/ doesn't exist yet. Send patch-DD=00
+        # so the CDN always replies with the current latest entry; we then
+        # validate that entry's version against the pin in ensure_active().
+        # Literal-slash query string matches the OrcaSlicer client exactly;
+        # httpx would percent-encode `/` in a `params=` dict.
         path_with_query = (
-            f"{_LISTING_PATH}?{_RESOURCE_TYPE}={BAMBU_NETWORK_AGENT_VERSION}"
+            f"{_LISTING_PATH}?{_RESOURCE_TYPE}={_bootstrap_query_version()}"
         )
         response = await self._client.get(
             path_with_query, headers=bambu_studio_headers()

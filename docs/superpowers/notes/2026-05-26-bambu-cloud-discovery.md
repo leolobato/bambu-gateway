@@ -152,7 +152,21 @@ The `url` value is the direct-download ZIP URL. The client compares `version` ag
 
 **Manifest schema (`linux_payload_manifest.json`):**
 
-The manifest is **constructed locally by the packaging script** (`tools/pjarczak_bambu_linux_host/package_linux_host_runtime.sh`) and bundled inside the downloaded ZIP. It is not a separate CDN download. Its schema:
+> **Correction (2026-05-27, post real-CDN smoke test):** The original Q11.3
+> answer said the manifest is bundled inside the downloaded ZIP. That was
+> wrong — it conflated two different ZIPs. The OrcaSlicer-bambulab fork's
+> CI builds its own *runtime* ZIP that bundles the manifest. But the
+> **raw Bambu CDN ZIP** (the one our gateway downloads) contains only the
+> `.so` files (5 of them: `libbambu_networking.so`, `libBambuSource.so`,
+> `liblive555.so`, `libagora_rtc_sdk.so`, `libagora-fdkaac.so`) with NO
+> bundled manifest. The schema below is still the format the packaging
+> script *would* produce; our downloader synthesises an equivalent
+> manifest after extraction so subsequent startups can detect on-disk
+> tampering. The `abi_version` field is sourced from the listing's
+> `version` field (already validated against the pinned version).
+
+The manifest schema (whether bundled by the fork's packaging script or
+synthesised by our downloader):
 
 ```json
 {
@@ -339,6 +353,16 @@ orcaslicer-headless), but the listing returned `02.05.02.58` as the latest avail
 is expected — the server always returns the current latest regardless of the client-supplied
 version. The gateway downloader should use the `version` field from the listing response, not
 the query-param version, when naming/storing the downloaded plugin.
+
+**Update (2026-05-27, smoke test):** the CDN is a *patch-DD update server*: it
+responds with an entry only when the query version is older than the latest
+WITHIN the same `MM.mm.pp.CC` prefix. Querying with `02.05.02.58` (the current
+latest) returns `resources: []`. Querying with `02.05.02.50` returns the
+`02.05.02.58` upgrade entry. Querying with `00.00.00.00` or `01.00.00.00`
+also returns empty (the server doesn't recognise the `MM.mm.pp.CC` series).
+The gateway sends `pinned[:9] + "00"` (e.g. `02.05.02.00`) as the bootstrap
+query so the CDN always returns the current entry. We then validate the
+*returned* version against the pin via the normal ABI-version check.
 
 **Conclusion:** Phase 1 downloader is unblocked. Headers are required to receive the Linux
 ZIP rather than the Windows one; the ZIP CDN itself is open (no auth token needed).
