@@ -1,2 +1,217 @@
 // SPDX-License-Identifier: MIT
-// Placeholder — real implementation lands in Task D.1.
+//
+// Plugin loader — dlopen + bootstrap for libbambu_networking.so.
+//
+// Bootstrap sequence (from GUI_App.cpp:3838-3889 and discovery notes):
+//   1. bambu_network_create_agent(log_dir)       → void* agent
+//   2. bambu_network_set_config_dir(agent, dir)
+//   3. bambu_network_init_log(agent)
+//   4. bambu_network_set_cert_file(agent, folder, filename)
+//   5. bambu_network_set_country_code(agent, cc)
+//   6. bambu_network_start(agent)
+//   7. <change_user and other user-facing calls now valid>
+//
+// All string parameters are std::string BY VALUE (C++ ABI — do NOT pass
+// const char* pointers).  See plugin_loader.hpp for the full ABI note.
+
+#include "plugin_loader.hpp"
+
+#include <dlfcn.h>
+#include <sys/stat.h>
+
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <stdexcept>
+#include <string>
+
+namespace bambu_host {
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Resolve a symbol or throw std::runtime_error.
+template <typename FnT>
+FnT must_resolve(void* h, const char* name) {
+  // dlsym returns void*; reinterpret_cast to the correct function pointer type.
+  void* raw = dlsym(h, name);
+  if (!raw) {
+    throw std::runtime_error(std::string("dlsym failed: ") + name +
+                             " — " + dlerror());
+  }
+  FnT fn{};
+  // Use memcpy to sidestep strict-aliasing: copy the void* bits into the
+  // function pointer.  This is the standards-conforming way when
+  // sizeof(void*) == sizeof(FnT) (true on all targets we care about).
+  static_assert(sizeof(void*) == sizeof(FnT),
+                "function pointer size mismatch");
+  std::memcpy(&fn, &raw, sizeof(FnT));
+  return fn;
+}
+
+// Return env var or a default string (never null).
+const char* env_or(const char* name, const char* fallback) {
+  const char* v = std::getenv(name);
+  return (v && *v) ? v : fallback;
+}
+
+// Ensure a directory exists; create it (and any parents) if not.
+// Returns 0 on success, -1 on failure (sets errno).
+int ensure_dir(const std::string& path) {
+  try {
+    std::filesystem::create_directories(path);
+    return 0;
+  } catch (...) {
+    return -1;
+  }
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// PluginLoader implementation
+// ---------------------------------------------------------------------------
+
+void PluginLoader::load_from_env() {
+  const char* so_path = std::getenv("PJARCZAK_BAMBU_NETWORK_SO");
+  if (!so_path || !*so_path) {
+    throw std::runtime_error(
+        "PJARCZAK_BAMBU_NETWORK_SO env var is not set or is empty");
+  }
+
+  // Use RTLD_LAZY (not RTLD_NOW) to match OrcaSlicer-bambulab's own usage
+  // (BBLNetworkPlugin.cpp:232,240).  RTLD_NOW causes SIGBUS on some glibc
+  // versions because the TLS block cannot be extended for dynamically-dlopened
+  // libraries with a PT_TLS segment after process startup.  RTLD_LAZY defers
+  // symbol binding so those TLS relocations only fire when the function is
+  // first called, at which point glibc handles them via __tls_get_addr.
+  //
+  // RTLD_NOLOAD check: if the caller pre-loaded the library via LD_PRELOAD
+  // (or a prior dlopen), reuse the existing mapping.  This avoids double-init
+  // and works around TLS-slot exhaustion on older or emulated glibc.
+  dl_handle_ = dlopen(so_path, RTLD_LAZY | RTLD_NOLOAD);
+  if (dl_handle_) {
+    std::fprintf(stderr,
+                 "bambu_cloud_host: reusing already-loaded %s\n", so_path);
+  } else {
+    // Not already loaded — open it fresh.
+    // RTLD_GLOBAL ensures the library's symbols are visible for its own
+    // internal cross-symbol references (some versions of libbambu_networking
+    // require this for their own dlopen'd sub-libraries).
+    dl_handle_ = dlopen(so_path, RTLD_LAZY | RTLD_GLOBAL);
+  }
+  if (!dl_handle_) {
+    throw std::runtime_error(std::string("dlopen failed: ") + dlerror());
+  }
+
+  // Resolve all 7 symbols.  Any missing symbol throws immediately so the
+  // caller gets a clear error message before we try to call anything.
+  p_create_agent_     = must_resolve<fn_create_agent>    (dl_handle_, "bambu_network_create_agent");
+  p_init_log_         = must_resolve<fn_init_log>         (dl_handle_, "bambu_network_init_log");
+  p_set_config_dir_   = must_resolve<fn_set_config_dir>   (dl_handle_, "bambu_network_set_config_dir");
+  p_set_cert_file_    = must_resolve<fn_set_cert_file>    (dl_handle_, "bambu_network_set_cert_file");
+  p_set_country_code_ = must_resolve<fn_set_country_code> (dl_handle_, "bambu_network_set_country_code");
+  p_start_            = must_resolve<fn_start>            (dl_handle_, "bambu_network_start");
+  p_change_user_      = must_resolve<fn_change_user>      (dl_handle_, "bambu_network_change_user");
+}
+
+int PluginLoader::bootstrap() {
+  if (!dl_handle_) {
+    throw std::runtime_error("bootstrap() called before load_from_env()");
+  }
+
+  // Determine the plugin state directory.
+  //
+  // Priority:
+  //   1. $PJARCZAK_BAMBU_PLUGIN_DIR/state  (set by the Python host)
+  //   2. /tmp/bambu-plugin-state           (fallback for manual testing)
+  //
+  // Both log_dir and config_dir point at the same directory; the plugin uses
+  // them to write logs and cache config respectively.
+  std::string state_dir;
+  const char* plugin_dir = std::getenv("PJARCZAK_BAMBU_PLUGIN_DIR");
+  if (plugin_dir && *plugin_dir) {
+    state_dir = std::string(plugin_dir) + "/state";
+  } else {
+    state_dir = "/tmp/bambu-plugin-state";
+  }
+
+  if (ensure_dir(state_dir) != 0) {
+    // Non-fatal; the plugin might still work if the dir exists from a previous
+    // run.  Log to stderr and continue.
+    std::fprintf(stderr,
+                 "bambu_cloud_host: warning: could not create state dir '%s'\n",
+                 state_dir.c_str());
+  }
+
+  const std::string log_dir    = state_dir;
+  const std::string config_dir = state_dir;
+
+  // TLS cert bundle — use the Debian/Ubuntu system bundle inside the
+  // container.  If this doesn't work (plugin returns non-zero from
+  // set_cert_file), set $BAMBU_CERT_FOLDER / $BAMBU_CERT_FILE to override.
+  const std::string cert_folder   = env_or("BAMBU_CERT_FOLDER",   "/etc/ssl/certs");
+  const std::string cert_filename = env_or("BAMBU_CERT_FILE",     "ca-certificates.crt");
+
+  const std::string country_code  = env_or("BAMBU_CLOUD_REGION",  "US");
+
+  std::fprintf(stderr,
+               "bambu_cloud_host: bootstrap: log_dir=%s config_dir=%s "
+               "cert=%s/%s country=%s\n",
+               log_dir.c_str(), config_dir.c_str(),
+               cert_folder.c_str(), cert_filename.c_str(),
+               country_code.c_str());
+
+  // --- Step 1: create the agent object ---
+  // bambu_network_create_agent(std::string log_dir) → void*
+  // Passing std::string by value as required by the C++ ABI.
+  agent_ = p_create_agent_(log_dir);
+  if (!agent_) {
+    std::fprintf(stderr, "bambu_cloud_host: create_agent returned null\n");
+    return -1;
+  }
+  std::fprintf(stderr, "bambu_cloud_host: create_agent OK, agent=%p\n", agent_);
+
+  // --- Step 2: set config dir ---
+  int rc = p_set_config_dir_(agent_, config_dir);
+  std::fprintf(stderr, "bambu_cloud_host: set_config_dir rc=%d\n", rc);
+  if (rc != 0) return rc;
+
+  // --- Step 3: init log ---
+  rc = p_init_log_(agent_);
+  std::fprintf(stderr, "bambu_cloud_host: init_log rc=%d\n", rc);
+  if (rc != 0) return rc;
+
+  // --- Step 4: set cert file ---
+  rc = p_set_cert_file_(agent_, cert_folder, cert_filename);
+  std::fprintf(stderr, "bambu_cloud_host: set_cert_file rc=%d\n", rc);
+  if (rc != 0) return rc;
+
+  // --- Step 5: set country code ---
+  rc = p_set_country_code_(agent_, country_code);
+  std::fprintf(stderr, "bambu_cloud_host: set_country_code rc=%d\n", rc);
+  if (rc != 0) return rc;
+
+  // --- Step 6: start ---
+  rc = p_start_(agent_);
+  std::fprintf(stderr, "bambu_cloud_host: start rc=%d\n", rc);
+
+  return rc;
+}
+
+int PluginLoader::change_user(const std::string& canonical_login_json) {
+  if (!agent_) {
+    // bootstrap() was not called or returned error.
+    return -1;
+  }
+  // bambu_network_change_user(void* agent, std::string user_info)
+  // std::string is passed BY VALUE — construct here, pass directly.
+  int rc = p_change_user_(agent_, canonical_login_json);
+  std::fprintf(stderr, "bambu_cloud_host: change_user rc=%d\n", rc);
+  return rc;
+}
+
+}  // namespace bambu_host

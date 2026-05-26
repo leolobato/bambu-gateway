@@ -145,6 +145,48 @@ is no yield or callback between them.
 
 ---
 
+---
+
+## Bootstrap function signatures (all resolved from libbambu_networking.so)
+
+All discovered from `BBLNetworkPlugin.hpp` lines 25–31.  All string parameters
+are `std::string` **by value** — same ABI constraint as `change_user`.
+
+| dlsym name | C++ typedef |
+|---|---|
+| `bambu_network_create_agent`   | `void* (*)(std::string log_dir)` |
+| `bambu_network_init_log`       | `int (*)(void* agent)` |
+| `bambu_network_set_config_dir` | `int (*)(void* agent, std::string config_dir)` |
+| `bambu_network_set_cert_file`  | `int (*)(void* agent, std::string folder, std::string filename)` |
+| `bambu_network_set_country_code`| `int (*)(void* agent, std::string country_code)` |
+| `bambu_network_start`          | `int (*)(void* agent)` |
+| `bambu_network_change_user`    | `int (*)(void* agent, std::string user_info)` |
+
+**Bootstrap call order** (from `GUI_App.cpp:3875-3889`):
+1. `create_agent(log_dir)` → `void* agent`
+2. `set_config_dir(agent, config_dir)`
+3. `init_log(agent)`
+4. `set_cert_file(agent, cert_folder, cert_filename)`
+5. `set_country_code(agent, country_code)`
+6. `start(agent)`
+
+Note: OrcaSlicer uses `RTLD_LAZY`, not `RTLD_NOW`
+(`BBLNetworkPlugin.cpp:232,240`).  The library has a `.tbss` (TLS) section;
+using `RTLD_NOW` causes **SIGBUS** on some systems (specifically under
+OrbStack/QEMU x86_64 emulation on Apple Silicon) because glibc cannot
+dynamically extend the TLS block after process startup.  `RTLD_LAZY` avoids
+this because TLS relocations are deferred until first call.  On native x86_64
+Linux `RTLD_NOW` would likely work, but `RTLD_LAZY` is safer and matches
+OrcaSlicer's own loading strategy.
+
+**TLS note:** The library's `PT_TLS` segment has `filesz=0` (no static TLS
+data), only a `.tbss` section.  Despite `DT_FLAGS` NOT having `DF_STATIC_TLS`
+set, the emulation-layer TLS handling still causes SIGBUS under QEMU x86 on
+Apple Silicon.  This is an emulation limitation only; native x86_64 Linux is
+unaffected.
+
+---
+
 ## Source references
 
 | File | Lines | Notes |
