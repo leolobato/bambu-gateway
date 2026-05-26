@@ -79,6 +79,26 @@ json method_test_push_event(const json& params) {
   return {{"queued", true}};
 }
 
+// connect_server — initiate cloud MQTT broker handshake (async).
+// Returns {"rc": 0} on success; completes asynchronously via OnServerConnectedFn.
+json method_connect_server(const json& /*params*/) {
+  return {{"rc", loader().connect_server()}};
+}
+
+// start_subscribe — begin subscription for a given module.
+// Params: {"module": "<string>"}  e.g. "printer" or "studio"
+json method_start_subscribe(const json& params) {
+  std::string module = params.at("module").get<std::string>();
+  return {{"rc", loader().start_subscribe(module)}};
+}
+
+// add_subscribe — add a list of device serials to the active subscription.
+// Params: {"dev_ids": ["<serial1>", "<serial2>", ...]}
+json method_add_subscribe(const json& params) {
+  auto vec = params.at("dev_ids").get<std::vector<std::string>>();
+  return {{"rc", loader().add_subscribe(vec)}};
+}
+
 }  // namespace
 
 json dispatch_method(const std::string& method, const json& params) {
@@ -88,6 +108,9 @@ json dispatch_method(const std::string& method, const json& params) {
   if (method == "get_my_token")        return method_get_my_token(params);
   if (method == "bridge.poll_events")  return method_bridge_poll_events(params);
   if (method == "_test_push_event")    return method_test_push_event(params);
+  if (method == "connect_server")      return method_connect_server(params);
+  if (method == "start_subscribe")     return method_start_subscribe(params);
+  if (method == "add_subscribe")       return method_add_subscribe(params);
   throw std::runtime_error("unknown method: " + method);
 }
 
