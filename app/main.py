@@ -239,6 +239,7 @@ async def lifespan(app: FastAPI):
             boot = await host.call("init_plugin", {})
             if boot.get("bootstrap_rc", -1) != 0:
                 raise RuntimeError(f"Bambu plugin bootstrap failed: {boot}")
+            app.state.cloud_host = host
             logger.info("Bambu plugin host ready")
 
         # Device registry + APNs
