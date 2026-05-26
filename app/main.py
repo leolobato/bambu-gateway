@@ -11,6 +11,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 
+import httpx
+
 from fastapi import Body, FastAPI, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -18,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.apns_client import ApnsClient
 from app.apns_jwt import ApnsJwtSigner
+from app.cloud.plugin_downloader import PluginDownloader
 from app.config import PrinterConfig, settings
 from app import config_store
 from app.device_store import ActiveActivity, DeviceRecord, DeviceStore
@@ -107,6 +110,13 @@ class StlDraftMaterializeRequest(BaseModel):
     thumbnail_png_data_url: str = ""
 
 
+def _bambu_cdn_base_url(region: str) -> str:
+    """Map a Bambu region code to the API base URL."""
+    if region == "CN":
+        return "https://api.bambulab.cn"
+    return "https://api.bambulab.com"
+
+
 def _stl_draft_dir() -> Path:
     root = config_store._config_path.parent / "stl_drafts"
     root.mkdir(parents=True, exist_ok=True)
@@ -190,6 +200,19 @@ def _slice_job_to_response(job) -> SliceJobResponse:
 async def lifespan(app: FastAPI):
     global printer_service, slicer_client, slice_jobs
     configs = config_store.load()
+
+    # Cloud plugin: download before LAN-mode startup so the plugin is on disk
+    # before any printer connection is attempted.
+    if settings.bambu_cloud_enabled:
+        async with httpx.AsyncClient(
+            base_url=_bambu_cdn_base_url(settings.bambu_cloud_region),
+            timeout=30.0,
+        ) as cdn_client:
+            downloader = PluginDownloader(
+                plugin_dir=settings.bambu_cloud_plugin_dir,
+                client=cdn_client,
+            )
+            await downloader.ensure_active()
 
     # Device registry + APNs
     device_store_path = config_store._config_path.parent / "devices.json"

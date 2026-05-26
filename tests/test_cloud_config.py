@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from fastapi.testclient import TestClient
 
 from app.config import Settings
 
@@ -28,7 +32,49 @@ def test_cloud_enabled_via_env(monkeypatch, tmp_path):
 
 def test_cloud_region_rejects_unknown(monkeypatch):
     monkeypatch.setenv("BAMBU_CLOUD_REGION", "EU")
-    import pytest
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_lifespan_calls_downloader_when_cloud_enabled(monkeypatch, tmp_path):
+    # settings is a module-level singleton; patch its attributes directly.
+    monkeypatch.chdir(tmp_path)
+    import app.main as main_mod
+    monkeypatch.setattr(main_mod.settings, "bambu_cloud_enabled", True)
+    monkeypatch.setattr(main_mod.settings, "bambu_cloud_plugin_dir", tmp_path)
+    monkeypatch.setattr(main_mod.settings, "bambu_cloud_region", "US")
+    with (
+        patch(
+            "app.cloud.plugin_downloader.PluginDownloader.ensure_active",
+            new=AsyncMock(return_value=None),
+        ) as mock_ensure,
+        patch(
+            "app.printer_service.PrinterService.start",
+            new=MagicMock(),
+        ),
+    ):
+        from app.main import app
+        with TestClient(app):
+            pass
+        mock_ensure.assert_awaited_once()
+
+
+def test_lifespan_skips_downloader_when_cloud_disabled(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    import app.main as main_mod
+    monkeypatch.setattr(main_mod.settings, "bambu_cloud_enabled", False)
+    with (
+        patch(
+            "app.cloud.plugin_downloader.PluginDownloader.ensure_active",
+            new=AsyncMock(return_value=None),
+        ) as mock_ensure,
+        patch(
+            "app.printer_service.PrinterService.start",
+            new=MagicMock(),
+        ),
+    ):
+        from app.main import app
+        with TestClient(app):
+            pass
+        mock_ensure.assert_not_awaited()
