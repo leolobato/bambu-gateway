@@ -185,3 +185,73 @@ def test_build_canonical_login_rejects_missing_uid():
                     "expires_in": "1", "refresh_expires_in": "1"},
             profile={"name": "x"},
         )
+
+
+import sys
+from pathlib import Path
+
+from app.cloud.plugin_host import PluginHost
+from app.cloud.auth import complete_login, LoginFailed
+
+
+FAKE_HOST = Path(__file__).parent / "cloud_fake_host.py"
+
+
+async def test_complete_login_happy_path(tmp_path):
+    record_file = tmp_path / "requests.jsonl"
+    pasted_url = "http://localhost:13618/?ticket=tk_abc"
+
+    def profile_handler(request: httpx.Request) -> httpx.Response:
+        # The fake host's get_my_token returns access_token = "at_for_tk_abc";
+        # confirm we pass that to the profile API.
+        assert request.headers["Authorization"] == "Bearer at_for_tk_abc"
+        return httpx.Response(
+            200,
+            json={
+                "uidStr": "42",
+                "name": "Alice",
+                "account": "alice@example.com",
+                "avatar": "",
+            },
+        )
+
+    async with (
+        PluginHost(
+            cmd=[sys.executable, str(FAKE_HOST)],
+            env={
+                "FAKE_HOST_RECORD_FILE": str(record_file),
+                "FAKE_HOST_USER_LOGGED_IN": "1",
+            },
+        ) as host,
+        httpx.AsyncClient(transport=httpx.MockTransport(profile_handler)) as http,
+    ):
+        result = await complete_login(
+            host=host, http=http, region="US", pasted_url=pasted_url
+        )
+
+    assert result["account"] == "alice@example.com"
+    # Fake host should have seen: get_my_token, change_user, is_user_login.
+    import json as _json
+    seen = [_json.loads(line) for line in record_file.read_text().splitlines()]
+    methods = [r["method"] for r in seen]
+    assert methods.index("get_my_token") < methods.index("change_user")
+    assert methods.index("change_user") < methods.index("is_user_login")
+
+
+async def test_complete_login_fails_if_plugin_does_not_register_login(tmp_path):
+    pasted = "http://localhost:13618/?ticket=tk_abc"
+
+    def profile_handler(request):
+        return httpx.Response(200, json={"uidStr": "1", "name": "x"})
+
+    async with (
+        PluginHost(
+            cmd=[sys.executable, str(FAKE_HOST)],
+            # FAKE_HOST_USER_LOGGED_IN NOT set — is_user_login will return False
+        ) as host,
+        httpx.AsyncClient(transport=httpx.MockTransport(profile_handler)) as http,
+    ):
+        with pytest.raises(LoginFailed):
+            await complete_login(
+                host=host, http=http, region="US", pasted_url=pasted
+            )

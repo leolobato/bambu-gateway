@@ -189,3 +189,70 @@ def build_canonical_login(*, tokens: dict, profile: dict) -> str:
         },
     }
     return _json.dumps(payload)
+
+
+import logging
+
+from app.cloud.plugin_host import PluginHost, PluginHostError
+
+logger = logging.getLogger("bambu.cloud.auth")
+
+
+class LoginFailed(RuntimeError):
+    """Raised when change_user succeeded but the plugin doesn't report login."""
+
+
+async def complete_login(
+    *,
+    host: PluginHost,
+    http: httpx.AsyncClient,
+    region: str,
+    pasted_url: str,
+) -> dict:
+    """Drive the full paste-fallback login flow end-to-end.
+
+    Returns the profile dict on success. Raises:
+
+    - :class:`PasteParseError` if the URL doesn't carry a usable ticket
+    - :class:`PluginHostError` if the plugin host RPC fails (e.g. get_my_token
+      rejects the ticket)
+    - :class:`ProfileFetchError` if Bambu rejects the access token
+    - :class:`LoginFailed` if change_user returned 0 but is_user_login is False
+    """
+    ticket = parse_paste_url(pasted_url)
+    tokens = await host.call("get_my_token", {"ticket": ticket})
+
+    access = _first_present(tokens, "access_token", "accessToken", "token")
+    if access is None:
+        raise LoginFailed("get_my_token result missing access_token")
+    profile = await fetch_profile(
+        client=http, region=region, access_token=access
+    )
+    canonical = build_canonical_login(tokens=tokens, profile=profile)
+
+    change_result = await host.call("change_user", {"canonical_login": canonical})
+    rc = change_result.get("rc", -1)
+    if rc != 0:
+        raise LoginFailed(f"plugin change_user returned rc={rc}")
+
+    status = await host.call("is_user_login", {})
+    if not status.get("is_login"):
+        raise LoginFailed("plugin did not register login after change_user")
+
+    logger.info(
+        "Bambu user signed in: account=%s uid=%s",
+        profile.get("account"),
+        profile.get("uidStr") or profile.get("uid") or profile.get("id"),
+    )
+    return profile
+
+
+async def logout(*, host: PluginHost) -> None:
+    """Sign out, telling the plugin to also notify Bambu's backend."""
+    await host.call("user_logout", {"with_backend_notify": True})
+
+
+async def is_signed_in(*, host: PluginHost) -> bool:
+    """Return True if the plugin currently has a valid logged-in user."""
+    result = await host.call("is_user_login", {})
+    return bool(result.get("is_login"))
