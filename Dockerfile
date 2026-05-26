@@ -1,6 +1,21 @@
 # syntax=docker/dockerfile:1
 
-# --- Stage 1: Build the React frontend ---
+# ------------------------------------------------------------------
+# Stage 1: build the Bambu cloud subprocess host (C++ binary).
+# ------------------------------------------------------------------
+FROM debian:bookworm-slim AS cloud_host_builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      build-essential cmake ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY tools/bambu_cloud_host /src
+RUN cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build /build --parallel
+
+
+# --- Stage 2: Build the React frontend ---
 FROM node:20-alpine AS web-builder
 
 WORKDIR /web
@@ -21,8 +36,10 @@ RUN npm run build
 # so the output lands at /app/static/dist inside the build container.
 
 
-# --- Stage 2: Python runtime ---
+# --- Stage 3: Python runtime ---
 FROM python:3.13-slim
+
+COPY --from=cloud_host_builder /build/bambu_cloud_host /usr/local/bin/bambu_cloud_host
 
 WORKDIR /app
 
