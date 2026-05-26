@@ -2,7 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task.
 
-**Goal:** Implement the auth flow so the user can sign into their Bambu account from the gateway. Because the plugin's OAuth redirect URI is hardcoded to `http://localhost:<port>` (per Phase 0 §Q11.1), we use the **paste fallback**: user signs in on Bambu's hosted page in their browser, manually pastes the redirected URL back into the gateway, gateway extracts tokens and calls `change_user` on the plugin.
+> **Plan revision (2026-05-27, after Phase A discovery):** OrcaSlicer's
+> external-browser sign-in URL uses `slicerLoginType=ticket`, so the
+> redirect carries `?ticket=<val>` — **not** the `?access_token=` form
+> originally assumed. The flow therefore needs the plugin's `get_my_token`
+> method (and `get_my_profile`) to exchange the ticket for tokens. Tasks
+> B.1–C.2 below are written for the ticket flow.
+
+**Goal:** Implement the auth flow so the user can sign into their Bambu account from the gateway. Because the plugin's OAuth redirect URI is hardcoded to `http://localhost:<port>` (per Phase 0 §Q11.1), we use the **paste fallback**: user signs in on Bambu's hosted page in their browser, manually pastes the `?ticket=...` URL back into the gateway, gateway exchanges the ticket via the plugin's `get_my_token`, fetches the profile via `get_my_profile`, builds the canonical payload, calls `change_user`.
 
 **Architecture:** Stateless server-side (the plugin holds session state in its own files). Four new API endpoints provide: sign-in URL, paste-callback, status, logout. Token persistence is handled by the plugin itself — Python never sees or stores tokens.
 
@@ -168,7 +175,7 @@ git commit -m "Cloud auth: discover profile endpoint"
 
 Pure functions for URL building, URL parsing, and canonical-payload construction. Easy to TDD without any subprocess or FastAPI.
 
-### Task B.1: TDD the sign-in URL builder
+### Task B.1: TDD the sign-in URL builder (ticket flow, mirrors OrcaSlicer)
 
 **Files:**
 - Create: `app/cloud/auth.py`
@@ -181,6 +188,8 @@ Create `tests/test_cloud_auth.py`:
 ```python
 """Tests for the cloud auth flow."""
 from __future__ import annotations
+
+from urllib.parse import parse_qs, urlparse, unquote
 
 import pytest
 
@@ -197,23 +206,27 @@ def test_signin_url_cn_region_uses_bambulab_cn():
     assert "bambulab.cn" in url
 
 
-def test_signin_url_includes_loopback_redirect():
-    # The plugin's hardcoded redirect_url is http://localhost:13618 (per
-    # Phase 0 §Q11.1 — pjarczak_browser_login_url).
+def test_signin_url_carries_ticket_flow_markers():
+    # OrcaSlicer's pjarczak_browser_login_url builder uses
+    # `slicerLoginType=ticket` so Bambu redirects with `?ticket=<val>`
+    # (Phase A discovery, 2026-05-27-bambu-auth-discovery.md §A.1).
     url = build_signin_url(region="US")
-    assert "redirect_url=http%3A%2F%2Flocalhost%3A13618" in url or \
-           "redirect_url=http://localhost:13618" in url
+    qs = parse_qs(urlparse(url).query)
+    # Outer URL has `to=<encoded inner URL>`; inner URL carries the
+    # ticket-flow markers.
+    inner = unquote(qs["to"][0])
+    inner_qs = parse_qs(urlparse(inner).query)
+    assert inner_qs["slicerLoginType"] == ["ticket"]
+    assert inner_qs["redirect_url"] == ["http://localhost:13618"]
+    assert inner_qs["openBy"] == ["suite"]
 
 
-def test_signin_url_requests_token_response_type():
-    # We need the access_token redirect shape (per discovery §Q11.4 Shape 3),
-    # which Bambu emits when response_type=token. Defaults to code+state
-    # which we cannot complete without the in-plugin PKCE verifier.
+def test_signin_url_outer_query_includes_from_and_source():
     url = build_signin_url(region="US")
-    assert "response_type=token" in url
+    qs = parse_qs(urlparse(url).query)
+    assert qs["from"] == ["studio"]
+    assert qs["source"] == ["portal"]
 ```
-
-> **Important:** If Phase A discovery reveals that Bambu does NOT honour `response_type=token` (i.e., always returns code+state regardless), update this test to assert whichever response_type OrcaSlicer's external-browser builder uses. The post-redirect URL parser in Task B.2 will need to handle that shape instead.
 
 - [ ] **Step 2: Run, confirm fail**
 
@@ -233,41 +246,54 @@ from __future__ import annotations
 
 from urllib.parse import urlencode
 
-# These values come from Phase A discovery. The redirect_url is fixed because
-# the plugin hardcodes its loopback callback URL — we can't change it.
+# These values mirror `pjarczak_browser_login_url()` in
+# WebUserLoginDialog.cpp:64-76 (see Phase A discovery notes §A.1).
+# The redirect_url is fixed because the plugin hardcodes its loopback
+# callback URL — we cannot change it.
 _LOOPBACK_REDIRECT = "http://localhost:13618"
-_BAMBU_STUDIO_VERSION = "02.05.02.58"
 
 _REGION_SIGNIN_BASE: dict[str, str] = {
     "US": "https://bambulab.com/sign-in",
-    # Discovery may reveal a different sign-in host for CN; update if so.
     "CN": "https://bambulab.cn/sign-in",
 }
 
 
-def build_signin_url(*, region: str) -> str:
+def build_signin_url(*, region: str, locale: str = "en") -> str:
     """Build the Bambu hosted sign-in URL the user opens in their browser.
 
-    The redirect_url is fixed by the plugin (`http://localhost:13618`); after
-    the user signs in, Bambu redirects there with tokens in the query.
-    Because nothing is listening on that port from the user's browser, the
-    browser shows a "connection refused" page — the user then copies the
-    URL from their address bar and pastes it into the gateway's
-    /api/cloud/auth/paste endpoint.
+    Two-level URL: the outer is the public sign-in page, the ``to=`` query
+    param is the inner callback URL that carries the ticket-flow markers.
+    Mirrors OrcaSlicer's ``pjarczak_browser_login_url`` (Phase A §A.1).
+
+    After the user signs in, Bambu redirects to
+    ``http://localhost:13618/?ticket=<val>``. Because nothing is listening
+    on that port from the user's browser, the browser shows a "connection
+    refused" page — the user then copies the URL from their address bar
+    and pastes it into the gateway's /api/cloud/auth/paste endpoint.
     """
     base = _REGION_SIGNIN_BASE.get(region)
     if base is None:
         raise ValueError(f"unsupported region: {region!r}")
-    params = {
-        "response_type": "token",
-        "redirect_url": _LOOPBACK_REDIRECT,
-        "client_id": "bambu_studio",
-        "version": _BAMBU_STUDIO_VERSION,
-    }
-    return f"{base}?{urlencode(params)}"
-```
 
-> **Note:** the `client_id` and `version` params are educated guesses based on Bambu's standard OAuth scheme. Phase A discovery will confirm the actual values. Update the constants if discovery differs.
+    # Inner callback URL — carries the ticket-flow markers.
+    inner_qs = urlencode({
+        "source": "portal",
+        "locale": locale,
+        "redirect_url": _LOOPBACK_REDIRECT,
+        "openBy": "suite",
+        "from": "studio",
+        "slicerLoginType": "ticket",
+    })
+    inner = f"{base}/callback?{inner_qs}"
+
+    # Outer URL — carries `to=<inner-encoded>`.
+    outer_qs = urlencode({
+        "from": "studio",
+        "source": "portal",
+        "to": inner,
+    })
+    return f"{base}?{outer_qs}"
+```
 
 - [ ] **Step 4: Run, confirm pass**
 
@@ -284,9 +310,9 @@ git add app/cloud/auth.py tests/test_cloud_auth.py
 git commit -m "Cloud auth: sign-in URL builder"
 ```
 
-### Task B.2: TDD the paste-URL parser
+### Task B.2: TDD the paste-URL parser (ticket flow)
 
-The user pastes back a URL like `http://localhost:13618/?access_token=xyz&refresh_token=abc&expires_in=86400&refresh_expires_in=2592000&redirect_url=...`. Parse out the four token fields.
+The user pastes back a URL like `http://localhost:13618/?ticket=abc123`. Extract the ticket string.
 
 **Files:**
 - Modify: `app/cloud/auth.py`
@@ -297,44 +323,34 @@ The user pastes back a URL like `http://localhost:13618/?access_token=xyz&refres
 Append to `tests/test_cloud_auth.py`:
 
 ```python
-from app.cloud.auth import PasteParseError, parse_paste_url, PasteTokens
+from app.cloud.auth import PasteParseError, parse_paste_url
 
 
-def test_parse_paste_url_extracts_all_token_fields():
-    pasted = (
-        "http://localhost:13618/?"
-        "access_token=at_abc&refresh_token=rt_xyz&"
-        "expires_in=86400&refresh_expires_in=2592000&"
-        "redirect_url=http%3A%2F%2Flocalhost%3A13618"
-    )
-    tokens = parse_paste_url(pasted)
-    assert tokens == PasteTokens(
-        access_token="at_abc",
-        refresh_token="rt_xyz",
-        expires_in="86400",
-        refresh_expires_in="2592000",
-    )
+def test_parse_paste_url_extracts_ticket():
+    pasted = "http://localhost:13618/?ticket=tk_abc123"
+    assert parse_paste_url(pasted) == "tk_abc123"
+
+
+def test_parse_paste_url_accepts_ticket_with_extra_params():
+    # Bambu may attach extra params; we only care about `ticket`.
+    pasted = "http://localhost:13618/?ticket=tk_abc&from=studio"
+    assert parse_paste_url(pasted) == "tk_abc"
 
 
 def test_parse_paste_url_accepts_fragment_style():
-    # Some OAuth flows put tokens in the fragment (#) instead of the query (?).
-    pasted = (
-        "http://localhost:13618/#"
-        "access_token=at_abc&refresh_token=rt_xyz&"
-        "expires_in=86400&refresh_expires_in=2592000"
-    )
-    tokens = parse_paste_url(pasted)
-    assert tokens.access_token == "at_abc"
+    # Some OAuth flows put values in the fragment (#) instead of the query.
+    pasted = "http://localhost:13618/#ticket=tk_abc"
+    assert parse_paste_url(pasted) == "tk_abc"
 
 
-def test_parse_paste_url_rejects_missing_access_token():
+def test_parse_paste_url_rejects_missing_ticket():
     with pytest.raises(PasteParseError):
-        parse_paste_url("http://localhost:13618/?refresh_token=rt&expires_in=1")
+        parse_paste_url("http://localhost:13618/?foo=bar")
 
 
 def test_parse_paste_url_rejects_obviously_wrong_input():
     with pytest.raises(PasteParseError):
-        parse_paste_url("https://example.com/")
+        parse_paste_url("https://example.com/?ticket=x")
     with pytest.raises(PasteParseError):
         parse_paste_url("not a url")
 ```
@@ -352,28 +368,17 @@ Expected: ImportError.
 Append to `app/cloud/auth.py`:
 
 ```python
-from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 
 
 class PasteParseError(ValueError):
-    """Raised when the user-pasted URL doesn't carry the expected tokens."""
+    """Raised when the user-pasted URL doesn't carry a usable ticket."""
 
 
-@dataclass(frozen=True)
-class PasteTokens:
-    """The four token fields a successful access_token redirect carries."""
+def parse_paste_url(pasted: str) -> str:
+    """Extract the ``ticket`` value from the URL the user pasted back.
 
-    access_token: str
-    refresh_token: str
-    expires_in: str
-    refresh_expires_in: str
-
-
-def parse_paste_url(pasted: str) -> PasteTokens:
-    """Extract the OAuth token fields from the URL the user pasted back.
-
-    Bambu's sign-in page may put the tokens in either the query string (``?``)
+    Bambu's sign-in page may put the ticket in either the query string (``?``)
     or the URL fragment (``#``); we try both.
     """
     try:
@@ -394,18 +399,10 @@ def parse_paste_url(pasted: str) -> PasteTokens:
     if parsed.fragment:
         qs.update(parse_qs(parsed.fragment))
 
-    def one(field: str) -> str:
-        vals = qs.get(field)
-        if not vals:
-            raise PasteParseError(f"pasted URL missing {field!r}")
-        return vals[0]
-
-    return PasteTokens(
-        access_token=one("access_token"),
-        refresh_token=one("refresh_token"),
-        expires_in=one("expires_in"),
-        refresh_expires_in=one("refresh_expires_in"),
-    )
+    ticket = qs.get("ticket")
+    if not ticket:
+        raise PasteParseError("pasted URL missing 'ticket' parameter")
+    return ticket[0]
 ```
 
 - [ ] **Step 4: Run, confirm pass**
@@ -417,142 +414,13 @@ git add app/cloud/auth.py tests/test_cloud_auth.py
 git commit -m "Cloud auth: paste-URL parser"
 ```
 
-### Task B.3: TDD the canonical_login payload builder
+### Task B.3: Fetch the user profile via direct HTTPS
 
-Given `PasteTokens` + profile JSON (from Bambu's REST), build the canonical `{"command":"user_login","data":{...}}` payload (per Phase 0 §Q11.4) that gets passed to plugin's `change_user`.
-
-**Files:**
-- Modify: `app/cloud/auth.py`
-- Modify: `tests/test_cloud_auth.py`
-
-- [ ] **Step 1: Write failing tests**
-
-Append:
-
-```python
-import json
-
-from app.cloud.auth import build_canonical_login
-
-
-def test_build_canonical_login_assembles_token_and_profile_fields():
-    tokens = PasteTokens(
-        access_token="at",
-        refresh_token="rt",
-        expires_in="3600",
-        refresh_expires_in="86400",
-    )
-    profile = {
-        "uidStr": "42",
-        "name": "Alice",
-        "account": "alice@example.com",
-        "avatar": "https://cdn/avatar.png",
-    }
-    payload = build_canonical_login(tokens=tokens, profile=profile)
-    obj = json.loads(payload)
-    assert obj["command"] == "user_login"
-    d = obj["data"]
-    # Token fields — both `token` and `access_token` carry the same value
-    # for compatibility (per Q11.4).
-    assert d["token"] == "at"
-    assert d["access_token"] == "at"
-    assert d["refresh_token"] == "rt"
-    assert d["expires_in"] == "3600"
-    assert d["refresh_expires_in"] == "86400"
-    # User-id fields — uidStr/user_id/user.id/user.uid/user.uidStr all carry
-    # the same value (per Q11.4 and HttpServer.cpp:38-65).
-    assert d["user_id"] == "42"
-    assert d["uidStr"] == "42"
-    assert d["user"]["id"] == "42"
-    assert d["user"]["uid"] == "42"
-    assert d["user"]["uidStr"] == "42"
-    assert d["user"]["name"] == "Alice"
-    assert d["user"]["account"] == "alice@example.com"
-    assert d["user"]["avatar"] == "https://cdn/avatar.png"
-
-
-def test_build_canonical_login_accepts_uid_in_other_field_names():
-    # Bambu's profile API may return `uid` or `id` rather than `uidStr`.
-    # Q11.4 says build_canonical_login_payload normalises via json_string_first.
-    tokens = PasteTokens("at", "rt", "1", "1")
-    payload = build_canonical_login(
-        tokens=tokens, profile={"uid": "99", "name": "Bob"}
-    )
-    obj = json.loads(payload)
-    assert obj["data"]["user_id"] == "99"
-
-
-def test_build_canonical_login_rejects_missing_uid():
-    tokens = PasteTokens("at", "rt", "1", "1")
-    with pytest.raises(ValueError):
-        build_canonical_login(tokens=tokens, profile={"name": "x"})
-```
-
-- [ ] **Step 2: Implement**
-
-Append to `app/cloud/auth.py`:
-
-```python
-import json as _json
-
-
-def _first_present(d: dict, *keys: str) -> str | None:
-    for k in keys:
-        v = d.get(k)
-        if v is not None:
-            return str(v)
-    return None
-
-
-def build_canonical_login(*, tokens: PasteTokens, profile: dict) -> str:
-    """Assemble the canonical ``change_user`` payload from tokens + profile.
-
-    Matches the schema in Phase 0 §Q11.4 (HttpServer.cpp:38-65,
-    ``build_canonical_login_payload``). The string returned is what gets
-    passed to ``plugin.change_user``.
-    """
-    uid = _first_present(profile, "uidStr", "uid", "id")
-    if uid is None:
-        raise ValueError("profile must contain uidStr/uid/id")
-
-    payload = {
-        "command": "user_login",
-        "data": {
-            "token": tokens.access_token,
-            "access_token": tokens.access_token,
-            "refresh_token": tokens.refresh_token,
-            "expires_in": tokens.expires_in,
-            "refresh_expires_in": tokens.refresh_expires_in,
-            "user_id": uid,
-            "uidStr": uid,
-            "user": {
-                "id": uid,
-                "uid": uid,
-                "uidStr": uid,
-                "name": profile.get("name", ""),
-                "account": profile.get("account", ""),
-                "avatar": profile.get("avatar", ""),
-            },
-        },
-    }
-    return _json.dumps(payload)
-```
-
-- [ ] **Step 3: Run, confirm pass + commit**
-
-```bash
-.venv/bin/pytest tests/test_cloud_auth.py -v
-git add app/cloud/auth.py tests/test_cloud_auth.py
-git commit -m "Cloud auth: build canonical_login payload"
-```
-
-### Task B.4: TDD the profile fetch (httpx-based)
+Per Phase A.2 discovery: profile is at `GET https://api.bambulab.com/v1/user-service/u/info` with `Authorization: Bearer <access_token>`. We hit it directly from Python; no plugin call needed.
 
 **Files:**
 - Modify: `app/cloud/auth.py`
 - Modify: `tests/test_cloud_auth.py`
-
-> The exact URL + response shape come from Phase A.2 discovery. The implementation below uses an educated guess; update the URL constant if discovery differs.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -587,10 +455,9 @@ async def test_fetch_profile_returns_profile_json():
         )
 
     assert profile["uidStr"] == "42"
-    # Confirm the request carried the right auth header + forged UA.
     req = seen_requests[0]
     assert req.headers["Authorization"] == "Bearer at_xyz"
-    assert "BambuStudio" in req.headers["User-Agent"]
+    assert req.url.path == "/v1/user-service/u/info"
 
 
 async def test_fetch_profile_raises_on_non_200():
@@ -622,9 +489,8 @@ _REGION_API_BASE: dict[str, str] = {
     "CN": "https://api.bambulab.cn",
 }
 
-# Phase A.2 should confirm this path. Educated guess from OrcaSlicer's typical
-# Bambu REST surface. Update if discovery differs.
-_PROFILE_PATH = "/v1/user-service/my/profile"
+# Confirmed by Phase A.2 discovery (2026-05-27-bambu-auth-discovery.md §A.2).
+_PROFILE_PATH = "/v1/user-service/u/info"
 
 
 async def fetch_profile(
@@ -665,51 +531,348 @@ git add app/cloud/auth.py tests/test_cloud_auth.py
 git commit -m "Cloud auth: fetch Bambu profile via REST"
 ```
 
----
+### Task B.4: Defer ticket exchange to the plugin (`get_my_token`)
 
-## Phase C — Auth orchestration: tying it together with the PluginHost
+The ticket → tokens exchange happens inside the closed plugin via the
+`bambu_network_get_my_token` symbol. Rather than reverse-engineer the
+HTTPS endpoint, we delegate this call to the C++ host (via a new RPC).
 
-### Task C.1: Add `is_user_login` + `user_logout` stubs to the fake host
-
-The auth flow needs to call two more plugin methods that aren't in the fake host yet.
-
-**Files:**
-- Modify: `tests/cloud_fake_host.py`
-
-- [ ] **Step 1: Read the existing fake host**
-
-Read `tests/cloud_fake_host.py` to understand the current `_dispatch` shape.
-
-- [ ] **Step 2: Add new methods**
-
-Modify `_dispatch` to also handle:
-
-```python
-if method == "is_user_login":
-    # Toggled by FAKE_HOST_USER_LOGGED_IN env var (used in tests).
-    import os
-    return {"is_login": os.environ.get("FAKE_HOST_USER_LOGGED_IN") == "1"}
-if method == "user_logout":
-    # with_backend_notify arg accepted; result is 0 for success.
-    return {"rc": 0}
-```
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add tests/cloud_fake_host.py
-git commit -m "Cloud auth: add is_user_login + user_logout to fake host"
-```
-
-### Task C.2: Implement the high-level `complete_login` orchestrator
-
-This wires Phase B's helpers together: parse paste → fetch profile → build canonical → call plugin `change_user` → confirm via `is_user_login`.
+This task plans the RPC contract on the Python side; the C++ host gains
+the new method in Task C.0 below.
 
 **Files:**
 - Modify: `app/cloud/auth.py`
 - Modify: `tests/test_cloud_auth.py`
 
-- [ ] **Step 1: Write failing test**
+- [ ] **Step 1: Document the planned RPC contract**
+
+The C++ host will accept a `get_my_token` method:
+
+```
+Request:  {"id":N, "method":"get_my_token", "params":{"ticket":"<val>"}}
+Response: {"id":N, "result":{"access_token":"...", "refresh_token":"...",
+                              "expires_in":"...", "refresh_expires_in":"..."}}
+```
+
+On failure (invalid ticket, network error):
+
+```
+Response: {"id":N, "error":{"code":-1, "message":"<plugin rc or msg>"}}
+```
+
+The Python-side `complete_login` orchestrator (Task C.2) will call
+`host.call("get_my_token", {"ticket": ...})` and treat the result as
+the "access_token bundle" needed to build the canonical_login payload.
+
+No standalone Python helper to test in isolation — this is just an RPC
+shape. Skip to Task B.5.
+
+### Task B.5: TDD the canonical_login payload builder
+
+Given the token bundle (from `get_my_token` RPC) + profile JSON (from
+`fetch_profile`), build the canonical `{"command":"user_login","data":{...}}`
+payload (per Phase 0 §Q11.4) that gets passed to plugin's `change_user`.
+
+**Files:**
+- Modify: `app/cloud/auth.py`
+- Modify: `tests/test_cloud_auth.py`
+
+- [ ] **Step 1: Write failing tests**
+
+Append:
+
+```python
+import json
+
+from app.cloud.auth import build_canonical_login
+
+
+def test_build_canonical_login_assembles_token_and_profile_fields():
+    tokens = {
+        "access_token": "at",
+        "refresh_token": "rt",
+        "expires_in": "3600",
+        "refresh_expires_in": "86400",
+    }
+    profile = {
+        "uidStr": "42",
+        "name": "Alice",
+        "account": "alice@example.com",
+        "avatar": "https://cdn/avatar.png",
+    }
+    payload = build_canonical_login(tokens=tokens, profile=profile)
+    obj = json.loads(payload)
+    assert obj["command"] == "user_login"
+    d = obj["data"]
+    assert d["token"] == "at"
+    assert d["access_token"] == "at"
+    assert d["refresh_token"] == "rt"
+    assert d["expires_in"] == "3600"
+    assert d["refresh_expires_in"] == "86400"
+    assert d["user_id"] == "42"
+    assert d["uidStr"] == "42"
+    assert d["user"]["id"] == "42"
+    assert d["user"]["uid"] == "42"
+    assert d["user"]["uidStr"] == "42"
+    assert d["user"]["name"] == "Alice"
+    assert d["user"]["account"] == "alice@example.com"
+    assert d["user"]["avatar"] == "https://cdn/avatar.png"
+
+
+def test_build_canonical_login_accepts_uid_in_other_field_names():
+    payload = build_canonical_login(
+        tokens={
+            "access_token": "at", "refresh_token": "rt",
+            "expires_in": "1", "refresh_expires_in": "1",
+        },
+        profile={"uid": "99", "name": "Bob"},
+    )
+    obj = json.loads(payload)
+    assert obj["data"]["user_id"] == "99"
+
+
+def test_build_canonical_login_accepts_camelcase_token_keys():
+    # The plugin's get_my_token may return either camelCase or snake_case;
+    # Phase 0 §Q11.4 says HttpServer normalises via json_string_first.
+    payload = build_canonical_login(
+        tokens={"accessToken": "at", "refreshToken": "rt",
+                "expiresIn": "1", "refreshExpiresIn": "1"},
+        profile={"uidStr": "1"},
+    )
+    obj = json.loads(payload)
+    assert obj["data"]["token"] == "at"
+    assert obj["data"]["refresh_token"] == "rt"
+
+
+def test_build_canonical_login_rejects_missing_uid():
+    with pytest.raises(ValueError):
+        build_canonical_login(
+            tokens={"access_token": "at", "refresh_token": "rt",
+                    "expires_in": "1", "refresh_expires_in": "1"},
+            profile={"name": "x"},
+        )
+```
+
+- [ ] **Step 2: Implement**
+
+Append to `app/cloud/auth.py`:
+
+```python
+import json as _json
+
+
+def _first_present(d: dict, *keys: str) -> str | None:
+    for k in keys:
+        v = d.get(k)
+        if v is not None:
+            return str(v)
+    return None
+
+
+def build_canonical_login(*, tokens: dict, profile: dict) -> str:
+    """Assemble the canonical ``change_user`` payload from tokens + profile.
+
+    Matches the schema in Phase 0 §Q11.4 (HttpServer.cpp:38-65). The string
+    returned is what gets passed to ``plugin.change_user``. Accepts either
+    snake_case or camelCase token field names (Bambu's APIs mix both).
+    """
+    access = _first_present(tokens, "access_token", "accessToken", "token")
+    refresh = _first_present(tokens, "refresh_token", "refreshToken")
+    expires = _first_present(tokens, "expires_in", "expiresIn")
+    refresh_expires = _first_present(
+        tokens, "refresh_expires_in", "refreshExpiresIn"
+    )
+    if access is None or refresh is None:
+        raise ValueError("tokens must contain access_token and refresh_token")
+
+    uid = _first_present(profile, "uidStr", "uid", "id")
+    if uid is None:
+        raise ValueError("profile must contain uidStr/uid/id")
+
+    payload = {
+        "command": "user_login",
+        "data": {
+            "token": access,
+            "access_token": access,
+            "refresh_token": refresh,
+            "expires_in": expires or "",
+            "refresh_expires_in": refresh_expires or "",
+            "user_id": uid,
+            "uidStr": uid,
+            "user": {
+                "id": uid,
+                "uid": uid,
+                "uidStr": uid,
+                "name": profile.get("name", ""),
+                "account": profile.get("account", ""),
+                "avatar": profile.get("avatar", ""),
+            },
+        },
+    }
+    return _json.dumps(payload)
+```
+
+- [ ] **Step 3: Run + commit**
+
+```bash
+.venv/bin/pytest tests/test_cloud_auth.py -v
+git add app/cloud/auth.py tests/test_cloud_auth.py
+git commit -m "Cloud auth: build canonical_login payload"
+```
+
+---
+
+## Phase C — Auth orchestration: tying it together with the PluginHost
+
+### Task C.0: Discover and wire `get_my_token` into the C++ host
+
+The ticket-flow login requires the plugin's `bambu_network_get_my_token`
+to exchange the user-pasted ticket for an access_token bundle. This needs
+both a C ABI discovery and a new RPC method in the C++ host.
+
+**Files:**
+- Modify: `docs/superpowers/notes/2026-05-27-bambu-cloud-host-discovery.md`
+- Modify: `tools/bambu_cloud_host/plugin_loader.hpp`
+- Modify: `tools/bambu_cloud_host/plugin_loader.cpp`
+- Modify: `tools/bambu_cloud_host/methods.cpp`
+
+- [ ] **Step 1: Discovery — read the C ABI**
+
+Read `/Users/leolobato/Documents/Projetos/Personal/3d/OrcaSlicer-bambulab/src/slic3r/Utils/BBLNetworkPlugin.hpp` for the `func_get_my_token` typedef. Then `grep -n "bambu_network_get_my_token" /Users/leolobato/Documents/Projetos/Personal/3d/OrcaSlicer-bambulab/src/slic3r/Utils/BBLNetworkPlugin.cpp` for the dlsym call.
+
+The signature is likely a callback-style API (the plugin makes the HTTPS
+call asynchronously and invokes a callback with the result). Read
+`BBLCloudServiceAgent::get_my_token` (`BBLCloudServiceAgent.cpp`) for the
+exact call shape — what does it pass, what callback signature does it
+expect, is it sync or async?
+
+If it's async/callback-based, we need to bridge that into our synchronous
+RPC: enqueue the result and have the RPC handler block until the callback
+fires (with a timeout). This is exactly the pattern the event queue
+established in Phase 2 will support — see if any callback wiring is
+already in place we can reuse.
+
+If it's actually synchronous-with-out-param (signature like
+`int get_my_token(void* agent, string ticket, string& access_token, string& refresh_token, ...)`), the RPC handler is trivial: call, populate response from out-params.
+
+Document findings in `docs/superpowers/notes/2026-05-27-bambu-cloud-host-discovery.md` under a new `## get_my_token` section, with citations and the chosen RPC pattern (sync passthrough vs callback-bridge).
+
+- [ ] **Step 2: Extend `plugin_loader.hpp`**
+
+Add the function-pointer typedef and a `get_my_token(ticket)` member that
+returns a struct or `nlohmann::json` of the token fields.
+
+```cpp
+// Inside class PluginLoader, add:
+nlohmann::json get_my_token(const std::string& ticket);
+```
+
+- [ ] **Step 3: Extend `plugin_loader.cpp`**
+
+Resolve `bambu_network_get_my_token` in `load_from_env()` and implement
+the wrapper. For the sync case:
+
+```cpp
+// Example shape — adapt to the real signature from discovery:
+using get_my_token_fn = int(*)(void*, std::string,
+                                std::string&, std::string&,
+                                std::string&, std::string&);
+
+nlohmann::json PluginLoader::get_my_token(const std::string& ticket) {
+    if (!agent_handle_) throw std::runtime_error("agent not bootstrapped");
+    std::string access, refresh, expires, refresh_expires;
+    int rc = p_get_my_token_(agent_handle_, ticket,
+                              access, refresh, expires, refresh_expires);
+    if (rc != 0) {
+        throw std::runtime_error("get_my_token rc=" + std::to_string(rc));
+    }
+    return {
+        {"access_token", access},
+        {"refresh_token", refresh},
+        {"expires_in", expires},
+        {"refresh_expires_in", refresh_expires},
+    };
+}
+```
+
+For the callback case: register a small lambda that captures a
+`std::promise<json>`, call the plugin, then `future.wait_for(30s)`.
+
+- [ ] **Step 4: Wire the RPC in `methods.cpp`**
+
+Add a `method_get_my_token` handler:
+
+```cpp
+json method_get_my_token(const json& params) {
+    return loader().get_my_token(params.at("ticket").get<std::string>());
+}
+
+// In dispatch_method:
+if (method == "get_my_token") return method_get_my_token(params);
+```
+
+- [ ] **Step 5: Rebuild Docker image**
+
+```bash
+docker build -t bambu-gateway:cloud-host-test . 2>&1 | tail -10
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add docs/superpowers/notes/2026-05-27-bambu-cloud-host-discovery.md \
+        tools/bambu_cloud_host/plugin_loader.hpp \
+        tools/bambu_cloud_host/plugin_loader.cpp \
+        tools/bambu_cloud_host/methods.cpp
+git commit -m "Cloud host: add get_my_token RPC method"
+```
+
+### Task C.1: Add `is_user_login`, `user_logout`, `get_my_token` stubs to the fake host
+
+The auth flow needs to call three more plugin methods that aren't in the fake host yet.
+
+**Files:**
+- Modify: `tests/cloud_fake_host.py`
+
+- [ ] **Step 1: Add new methods**
+
+In `_dispatch`:
+
+```python
+if method == "is_user_login":
+    import os
+    return {"is_login": os.environ.get("FAKE_HOST_USER_LOGGED_IN") == "1"}
+if method == "user_logout":
+    return {"rc": 0}
+if method == "get_my_token":
+    # Pretends to exchange the ticket for canned tokens. Tests can assert
+    # against these exact values.
+    if "ticket" not in params:
+        raise ValueError("get_my_token requires 'ticket'")
+    return {
+        "access_token": f"at_for_{params['ticket']}",
+        "refresh_token": "rt_canned",
+        "expires_in": "3600",
+        "refresh_expires_in": "86400",
+    }
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add tests/cloud_fake_host.py
+git commit -m "Cloud auth: add is_user_login, user_logout, get_my_token to fake host"
+```
+
+### Task C.2: Implement the high-level `complete_login` orchestrator (ticket flow)
+
+This wires Phase B's helpers together: parse ticket → plugin `get_my_token` → fetch profile → build canonical → plugin `change_user` → confirm via `is_user_login`.
+
+**Files:**
+- Modify: `app/cloud/auth.py`
+- Modify: `tests/test_cloud_auth.py`
+
+- [ ] **Step 1: Write failing tests**
 
 Append to `tests/test_cloud_auth.py`:
 
@@ -724,15 +887,14 @@ from app.cloud.auth import complete_login, LoginFailed
 FAKE_HOST = Path(__file__).parent / "cloud_fake_host.py"
 
 
-async def test_complete_login_happy_path(tmp_path, monkeypatch):
+async def test_complete_login_happy_path(tmp_path):
     record_file = tmp_path / "requests.jsonl"
-    pasted_url = (
-        "http://localhost:13618/?access_token=at&refresh_token=rt"
-        "&expires_in=3600&refresh_expires_in=86400"
-    )
+    pasted_url = "http://localhost:13618/?ticket=tk_abc"
 
     def profile_handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["Authorization"] == "Bearer at"
+        # The fake host's get_my_token returns access_token = "at_for_tk_abc";
+        # confirm we pass that to the profile API.
+        assert request.headers["Authorization"] == "Bearer at_for_tk_abc"
         return httpx.Response(
             200,
             json={
@@ -748,7 +910,6 @@ async def test_complete_login_happy_path(tmp_path, monkeypatch):
             cmd=[sys.executable, str(FAKE_HOST)],
             env={
                 "FAKE_HOST_RECORD_FILE": str(record_file),
-                # Make is_user_login return True after change_user is called.
                 "FAKE_HOST_USER_LOGGED_IN": "1",
             },
         ) as host,
@@ -759,19 +920,16 @@ async def test_complete_login_happy_path(tmp_path, monkeypatch):
         )
 
     assert result["account"] == "alice@example.com"
-    # Fake host should have seen: change_user, then is_user_login.
+    # Fake host should have seen: get_my_token, change_user, is_user_login.
     import json as _json
     seen = [_json.loads(line) for line in record_file.read_text().splitlines()]
     methods = [r["method"] for r in seen]
-    assert "change_user" in methods
+    assert methods.index("get_my_token") < methods.index("change_user")
     assert methods.index("change_user") < methods.index("is_user_login")
 
 
 async def test_complete_login_fails_if_plugin_does_not_register_login(tmp_path):
-    pasted = (
-        "http://localhost:13618/?access_token=at&refresh_token=rt"
-        "&expires_in=3600&refresh_expires_in=86400"
-    )
+    pasted = "http://localhost:13618/?ticket=tk_abc"
 
     def profile_handler(request):
         return httpx.Response(200, json={"uidStr": "1", "name": "x"})
@@ -816,14 +974,20 @@ async def complete_login(
 
     Returns the profile dict on success. Raises:
 
-    - :class:`PasteParseError` if the URL doesn't carry the expected tokens
+    - :class:`PasteParseError` if the URL doesn't carry a usable ticket
+    - :class:`PluginHostError` if the plugin host RPC fails (e.g. get_my_token
+      rejects the ticket)
     - :class:`ProfileFetchError` if Bambu rejects the access token
-    - :class:`PluginHostError` if the plugin host RPC fails
     - :class:`LoginFailed` if change_user returned 0 but is_user_login is False
     """
-    tokens = parse_paste_url(pasted_url)
+    ticket = parse_paste_url(pasted_url)
+    tokens = await host.call("get_my_token", {"ticket": ticket})
+
+    access = _first_present(tokens, "access_token", "accessToken", "token")
+    if access is None:
+        raise LoginFailed("get_my_token result missing access_token")
     profile = await fetch_profile(
-        client=http, region=region, access_token=tokens.access_token
+        client=http, region=region, access_token=access
     )
     canonical = build_canonical_login(tokens=tokens, profile=profile)
 
@@ -855,16 +1019,12 @@ async def is_signed_in(*, host: PluginHost) -> bool:
     return bool(result.get("is_login"))
 ```
 
-- [ ] **Step 3: Add a `change_user` method handler in the fake host**
-
-The existing fake host has `change_user` — confirm it still returns `{"rc": 0}`. No changes needed unless the test fails.
-
-- [ ] **Step 4: Run + commit**
+- [ ] **Step 3: Run + commit**
 
 ```bash
 .venv/bin/pytest tests/test_cloud_auth.py -v
 git add app/cloud/auth.py tests/test_cloud_auth.py
-git commit -m "Cloud auth: complete_login orchestrator"
+git commit -m "Cloud auth: complete_login orchestrator (ticket flow)"
 ```
 
 ---
@@ -1062,10 +1222,7 @@ def test_get_status_when_not_logged_in(cloud_app, monkeypatch):
 
 
 def test_post_paste_completes_login(cloud_app):
-    pasted = (
-        "http://localhost:13618/?access_token=at&refresh_token=rt"
-        "&expires_in=3600&refresh_expires_in=86400"
-    )
+    pasted = "http://localhost:13618/?ticket=tk_abc"
 
     def profile_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
