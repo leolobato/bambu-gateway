@@ -191,7 +191,121 @@ Key points:
 
 ## Q11.4 — change_user() payload shape
 
-(unanswered — see Task 0.5)
+**Canonical `change_user()` payload (from `HttpServer.cpp:38-65`, `build_canonical_login_payload`):**
+
+```json
+{
+  "command": "user_login",
+  "data": {
+    "token": "<accessToken / access_token / token>",
+    "access_token": "<same value as token>",
+    "refresh_token": "<refreshToken / refresh_token>",
+    "expires_in": "<expiresIn / expires_in>",
+    "refresh_expires_in": "<refreshExpiresIn / refresh_expires_in>",
+    "user_id": "<uidStr / uid / id from profile>",
+    "uidStr": "<same value as user_id>",
+    "user": {
+      "id": "<uidStr / uid / id from profile>",
+      "uid": "<same value>",
+      "uidStr": "<same value>",
+      "name": "<name from profile>",
+      "account": "<account from profile>",
+      "avatar": "<avatar from profile>"
+    }
+  }
+}
+```
+
+The builder (`build_canonical_login_payload`) accepts two JSON objects — a token response and a profile response — and normalises field-name variants (camelCase vs snake_case) via `json_string_first()`. Both `token` and `access_token` are written with the same value for compatibility.
+
+**Alternative legacy formats accepted (`ICloudServiceAgent.hpp:80-90`):**
+
+1. Traditional login: `{ "username": "...", "password": "..." }`
+2. WebView/OAuth canonical: `{ "command": "user_login", "data": { ... } }` ← what we use
+3. Token-only nested: `{ "data": { "token": "...", "refresh_token": "...", "user": { ... } } }`
+
+**What Bambu's hosted sign-in actually posts back (three redirect shapes):**
+
+All three shapes are handled by `bbl_auth_handle_request` in `HttpServer.cpp:282-416`.
+
+**Shape 1 — `?ticket=<val>` (loopback redirect, lines 290-348)**
+
+The `ticket` is a short-lived opaque token. The handler:
+1. Calls `agent->get_my_token(ticket, ...)` → receives a token JSON body with fields
+   `accessToken` (or `access_token` / `token`), `refreshToken`, `expiresIn`, `refreshExpiresIn`.
+2. Calls `agent->get_my_profile(access_token, ...)` → receives a profile JSON body with
+   fields `uidStr` (or `uid` / `id`), `name`, `account`, `avatar`.
+3. Passes both to `build_canonical_login_payload()` → calls `change_user(canonical_json)`.
+
+URL fields: `ticket` only. The gateway must call the token and profile API endpoints itself;
+it cannot build the canonical payload from the URL alone.
+
+**Shape 2 — `?code=<val>&state=<val>` (OAuth PKCE, lines 350-378)**
+
+The handler builds a **minimal** payload — it does NOT call get_my_token or get_my_profile.
+Instead the NetworkAgent's `change_user` implementation is expected to handle the code exchange
+internally:
+
+```json
+{
+  "command": "user_login",
+  "data": {
+    "code": "<auth_code>",
+    "state": "<state>"
+  }
+}
+```
+
+URL fields → payload mapping:
+- `code` → `data.code`
+- `state` → `data.state`
+
+This shape delegates the token exchange to the NetworkAgent plugin (libbambu_networking.so).
+The gateway cannot replicate this without the plugin's PKCE verifier stored in memory.
+
+**Shape 3 — `?access_token=<val>&refresh_token=<val>&expires_in=<val>&refresh_expires_in=<val>&redirect_url=<val>` (token fragment, lines 381-413)**
+
+The handler:
+1. Extracts all token fields directly from the URL query params.
+2. Calls `agent->get_my_profile(access_token, ...)` to fetch user profile.
+3. Constructs a synthetic token JSON object and passes both to `build_canonical_login_payload()`.
+
+URL fields → canonical payload mapping:
+- `access_token` → `data.token` and `data.access_token`
+- `refresh_token` → `data.refresh_token`
+- `expires_in` → `data.expires_in`
+- `refresh_expires_in` → `data.refresh_expires_in`
+- profile API response `uidStr` / `uid` / `id` → `data.user_id`, `data.uidStr`, `data.user.id`, etc.
+- profile API response `name` → `data.user.name`
+- profile API response `account` → `data.user.account`
+- profile API response `avatar` → `data.user.avatar`
+
+After calling `change_user()` the handler redirects the browser to `<redirect_url>?result=success`.
+
+**Mapping for our gateway (Phase 4 OAuth flow):**
+
+Shape 3 is the most actionable for a gateway implementation because all token fields are
+present in the redirect URL — the gateway only needs to call the profile API once and then
+assemble the canonical payload. Shape 1 (ticket) requires an additional token-exchange API
+call. Shape 2 (code+state) cannot be replicated without the in-memory PKCE verifier from the
+NetworkAgent plugin.
+
+**Recommended Phase 4 approach:**
+
+Instruct the user to paste the post-redirect URL. If it contains `access_token`:
+1. Extract `access_token`, `refresh_token`, `expires_in`, `refresh_expires_in` from URL.
+2. Call `GET /v1/user-service/u/info` (or equivalent profile endpoint) with `Authorization: Bearer <access_token>`.
+3. Build the canonical payload using the field mappings above.
+4. Store token + profile fields; use `access_token` for subsequent Bambu Cloud API calls.
+
+If the URL contains `ticket`: call `get_my_token(ticket)` first (BBL token-exchange endpoint),
+then proceed as above.
+
+**Citations:**
+- `HttpServer.cpp:38-65` — `build_canonical_login_payload()`: normalises token + profile JSON into canonical shape
+- `HttpServer.cpp:282-416` — `bbl_auth_handle_request()`: three redirect-shape branches
+- `ICloudServiceAgent.hpp:80-87` — `change_user()` comment: three accepted format descriptions
+- `WebUserLoginDialog.cpp:407-418` — JS bridge: `user_login` / `user_ticket_login` commands routed to `handle_script_message()`
 
 ## Verified CDN reachability
 
