@@ -30,6 +30,22 @@ def _dispatch(method: str, params: dict) -> dict:
         if "canonical_login" not in params:
             raise ValueError("change_user requires canonical_login")
         return {"rc": 0}
+    if method == "is_user_login":
+        import os
+        return {"is_login": os.environ.get("FAKE_HOST_USER_LOGGED_IN") == "1"}
+    if method == "user_logout":
+        return {"rc": 0}
+    if method == "get_my_token":
+        # Pretends to exchange the ticket for canned tokens. Tests can assert
+        # against these exact values.
+        if "ticket" not in params:
+            raise ValueError("get_my_token requires 'ticket'")
+        return {
+            "access_token": f"at_for_{params['ticket']}",
+            "refresh_token": "rt_canned",
+            "expires_in": "3600",
+            "refresh_expires_in": "86400",
+        }
     raise ValueError(f"unknown method: {method}")
 
 
