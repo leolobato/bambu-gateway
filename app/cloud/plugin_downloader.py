@@ -7,7 +7,82 @@ declaring the plugin "active".
 """
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass, field
+
 from app.cloud import BAMBU_NETWORK_AGENT_VERSION, BAMBU_STUDIO_USER_AGENT
+
+
+class ManifestParseError(ValueError):
+    """Raised when the plugin manifest JSON is malformed or missing fields."""
+
+
+@dataclass(frozen=True)
+class ManifestEntry:
+    """One ``files[]`` entry from ``linux_payload_manifest.json``.
+
+    Only ``libbambu_networking.so`` carries ``abi_version`` per the Bambu
+    packaging script; other entries omit it.
+    """
+
+    name: str
+    sha256: str
+    abi_version: str | None = None
+
+
+@dataclass(frozen=True)
+class Manifest:
+    """Parsed ``linux_payload_manifest.json``.
+
+    Note: the manifest has no top-level ``version`` field — the version comes
+    from the resource-listing response, not the manifest itself.
+    """
+
+    files: tuple[ManifestEntry, ...] = field(default_factory=tuple)
+
+    def find(self, name: str) -> ManifestEntry | None:
+        for entry in self.files:
+            if entry.name == name:
+                return entry
+        return None
+
+
+def parse_manifest(blob: bytes) -> Manifest:
+    """Parse the raw manifest bytes into a :class:`Manifest`.
+
+    Raises :class:`ManifestParseError` if the JSON is invalid or any required
+    per-entry field is missing.
+    """
+    try:
+        data = json.loads(blob)
+    except json.JSONDecodeError as exc:
+        raise ManifestParseError(f"manifest is not valid JSON: {exc}") from exc
+
+    if not isinstance(data, dict) or "files" not in data:
+        raise ManifestParseError("manifest must be an object with a 'files' key")
+
+    raw_files = data["files"]
+    if not isinstance(raw_files, list):
+        raise ManifestParseError("manifest 'files' must be a list")
+
+    entries: list[ManifestEntry] = []
+    for raw in raw_files:
+        if not isinstance(raw, dict):
+            raise ManifestParseError("each entry in files[] must be an object")
+        try:
+            entries.append(
+                ManifestEntry(
+                    name=raw["name"],
+                    sha256=raw["sha256"],
+                    abi_version=raw.get("abi_version"),
+                )
+            )
+        except KeyError as exc:
+            raise ManifestParseError(
+                f"manifest entry missing required field: {exc.args[0]}"
+            ) from exc
+
+    return Manifest(files=tuple(entries))
 
 
 def bambu_studio_headers() -> dict[str, str]:
