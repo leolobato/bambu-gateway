@@ -84,7 +84,39 @@ grounded in the correct files.
 
 ## Q11.2 — Two-3MF export from orcaslicer-headless
 
-(unanswered — see Task 0.3)
+**Current orcaslicer-headless capability:** Returns **one 3MF only** — the gcode-3MF
+(`SaveStrategy::WithGcode`). The `/slice/v2` and `/slice-stream/v2` endpoints each return a single
+`output_token`; the JSON response schema has no `config_token`, `config_output_token`, or second-file
+field. The OpenAPI spec (v2.3.2-53, probed live at `http://10.0.1.9:8070`) lists 28 paths and none of
+them map to a config-3MF or slice-info export. There is no `export-config` or `config-3mf` endpoint.
+
+**Citations:**
+- `app/slicer_client.py:200-202` — after a successful `/slice/v2` POST, the gateway reads
+  `payload["output_token"]` and calls `_download_3mf(output_token)`; there is no second token consumed
+- `app/slicer_client.py:294-296` — the `/slice-stream/v2` `result` SSE event also carries only
+  `output_token` + `download_url`; `_inflate_v2_result` fetches just that one file
+- orcaslicer-headless `/slice/v2` — `SliceTokenRequest` input schema, untyped `{}` response schema in
+  OpenAPI; the actual JSON response shape is `{output_token, settings_transfer, estimate}`
+
+**Source flags from OrcaSlicer (Plater.cpp:15914–15962):**
+- gcode-3MF (`send_gcode`, line 15930): `Silence | SkipModel | WithGcode | SkipAuxiliary`
+- config-3MF (`export_config_3mf`, line 15958): `Silence | SkipModel | WithSliceInfo | SkipAuxiliary`
+
+The two functions are separate in the GUI: `send_gcode` produces the file the printer executes;
+`export_config_3mf` produces a metadata-only companion that Bambu's cloud UI uses for job-history
+previews. The headless binary currently exposes only the `send_gcode` equivalent (`WithGcode`).
+
+**Path forward for Phase 6 (print submission):**
+- **v1: ship with gcode-3MF only.** Cloud print submission works with just the gcode-3MF — the
+  config-3MF is consumed exclusively by the Bambu web dashboard's job-history preview feature, not by
+  the printer or the cloud dispatch API. Omitting it means cloud print history entries will lack a
+  config snapshot thumbnail, but the print itself succeeds. This is the right v1 baseline: zero changes
+  to the gateway or the slicer service, unblocks Phase 6 entirely.
+- **v2 (post-launch): extend orcaslicer-headless.** Add a `config_output_token` field to the
+  `/slice/v2` response (and a parallel SSE key in `/slice-stream/v2`) so the slicer binary calls
+  `export_config_3mf` in addition to `send_gcode` and returns both tokens. The gateway then uploads
+  both to the Bambu cloud job endpoint. This is a clean extension with no in-process post-processing
+  needed.
 
 ## Q11.3 — Plugin CDN endpoint
 
