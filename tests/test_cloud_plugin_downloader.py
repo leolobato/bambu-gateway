@@ -225,3 +225,230 @@ def test_abi_version_rejects_missing():
 def test_abi_version_rejects_garbage():
     with pytest.raises(AbiVersionMismatch):
         validate_abi_version("xyz", pinned="02.05.02.51")
+
+
+# ---------------------------------------------------------------------------
+# Resource listing parsing + PluginDownloader driver
+# ---------------------------------------------------------------------------
+
+import hashlib
+import io
+import json as _json
+import zipfile
+
+import httpx
+
+from app.cloud.plugin_downloader import (
+    ListingParseError,
+    PluginDownloader,
+    parse_resource_listing,
+)
+
+
+_API_BASE = "https://api.bambulab.com"
+_LISTING_PATH = "/v1/iot-service/api/slicer/resource"
+_ZIP_URL = (
+    "https://public-cdn.bblmw.com/upgrade/studio/plugins/02.05.02.58/"
+    "abc12345/linux_02.05.02.58.zip"
+)
+
+
+def _hex_sha256(blob: bytes) -> str:
+    return hashlib.sha256(blob).hexdigest()
+
+
+def _make_fake_so(name: str = "stub") -> bytes:
+    # Minimal valid ELF64-LE-x86_64 header + padding so validate_elf passes.
+    return _ELF_X86_64_LE + name.encode() + b"\x00" * 64
+
+
+def _build_fake_zip(
+    *, network_so: bytes, source_so: bytes, manifest_override: dict | None = None
+) -> bytes:
+    """Build an in-memory ZIP that mirrors Bambu's plugin payload structure.
+
+    Contains both `.so` files and `linux_payload_manifest.json`.
+    """
+    manifest = manifest_override or {
+        "files": [
+            {
+                "name": "libbambu_networking.so",
+                "sha256": _hex_sha256(network_so),
+                "abi_version": "02.05.02.58",
+            },
+            {
+                "name": "libBambuSource.so",
+                "sha256": _hex_sha256(source_so),
+            },
+        ],
+    }
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("linux_payload_manifest.json", _json.dumps(manifest))
+        zf.writestr("libbambu_networking.so", network_so)
+        zf.writestr("libBambuSource.so", source_so)
+    return buffer.getvalue()
+
+
+def _build_listing(*, version: str = "02.05.02.58", url: str = _ZIP_URL) -> bytes:
+    """Build the JSON the listing endpoint returns (per Phase 0 §Q11.3)."""
+    return _json.dumps(
+        {
+            "message": "success",
+            "code": None,
+            "error": None,
+            "software": None,
+            "guide": None,
+            "resources": [
+                {
+                    "type": "slicer/plugins/cloud",
+                    "version": version,
+                    "description": "",
+                    "url": url,
+                    "force_update": False,
+                }
+            ],
+        }
+    ).encode("utf-8")
+
+
+def _make_fake_cdn_handler(*, listing: bytes, zip_blob: bytes):
+    """Return an httpx mock handler that serves the listing + the ZIP.
+
+    Asserts the listing request carries the forged BambuStudio Linux headers.
+    The ZIP request is unauthenticated (matches real CloudFront behaviour).
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if request.url.path == _LISTING_PATH:
+            # Brand check: the listing request must look like Linux Bambu Studio.
+            assert (
+                request.headers["User-Agent"] == "BambuStudio/02.05.02.58"
+            ), request.headers["User-Agent"]
+            assert request.headers["X-BBL-OS-Type"] == "linux"
+            assert request.headers["X-BBL-Client-Name"] == "BambuStudio"
+            return httpx.Response(200, content=listing)
+        if url == _ZIP_URL:
+            return httpx.Response(200, content=zip_blob)
+        return httpx.Response(404, text=f"unexpected request: {url}")
+
+    return handler
+
+
+def test_parse_resource_listing_extracts_cloud_entry():
+    entry = parse_resource_listing(_build_listing())
+    assert entry.version == "02.05.02.58"
+    assert entry.url == _ZIP_URL
+
+
+def test_parse_resource_listing_rejects_no_cloud_entry():
+    blob = _json.dumps({"message": "success", "resources": []}).encode()
+    with pytest.raises(ListingParseError):
+        parse_resource_listing(blob)
+
+
+def test_parse_resource_listing_rejects_malformed_json():
+    with pytest.raises(ListingParseError):
+        parse_resource_listing(b"not json")
+
+
+async def test_downloader_fetches_and_validates(tmp_path):
+    network_so = _make_fake_so("network")
+    source_so = _make_fake_so("source")
+    listing = _build_listing()
+    zip_blob = _build_fake_zip(network_so=network_so, source_so=source_so)
+    handler = _make_fake_cdn_handler(listing=listing, zip_blob=zip_blob)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=_API_BASE
+    ) as client:
+        downloader = PluginDownloader(plugin_dir=tmp_path, client=client)
+        await downloader.ensure_active()
+
+    active = tmp_path / "active"
+    assert (active / "libbambu_networking.so").read_bytes() == network_so
+    assert (active / "libBambuSource.so").read_bytes() == source_so
+    assert (active / "linux_payload_manifest.json").exists()
+
+
+async def test_downloader_is_idempotent_when_already_valid(tmp_path):
+    network_so = _make_fake_so("network")
+    source_so = _make_fake_so("source")
+    listing = _build_listing()
+    zip_blob = _build_fake_zip(network_so=network_so, source_so=source_so)
+    handler = _make_fake_cdn_handler(listing=listing, zip_blob=zip_blob)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=_API_BASE
+    ) as client:
+        downloader = PluginDownloader(plugin_dir=tmp_path, client=client)
+        await downloader.ensure_active()
+
+    # Second call must not hit the CDN — give the downloader a poisoned
+    # client that 500s on any request.
+    poisoned = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda req: httpx.Response(500, text="should not be called")
+        ),
+        base_url=_API_BASE,
+    )
+    try:
+        downloader = PluginDownloader(plugin_dir=tmp_path, client=poisoned)
+        await downloader.ensure_active()  # must not raise
+    finally:
+        await poisoned.aclose()
+
+
+async def test_downloader_rejects_tampered_so(tmp_path):
+    network_so = _make_fake_so("network")
+    source_so = _make_fake_so("source")
+    listing = _build_listing()
+    # Build a ZIP whose manifest claims the original SHAs but whose
+    # libbambu_networking.so bytes are different content. SHA validation
+    # must reject this.
+    manifest = {
+        "files": [
+            {
+                "name": "libbambu_networking.so",
+                "sha256": _hex_sha256(network_so),  # SHA of the ORIGINAL
+                "abi_version": "02.05.02.58",
+            },
+            {
+                "name": "libBambuSource.so",
+                "sha256": _hex_sha256(source_so),
+            },
+        ],
+    }
+    tampered_zip = _build_fake_zip(
+        network_so=b"\x7fELF" + b"\x00" * 200,  # tampered
+        source_so=source_so,
+        manifest_override=manifest,
+    )
+    handler = _make_fake_cdn_handler(listing=listing, zip_blob=tampered_zip)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=_API_BASE
+    ) as client:
+        downloader = PluginDownloader(plugin_dir=tmp_path, client=client)
+        with pytest.raises(IntegrityError):
+            await downloader.ensure_active()
+    # No artifacts left behind on failure.
+    assert not (tmp_path / "active").exists()
+
+
+async def test_downloader_rejects_listing_with_incompatible_version(tmp_path):
+    # Listing reports a major-bump version; pin check must reject it.
+    network_so = _make_fake_so("network")
+    source_so = _make_fake_so("source")
+    listing = _build_listing(version="03.00.00.00")
+    zip_blob = _build_fake_zip(network_so=network_so, source_so=source_so)
+    handler = _make_fake_cdn_handler(listing=listing, zip_blob=zip_blob)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=_API_BASE
+    ) as client:
+        downloader = PluginDownloader(plugin_dir=tmp_path, client=client)
+        with pytest.raises(IntegrityError):
+            await downloader.ensure_active()
+    assert not (tmp_path / "active").exists()

@@ -8,11 +8,19 @@ declaring the plugin "active".
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import logging
+import shutil
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import httpx
+
 from app.cloud import BAMBU_NETWORK_AGENT_VERSION, BAMBU_STUDIO_USER_AGENT
+
+logger = logging.getLogger("bambu.cloud.downloader")
 
 
 class ManifestParseError(ValueError):
@@ -180,6 +188,14 @@ def validate_abi_version(manifest_abi: str | None, *, pinned: str) -> None:
         )
 
 
+# Bambu CDN endpoint paths (per Phase 0 §Q11.3 discovery).
+_RESOURCE_TYPE = "slicer/plugins/cloud"
+_LISTING_PATH = "/v1/iot-service/api/slicer/resource"
+_NETWORK_SO = "libbambu_networking.so"
+_SOURCE_SO = "libBambuSource.so"
+_MANIFEST_FILE = "linux_payload_manifest.json"
+
+
 def bambu_studio_headers() -> dict[str, str]:
     """Headers that brand the request as a Linux build of Bambu Studio.
 
@@ -195,3 +211,216 @@ def bambu_studio_headers() -> dict[str, str]:
         "X-BBL-Client-Version": BAMBU_NETWORK_AGENT_VERSION,
         "X-BBL-OS-Type": "linux",
     }
+
+
+class ListingParseError(ValueError):
+    """Raised when the Bambu resource-listing JSON is malformed or empty."""
+
+
+@dataclass(frozen=True)
+class ResourceEntry:
+    """One entry from the Bambu resource-listing response.
+
+    Matches the schema captured in Phase 0 §Q11.3.
+    """
+
+    type: str
+    version: str
+    url: str
+    description: str = ""
+    force_update: bool = False
+
+
+def parse_resource_listing(blob: bytes) -> ResourceEntry:
+    """Parse the listing JSON and return the cloud-plugin entry.
+
+    Raises :class:`ListingParseError` if the body is invalid or contains no
+    ``type == "slicer/plugins/cloud"`` entry.
+    """
+    try:
+        data = json.loads(blob)
+    except json.JSONDecodeError as exc:
+        raise ListingParseError(f"listing is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ListingParseError("listing must be a JSON object")
+    resources = data.get("resources")
+    if not isinstance(resources, list):
+        raise ListingParseError("listing 'resources' must be a list")
+    for raw in resources:
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("type") != _RESOURCE_TYPE:
+            continue
+        try:
+            return ResourceEntry(
+                type=raw["type"],
+                version=raw["version"],
+                url=raw["url"],
+                description=raw.get("description", ""),
+                force_update=bool(raw.get("force_update", False)),
+            )
+        except KeyError as exc:
+            raise ListingParseError(
+                f"resource entry missing required field: {exc.args[0]}"
+            ) from exc
+    raise ListingParseError(
+        f"no resource of type {_RESOURCE_TYPE!r} in listing"
+    )
+
+
+class PluginDownloader:
+    """Downloads, validates, and persists the Bambu network plugin.
+
+    Flow:
+      1. GET the resource listing with forged BambuStudio Linux headers.
+      2. Parse the listing for the cloud-plugin entry; validate its version
+         against the pinned ABI version.
+      3. GET the ZIP archive from the entry's URL (no special headers — the
+         CDN is public).
+      4. Extract the ZIP to staging; read and parse the bundled manifest.
+      5. Validate ELF magic + SHA-256 on each ``.so`` named in the manifest.
+      6. Atomic-ish swap: remove old ``active/``, rename ``staging/`` →
+         ``active/``.
+
+    Idempotent: ``ensure_active()`` is a no-op if ``${plugin_dir}/active/``
+    already contains both ``.so`` files matching the bundled manifest.
+    """
+
+    def __init__(self, *, plugin_dir: Path, client: httpx.AsyncClient) -> None:
+        self._plugin_dir = Path(plugin_dir)
+        self._client = client
+
+    @property
+    def _active(self) -> Path:
+        return self._plugin_dir / "active"
+
+    async def ensure_active(self) -> None:
+        """Guarantee that ``active/`` contains a valid pinned plugin set.
+
+        Raises an :class:`IntegrityError` subclass on validation failure.
+        On any failure, partially-written files are removed so the next
+        startup tries again from scratch.
+        """
+        if self._active_is_valid():
+            logger.info(
+                "Bambu plugin already present and valid at %s; skipping fetch",
+                self._active,
+            )
+            return
+
+        staging = self._plugin_dir / "staging"
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+
+        try:
+            listing_blob = await self._get_listing()
+            entry = parse_resource_listing(listing_blob)
+            validate_abi_version(
+                entry.version, pinned=BAMBU_NETWORK_AGENT_VERSION
+            )
+
+            zip_blob = await self._get_binary(entry.url)
+            _extract_zip(zip_blob, staging)
+
+            manifest_path = staging / _MANIFEST_FILE
+            if not manifest_path.exists():
+                raise ManifestParseError(
+                    f"ZIP did not contain {_MANIFEST_FILE}"
+                )
+            manifest = parse_manifest(manifest_path.read_bytes())
+
+            net_entry = manifest.find(_NETWORK_SO)
+            src_entry = manifest.find(_SOURCE_SO)
+            if net_entry is None or src_entry is None:
+                raise ManifestParseError(
+                    f"manifest missing required files: {_NETWORK_SO}, "
+                    f"{_SOURCE_SO}"
+                )
+            validate_abi_version(
+                net_entry.abi_version, pinned=BAMBU_NETWORK_AGENT_VERSION
+            )
+
+            for me in (net_entry, src_entry):
+                so_path = staging / me.name
+                if not so_path.exists():
+                    raise IntegrityError(
+                        f"manifest references {me.name} but ZIP did not "
+                        "contain it"
+                    )
+                validate_elf(so_path)
+                validate_sha256(so_path, me.sha256)
+
+            # Atomic-ish swap: remove old active/, rename staging -> active/.
+            if self._active.exists():
+                shutil.rmtree(self._active)
+            staging.rename(self._active)
+            logger.info(
+                "Bambu plugin %s installed to %s",
+                entry.version,
+                self._active,
+            )
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            shutil.rmtree(self._active, ignore_errors=True)
+            raise
+
+    async def _get_listing(self) -> bytes:
+        response = await self._client.get(
+            _LISTING_PATH,
+            params={_RESOURCE_TYPE: BAMBU_NETWORK_AGENT_VERSION},
+            headers=bambu_studio_headers(),
+        )
+        response.raise_for_status()
+        return response.content
+
+    async def _get_binary(self, url: str) -> bytes:
+        # The ZIP CDN is public (CloudFront), no forged headers required.
+        response = await self._client.get(url, headers=bambu_studio_headers())
+        response.raise_for_status()
+        return response.content
+
+    def _active_is_valid(self) -> bool:
+        """Cheap pre-flight: do the files exist and match the manifest?
+
+        Returns False on any discrepancy (caller will then re-fetch).
+        """
+        manifest_path = self._active / _MANIFEST_FILE
+        if not manifest_path.exists():
+            return False
+        try:
+            manifest = parse_manifest(manifest_path.read_bytes())
+            net_entry = manifest.find(_NETWORK_SO)
+            src_entry = manifest.find(_SOURCE_SO)
+            if net_entry is None or src_entry is None:
+                return False
+            validate_abi_version(
+                net_entry.abi_version, pinned=BAMBU_NETWORK_AGENT_VERSION
+            )
+            validate_sha256(self._active / _NETWORK_SO, net_entry.sha256)
+            validate_sha256(self._active / _SOURCE_SO, src_entry.sha256)
+        except IntegrityError:
+            return False
+        return True
+
+
+def _extract_zip(blob: bytes, dest: Path) -> None:
+    """Extract ``blob`` (a ZIP archive) into ``dest`` (must already exist).
+
+    Refuses any entry whose normalised path escapes ``dest`` (zip-slip
+    guard). All extracted files land directly in ``dest`` — archive
+    subdirectories are flattened.
+    """
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            # Flatten: take just the basename so the manifest + .so files
+            # land at dest/<name> regardless of ZIP internal layout.
+            target = dest / Path(info.filename).name
+            if not target.resolve().is_relative_to(dest.resolve()):
+                raise IntegrityError(
+                    f"ZIP entry {info.filename!r} escapes target directory"
+                )
+            with zf.open(info) as src, target.open("wb") as out:
+                shutil.copyfileobj(src, out)
