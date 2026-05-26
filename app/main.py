@@ -7,7 +7,7 @@ import base64
 import json
 import logging
 import re
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, AsyncExitStack
 from pathlib import Path
 from urllib.parse import quote
 
@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from app.apns_client import ApnsClient
 from app.apns_jwt import ApnsJwtSigner
 from app.cloud.plugin_downloader import PluginDownloader
+from app.cloud.plugin_host import PluginHost
 from app.config import PrinterConfig, settings
 from app import config_store
 from app.device_store import ActiveActivity, DeviceRecord, DeviceStore
@@ -201,96 +202,118 @@ async def lifespan(app: FastAPI):
     global printer_service, slicer_client, slice_jobs
     configs = config_store.load()
 
-    # Cloud plugin: download before LAN-mode startup so the plugin is on disk
-    # before any printer connection is attempted.
-    if settings.bambu_cloud_enabled:
-        async with httpx.AsyncClient(
-            base_url=_bambu_cdn_base_url(settings.bambu_cloud_region),
-            timeout=30.0,
-        ) as cdn_client:
-            downloader = PluginDownloader(
-                plugin_dir=settings.bambu_cloud_plugin_dir,
-                client=cdn_client,
+    async with AsyncExitStack() as stack:
+        # Cloud plugin: download before LAN-mode startup so the plugin is on
+        # disk before any printer connection is attempted.  Then start the C++
+        # host subprocess and keep it alive for the entire lifespan.
+        if settings.bambu_cloud_enabled:
+            async with httpx.AsyncClient(
+                base_url=_bambu_cdn_base_url(settings.bambu_cloud_region),
+                timeout=30.0,
+            ) as cdn_client:
+                downloader = PluginDownloader(
+                    plugin_dir=settings.bambu_cloud_plugin_dir,
+                    client=cdn_client,
+                )
+                try:
+                    await downloader.ensure_active()
+                except Exception as exc:
+                    logger.error("Bambu cloud plugin startup failed: %s", exc)
+                    raise
+
+            active_dir = settings.bambu_cloud_plugin_dir / "active"
+            host = PluginHost(
+                cmd=[str(settings.bambu_cloud_host_binary)],
+                env={
+                    "PJARCZAK_BAMBU_PLUGIN_DIR": str(active_dir),
+                    "PJARCZAK_BAMBU_NETWORK_SO": str(
+                        active_dir / "libbambu_networking.so"
+                    ),
+                    "PJARCZAK_BAMBU_SOURCE_SO": str(
+                        active_dir / "libBambuSource.so"
+                    ),
+                    "BAMBU_CLOUD_REGION": settings.bambu_cloud_region,
+                },
             )
-            try:
-                await downloader.ensure_active()
-            except Exception as exc:
-                logger.error("Bambu cloud plugin startup failed: %s", exc)
-                raise
+            await stack.enter_async_context(host)
+            boot = await host.call("init_plugin", {})
+            if boot.get("bootstrap_rc", -1) != 0:
+                raise RuntimeError(f"Bambu plugin bootstrap failed: {boot}")
+            logger.info("Bambu plugin host ready")
 
-    # Device registry + APNs
-    device_store_path = config_store._config_path.parent / "devices.json"
-    device_store = DeviceStore(device_store_path)
+        # Device registry + APNs
+        device_store_path = config_store._config_path.parent / "devices.json"
+        device_store = DeviceStore(device_store_path)
 
-    # Slice-job store is also a thumbnail source for Live Activity pushes, so
-    # construct it before the notification hub even when no slicer is wired
-    # up — an empty store just yields no thumbnails, which is the correct
-    # graceful-degradation behavior.
-    slice_store_path = config_store._config_path.parent / "slice_jobs.json"
-    slice_store = SliceJobStore(slice_store_path)
+        # Slice-job store is also a thumbnail source for Live Activity pushes, so
+        # construct it before the notification hub even when no slicer is wired
+        # up — an empty store just yields no thumbnails, which is the correct
+        # graceful-degradation behavior.
+        slice_store_path = config_store._config_path.parent / "slice_jobs.json"
+        slice_store = SliceJobStore(slice_store_path)
 
-    apns_client: ApnsClient | None = None
-    notification_hub: NotificationHub | None = None
-    status_change_callback = None
-    if settings.push_enabled:
-        signer = ApnsJwtSigner(
-            key_path=settings.apns_key_path,
-            key_id=settings.apns_key_id,
-            team_id=settings.apns_team_id,
+        apns_client: ApnsClient | None = None
+        notification_hub: NotificationHub | None = None
+        status_change_callback = None
+        if settings.push_enabled:
+            signer = ApnsJwtSigner(
+                key_path=settings.apns_key_path,
+                key_id=settings.apns_key_id,
+                team_id=settings.apns_team_id,
+            )
+            apns_client = ApnsClient(
+                signer=signer,
+                bundle_id=settings.apns_bundle_id,
+                environment=settings.apns_environment,
+            )
+            notification_hub = NotificationHub(
+                apns=apns_client,
+                device_store=device_store,
+                slice_store=slice_store,
+            )
+            notification_hub.start()
+            status_change_callback = notification_hub.on_status_change
+            logger.info("APNs push enabled")
+        else:
+            logger.info("APNs push disabled — set APNS_KEY_PATH and related vars to enable")
+
+        printer_service = PrinterService(
+            configs, status_change_callback=status_change_callback,
         )
-        apns_client = ApnsClient(
-            signer=signer,
-            bundle_id=settings.apns_bundle_id,
-            environment=settings.apns_environment,
-        )
-        notification_hub = NotificationHub(
-            apns=apns_client,
-            device_store=device_store,
-            slice_store=slice_store,
-        )
-        notification_hub.start()
-        status_change_callback = notification_hub.on_status_change
-        logger.info("APNs push enabled")
-    else:
-        logger.info("APNs push disabled — set APNS_KEY_PATH and related vars to enable")
+        printer_service.start()
+        if notification_hub is not None:
+            notification_hub.set_printer_service(printer_service)
+        if settings.orcaslicer_api_url:
+            slicer_client = SlicerClient(settings.orcaslicer_api_url)
 
-    printer_service = PrinterService(
-        configs, status_change_callback=status_change_callback,
-    )
-    printer_service.start()
-    if notification_hub is not None:
-        notification_hub.set_printer_service(printer_service)
-    if settings.orcaslicer_api_url:
-        slicer_client = SlicerClient(settings.orcaslicer_api_url)
+        _sweep_stl_drafts()
 
-    _sweep_stl_drafts()
+        if slicer_client is not None:
+            slice_jobs = SliceJobManager(
+                store=slice_store,
+                slicer=slicer_client,
+                printer_service=printer_service,
+                notifier=(
+                    notification_hub.notify_slice_terminal
+                    if notification_hub is not None else None
+                ),
+                max_concurrent=settings.slice_max_concurrent,
+            )
+            await slice_jobs.recover_on_startup()
+            await slice_jobs.start()
 
-    if slicer_client is not None:
-        slice_jobs = SliceJobManager(
-            store=slice_store,
-            slicer=slicer_client,
-            printer_service=printer_service,
-            notifier=(
-                notification_hub.notify_slice_terminal
-                if notification_hub is not None else None
-            ),
-            max_concurrent=settings.slice_max_concurrent,
-        )
-        await slice_jobs.recover_on_startup()
-        await slice_jobs.start()
+        app.state.device_store = device_store
+        app.state.notification_hub = notification_hub
+        app.state.apns_client = apns_client
 
-    app.state.device_store = device_store
-    app.state.notification_hub = notification_hub
-    app.state.apns_client = apns_client
-
-    yield
-    if slice_jobs is not None:
-        await slice_jobs.stop()
-    await printer_service.stop_async()
-    if notification_hub is not None:
-        notification_hub.stop()
-    if apns_client is not None:
-        await apns_client.aclose()
+        yield
+        if slice_jobs is not None:
+            await slice_jobs.stop()
+        await printer_service.stop_async()
+        if notification_hub is not None:
+            notification_hub.stop()
+        if apns_client is not None:
+            await apns_client.aclose()
 
 
 app = FastAPI(title="Bambu Gateway", version="2.4.2", lifespan=lifespan)
