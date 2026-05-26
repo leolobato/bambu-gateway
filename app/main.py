@@ -319,6 +319,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Bambu Gateway", version="2.4.2", lifespan=lifespan)
 
+from app.cloud.auth_routes import router as cloud_auth_router  # noqa: E402
+app.include_router(cloud_auth_router)
+
 app.mount("/static", StaticFiles(directory=str(_APP_DIR / "static")), name="static")
 
 
