@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings
 
@@ -52,6 +54,11 @@ class Settings(BaseSettings):
     apns_team_id: str = ""
     apns_bundle_id: str = ""
     apns_environment: str = "production"  # or "sandbox"
+
+    # Bambu cloud direct-printing (opt-in)
+    bambu_cloud_enabled: bool = False
+    bambu_cloud_region: Literal["US", "CN"] = "US"
+    bambu_cloud_plugin_dir: Path = Path("/data/bambu-plugin")
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
