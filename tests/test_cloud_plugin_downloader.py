@@ -96,3 +96,30 @@ def test_parse_manifest_ignores_extra_files_not_in_manifest():
 def test_find_returns_none_for_unknown_name():
     manifest = parse_manifest(json.dumps(SAMPLE_MANIFEST).encode("utf-8"))
     assert manifest.find("does-not-exist.so") is None
+
+
+# ---------------------------------------------------------------------------
+# SHA-256 validation
+# ---------------------------------------------------------------------------
+
+from app.cloud.plugin_downloader import IntegrityError, validate_sha256
+
+
+def test_validate_sha256_accepts_matching_digest(tmp_path):
+    p = tmp_path / "x.so"
+    p.write_bytes(b"hello world")
+    # sha256("hello world") =
+    # b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
+    validate_sha256(p, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9")
+
+
+def test_validate_sha256_rejects_mismatch(tmp_path):
+    p = tmp_path / "x.so"
+    p.write_bytes(b"hello world")
+    with pytest.raises(IntegrityError):
+        validate_sha256(p, "0" * 64)
+
+
+def test_validate_sha256_rejects_missing_file(tmp_path):
+    with pytest.raises(IntegrityError):
+        validate_sha256(tmp_path / "absent.so", "0" * 64)

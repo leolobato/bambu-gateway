@@ -7,8 +7,10 @@ declaring the plugin "active".
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from app.cloud import BAMBU_NETWORK_AGENT_VERSION, BAMBU_STUDIO_USER_AGENT
 
@@ -83,6 +85,33 @@ def parse_manifest(blob: bytes) -> Manifest:
             ) from exc
 
     return Manifest(files=tuple(entries))
+
+
+class IntegrityError(RuntimeError):
+    """Raised when a downloaded plugin file fails integrity validation."""
+
+
+def validate_sha256(path: Path, expected_hex: str) -> None:
+    """Confirm that ``path`` hashes to ``expected_hex`` under SHA-256.
+
+    Raises :class:`IntegrityError` on mismatch or if the file cannot be read.
+    Reads in 1 MiB chunks so the plugin (often 10+ MiB) doesn't load entirely
+    into memory.
+    """
+    try:
+        h = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError as exc:
+        raise IntegrityError(f"cannot read {path}: {exc}") from exc
+
+    actual = h.hexdigest()
+    if actual.lower() != expected_hex.lower():
+        raise IntegrityError(
+            f"SHA-256 mismatch for {path.name}: "
+            f"expected {expected_hex}, got {actual}"
+        )
 
 
 def bambu_studio_headers() -> dict[str, str]:
