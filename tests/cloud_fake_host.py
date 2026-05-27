@@ -34,7 +34,6 @@ def _dispatch(method: str, params: dict) -> dict:
             raise ValueError("change_user requires canonical_login")
         return {"rc": 0}
     if method == "is_user_login":
-        import os
         return {"is_login": os.environ.get("FAKE_HOST_USER_LOGGED_IN") == "1"}
     if method == "user_logout":
         return {"rc": 0}
@@ -62,6 +61,15 @@ def _dispatch(method: str, params: dict) -> dict:
     if method == "_test_push_event":
         _PENDING_EVENTS.append(params)
         return {"queued": True}
+    if method == "start_print":
+        # By default, push a happy-path event sequence so the orchestrator's
+        # `await` for terminal events completes promptly.
+        if os.environ.get("FAKE_HOST_PRINT_SCRIPT") == "happy":
+            for stage in (0, 1, 2, 3, 6):  # Create, Upload, Waiting, Sending, Finished
+                _PENDING_EVENTS.append({
+                    "kind": "OnUpdateStatus", "stage": stage, "code": 0, "msg": ""
+                })
+        return {"rc": 0}
     raise ValueError(f"unknown method: {method}")
 
 
