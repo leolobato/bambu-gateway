@@ -16,6 +16,7 @@
 //   PrintParams is a struct passed BY VALUE — no JSON shortcut exists.
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <string>
 #include <vector>
@@ -159,22 +160,21 @@ class PluginLoader {
   // Returns 0 = ok; negative = error.
   int add_subscribe(const std::vector<std::string>& dev_ids);
 
-  // Calls bambu_network_start_print(agent, params, update_fn, cancel_fn, wait_fn).
+  // Dispatches bambu_network_start_print on a detached worker thread so the
+  // RPC loop remains free to service bridge.poll_events concurrently.
   //
-  // Synchronous — blocks until the job is accepted or fails.  Progress is
-  // reported via update_fn (called from the plugin's internal threads).
+  // Returns immediately with 0 if the job was launched, or -98 if another job
+  // is already in flight (only one concurrent job is supported).
   //
-  // update_fn receives (stage, code, msg):
-  //   stage — SendingPrintJobStage enum value (0-8)
-  //   code  — 0-100 = upload progress %; negative = error code; >100 = error
-  //   msg   — human-readable info string
+  // Progress is reported via OnUpdateStatus events pushed to the global
+  // EventQueue.  On worker completion the thread is automatically joined via
+  // detach; no further action is needed from the caller.
   //
-  // For pure-cloud send: set params.connection_type = "cloud" and leave the
-  // LAN fields (dev_ip, password, use_ssl_*) at their defaults.
-  //
-  // Returns 0 on success; negative on error (BAMBU_NETWORK_ERR_* codes).
   // Returns -1 immediately if bootstrap() has not been called.
   int start_print(PrintParams params);
+
+  // True while a start_print worker thread is running.
+  bool print_in_flight() const { return print_in_flight_.load(); }
 
  private:
   void* dl_handle_  = nullptr;
@@ -260,6 +260,10 @@ class PluginLoader {
   fn_start_subscribe    p_start_subscribe_    = nullptr;
   fn_add_subscribe      p_add_subscribe_      = nullptr;
   fn_start_print        p_start_print_        = nullptr;
+
+  // True while a start_print worker thread is executing.
+  // compare_exchange ensures only one thread can own the "in-flight" slot.
+  std::atomic<bool> print_in_flight_{false};
 };
 
 }  // namespace bambu_host

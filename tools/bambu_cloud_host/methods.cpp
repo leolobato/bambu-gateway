@@ -118,14 +118,10 @@ json method_add_subscribe(const json& params) {
 //     auto_bed_leveling, auto_flow_cali, auto_offset_cali,
 //     extruder_cali_manual_mode, task_ext_change_assist, try_emmc_print
 //
-// Returns {"rc": N} where N == 0 means the job was accepted by the cloud/printer.
-// Negative rc values are BAMBU_NETWORK_ERR_* codes — see discovery notes §6.
-//
-// Progress events are pushed to the global event queue as the call proceeds;
-// drain them with bridge.poll_events while this call is running.
-// NOTE: start_print is synchronous — it BLOCKS until the job finishes or errors.
-// The Python caller must run this in a thread and poll bridge.poll_events
-// concurrently to receive OnUpdateStatus progress events.
+// Returns {"rc": 0, "in_flight": true} immediately — the job runs in a worker
+// thread.  Progress events arrive via bridge.poll_events as OnUpdateStatus frames.
+// If another job is already in flight, returns {"rc": -98, "in_flight": false,
+// "error": "another job in flight"} without touching the plugin.
 json method_start_print(const json& p) {
   PrintParams pp;
 
@@ -185,8 +181,14 @@ json method_start_print(const json& p) {
   pp.task_ext_change_assist    = boo("task_ext_change_assist",    false);
   pp.try_emmc_print            = boo("try_emmc_print",            false);
 
+  // start_print now returns 0 (launched) or -98 (already in flight).
   int rc = loader().start_print(std::move(pp));
-  return {{"rc", rc}};
+  if (rc == -98) {
+    return {{"rc", -98}, {"in_flight", false},
+            {"error", "another job in flight"}};
+  }
+  // rc == 0 means the worker was spawned; the job is now running in the background.
+  return {{"rc", 0}, {"in_flight", true}};
 }
 
 }  // namespace

@@ -26,6 +26,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace bambu_host {
 
@@ -346,60 +347,102 @@ int PluginLoader::add_subscribe(const std::vector<std::string>& dev_ids) {
   return rc;
 }
 
-// start_print — synchronous cloud print submission.
+// start_print — non-blocking cloud print dispatch.
 //
-// Constructs the three required callbacks inline:
-//   update_fn  — pushes OnUpdateStatus events into the global event queue.
-//                These are drained by bridge.poll_events and forwarded to
-//                the Python side as SSE progress frames.
-//   cancel_fn  — always returns false (no cancellation in v1).
-//   on_wait_fn — always returns true (let the plugin handle WaitPrinter timeout).
+// Spawns a detached worker thread that calls bambu_network_start_print and
+// returns 0 immediately so the RPC loop can continue servicing poll_events
+// while the plugin does its blocking work.
 //
-// The call blocks until the plugin finishes (job accepted, error, or timeout).
+// At most one job can be in-flight at a time.  A second call while the first
+// is still running returns -98 without touching the plugin.
 //
-// ABI note: PrintParams is passed by value — the full struct (all 30 fields)
-// is copied onto the stack per the C++ calling convention.  See discovery notes:
-//   docs/superpowers/notes/2026-05-27-bambu-cloud-print-discovery.md §1
+// The worker thread:
+//   1. Calls the plugin (blocking — may take many seconds).
+//   2. Clears the in-flight flag.
+//   3. On exception, pushes a sentinel OnUpdateStatus(stage=7, code=-99) so
+//      the Python side sees an ERROR frame rather than a silent stall.
+//
+// ABI note: PrintParams is captured by value into the lambda so it outlives
+// the calling stack frame.  std::string members are owned by the copy.
 int PluginLoader::start_print(PrintParams params) {
   if (!agent_) return -1;
 
-  // OnUpdateStatusFn trampoline — pushes progress/error events to the queue.
-  // Invoked from the plugin's internal threads; EventQueue::push is mutex-guarded.
-  on_update_status_fn update_fn = [](int stage, int code, std::string msg) {
-    json event = {
-      {"kind",  "OnUpdateStatus"},
-      {"stage", stage},
-      {"code",  code},
-      {"msg",   std::move(msg)},
-    };
-    global_event_queue().push(std::move(event));
-  };
-
-  // WasCancelledFn — no cancellation support in v1.
-  was_cancelled_fn cancel_fn = []() -> bool {
-    return false;
-  };
-
-  // OnWaitFn — always continue waiting; let the plugin manage the timeout.
-  on_wait_fn wait_fn = [](int /*status*/, std::string /*job_info*/) -> bool {
-    return true;
-  };
+  // Guard: only one concurrent job.
+  bool expected = false;
+  if (!print_in_flight_.compare_exchange_strong(expected, true)) {
+    std::fprintf(stderr, "bambu_cloud_host: start_print rejected — job already in flight\n");
+    return -98;
+  }
 
   std::fprintf(stderr,
-               "bambu_cloud_host: start_print dev_id=%s filename=%s "
-               "connection_type=%s plate=%d\n",
+               "bambu_cloud_host: start_print launching worker dev_id=%s "
+               "filename=%s connection_type=%s plate=%d\n",
                params.dev_id.c_str(),
                params.filename.c_str(),
                params.connection_type.c_str(),
                params.plate_index);
 
-  int rc = p_start_print_(agent_,
-                          std::move(params),
-                          std::move(update_fn),
-                          std::move(cancel_fn),
-                          std::move(wait_fn));
-  std::fprintf(stderr, "bambu_cloud_host: start_print rc=%d\n", rc);
-  return rc;
+  // Capture everything the worker needs by value so the lambda is self-contained.
+  // agent_ is a raw pointer (void*) that outlives the process — safe to capture.
+  void* agent                    = agent_;
+  fn_start_print p_start_print   = p_start_print_;
+  std::atomic<bool>& in_flight   = print_in_flight_;
+
+  std::thread worker([agent, p_start_print, &in_flight,
+                      pp = std::move(params)]() mutable {
+    // OnUpdateStatus trampoline — same as before, just inside the thread.
+    on_update_status_fn update_fn = [](int stage, int code, std::string msg) {
+      json event = {
+        {"kind",  "OnUpdateStatus"},
+        {"stage", stage},
+        {"code",  code},
+        {"msg",   std::move(msg)},
+      };
+      global_event_queue().push(std::move(event));
+    };
+
+    was_cancelled_fn cancel_fn = []() -> bool { return false; };
+
+    on_wait_fn wait_fn = [](int /*status*/, std::string /*job_info*/) -> bool {
+      return true;
+    };
+
+    try {
+      int rc = p_start_print(agent,
+                             std::move(pp),
+                             std::move(update_fn),
+                             std::move(cancel_fn),
+                             std::move(wait_fn));
+      std::fprintf(stderr, "bambu_cloud_host: start_print worker finished rc=%d\n", rc);
+    } catch (const std::exception& e) {
+      std::fprintf(stderr,
+                   "bambu_cloud_host: start_print worker exception: %s\n",
+                   e.what());
+      // Push a sentinel ERROR frame so Python doesn't stall waiting for events.
+      json err_event = {
+        {"kind",  "OnUpdateStatus"},
+        {"stage", 7},         // SendingPrintJobStage::PrintingStageERROR
+        {"code",  -99},       // internal host error
+        {"msg",   std::string("host exception: ") + e.what()},
+      };
+      global_event_queue().push(std::move(err_event));
+    } catch (...) {
+      std::fprintf(stderr, "bambu_cloud_host: start_print worker unknown exception\n");
+      json err_event = {
+        {"kind",  "OnUpdateStatus"},
+        {"stage", 7},
+        {"code",  -99},
+        {"msg",   "host exception: unknown"},
+      };
+      global_event_queue().push(std::move(err_event));
+    }
+
+    // Always clear the flag so another job can be submitted.
+    in_flight.store(false);
+  });
+
+  worker.detach();
+  return 0;
 }
 
 }  // namespace bambu_host
