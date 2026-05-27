@@ -31,6 +31,141 @@ MQTT_USERNAME = "bblp"
 MQTT_IDLE_TIMEOUT_SECONDS = 20
 
 
+def apply_print_payload(
+    status: "PrinterStatus",
+    print_info: dict,
+    *,
+    gcode_state: str = "IDLE",
+    ams_auto_refill_hold_until: float = 0.0,
+) -> str:
+    """Apply fields from a Bambu ``print`` MQTT payload to ``status`` in-place.
+
+    Shared by the LAN path (``BambuMQTTClient._update_status``) and the cloud
+    path (``CloudPrinterClient.handle_event``) so both produce identical state
+    updates from the same payload format.
+
+    :param status: Mutable ``PrinterStatus`` to update.
+    :param print_info: Parsed ``print`` sub-dict from the MQTT report.
+    :param gcode_state: Current accumulated ``gcode_state`` string for this
+        printer.  Will be updated if the payload contains a new value.
+    :param ams_auto_refill_hold_until: ``time.monotonic()`` deadline below
+        which AMS auto-refill fields are ignored (optimistic-update hold-off).
+    :return: The (possibly updated) ``gcode_state`` string.
+
+    .. note:: Caller is responsible for holding any necessary lock while
+        calling this function.  The function does NOT acquire any locks.
+    """
+    new_gcode_state = print_info.get("gcode_state")
+    if new_gcode_state is not None:
+        gcode_state = new_gcode_state
+
+    if "stg_cur" in print_info:
+        try:
+            status.stg_cur = int(print_info["stg_cur"])
+        except (ValueError, TypeError):
+            pass
+
+    if "spd_lvl" in print_info:
+        try:
+            status.speed_level = int(print_info["spd_lvl"])
+        except (ValueError, TypeError):
+            pass
+
+    if "support_filament_backup" in print_info:
+        raw_supported = print_info.get("support_filament_backup")
+        if isinstance(raw_supported, bool):
+            status.ams_auto_refill_supported = raw_supported
+
+    if time.monotonic() >= ams_auto_refill_hold_until:
+        parsed_auto_refill = None
+        if "cfg" in print_info:
+            parsed_auto_refill = _bit_enabled(print_info.get("cfg"), 18)
+        if parsed_auto_refill is None and "home_flag" in print_info:
+            parsed_auto_refill = _bit_enabled(print_info.get("home_flag"), 10)
+        if parsed_auto_refill is not None:
+            status.ams_auto_refill_enabled = parsed_auto_refill
+
+    temps = status.temperatures
+    if "nozzle_temper" in print_info:
+        temps.nozzle_temp = float(print_info["nozzle_temper"])
+    if "nozzle_target_temper" in print_info:
+        temps.nozzle_target = float(print_info["nozzle_target_temper"])
+    if "bed_temper" in print_info:
+        temps.bed_temp = float(print_info["bed_temper"])
+    if "bed_target_temper" in print_info:
+        temps.bed_target = float(print_info["bed_target_temper"])
+
+    has_job_info = any(
+        k in print_info
+        for k in ("subtask_name", "mc_percent", "mc_remaining_time",
+                  "layer_num", "total_layer_num", "gcode_start_time")
+    )
+    if has_job_info:
+        if status.job is None:
+            status.job = PrintJob()
+        job = status.job
+        if "subtask_name" in print_info:
+            job.file_name = print_info["subtask_name"]
+        if "mc_percent" in print_info:
+            job.progress = int(print_info["mc_percent"])
+        if "mc_remaining_time" in print_info:
+            job.remaining_minutes = int(print_info["mc_remaining_time"])
+        if "layer_num" in print_info:
+            job.current_layer = int(print_info["layer_num"])
+        if "total_layer_num" in print_info:
+            job.total_layers = int(print_info["total_layer_num"])
+        if "gcode_start_time" in print_info:
+            job.gcode_start_time = str(print_info["gcode_start_time"])
+
+    if "hms" in print_info:
+        raw = print_info["hms"]
+        parsed_hms: list[HMSCode] = []
+        if isinstance(raw, list):
+            for entry in raw:
+                if not isinstance(entry, dict):
+                    continue
+                attr = entry.get("attr")
+                code = entry.get("code")
+                if isinstance(attr, str) and isinstance(code, str):
+                    parsed_hms.append(HMSCode(attr=attr, code=code))
+        status.hms_codes = parsed_hms
+
+    err_raw = print_info.get("print_error")
+    if err_raw is None:
+        err_raw = print_info.get("mc_print_error_code")
+    if err_raw is not None:
+        try:
+            status.print_error = int(err_raw)
+        except (ValueError, TypeError):
+            pass
+
+    if new_gcode_state is not None or "stg_cur" in print_info:
+        layer_num = status.job.current_layer if status.job else 0
+        state, category, s_name = determine_state(
+            gcode_state,
+            status.stg_cur,
+            layer_num,
+        )
+        status.state = state
+        status.stage_category = category
+        status.stage_name = s_name
+
+    if status.state in (PrinterState.paused, PrinterState.error):
+        status.error_message = current_error_description(
+            status.hms_codes, status.print_error,
+        )
+    else:
+        status.error_message = None
+
+    if status.state in (
+        PrinterState.idle, PrinterState.finished, PrinterState.cancelled,
+    ):
+        if status.job and status.job.progress == 0:
+            status.job = None
+
+    return gcode_state
+
+
 def _bit_enabled(value: object, bit: int) -> bool | None:
     """Return a bit from Bambu integer-like report fields.
 
@@ -580,115 +715,28 @@ class BambuMQTTClient:
         """Apply fields from an MQTT print report to the in-memory status."""
         with self._lock:
             prev_snapshot = self._status.model_copy(deep=True)
-            # Track raw fields for state derivation
-            gcode_state = print_info.get("gcode_state")
-            if gcode_state is not None:
-                self._gcode_state = gcode_state
 
-            if "stg_cur" in print_info:
-                try:
-                    self._status.stg_cur = int(print_info["stg_cur"])
-                except (ValueError, TypeError):
-                    pass
-
-            # Speed level
-            if "spd_lvl" in print_info:
-                try:
-                    self._status.speed_level = int(print_info["spd_lvl"])
-                except (ValueError, TypeError):
-                    pass
-
-            if "support_filament_backup" in print_info:
-                raw_supported = print_info.get("support_filament_backup")
-                if isinstance(raw_supported, bool):
-                    self._status.ams_auto_refill_supported = raw_supported
-
-            if time.monotonic() >= self._ams_auto_refill_hold_until:
-                parsed_auto_refill = None
-                if "cfg" in print_info:
-                    parsed_auto_refill = _bit_enabled(print_info.get("cfg"), 18)
-                if parsed_auto_refill is None and "home_flag" in print_info:
-                    parsed_auto_refill = _bit_enabled(print_info.get("home_flag"), 10)
-                if parsed_auto_refill is not None:
-                    self._status.ams_auto_refill_enabled = parsed_auto_refill
-
-            # Temperatures
-            temps = self._status.temperatures
-            if "nozzle_temper" in print_info:
-                temps.nozzle_temp = float(print_info["nozzle_temper"])
-            if "nozzle_target_temper" in print_info:
-                temps.nozzle_target = float(print_info["nozzle_target_temper"])
-            if "bed_temper" in print_info:
-                temps.bed_temp = float(print_info["bed_temper"])
-            if "bed_target_temper" in print_info:
-                temps.bed_target = float(print_info["bed_target_temper"])
-
-            # Print job
-            has_job_info = any(
-                k in print_info
-                for k in ("subtask_name", "mc_percent", "mc_remaining_time",
-                          "layer_num", "total_layer_num", "gcode_start_time")
-            )
-            if has_job_info:
-                if self._status.job is None:
-                    self._status.job = PrintJob()
-
-                job = self._status.job
-                if "subtask_name" in print_info:
-                    job.file_name = print_info["subtask_name"]
-                if "mc_percent" in print_info:
-                    job.progress = int(print_info["mc_percent"])
-                if "mc_remaining_time" in print_info:
-                    job.remaining_minutes = int(print_info["mc_remaining_time"])
-                if "layer_num" in print_info:
-                    job.current_layer = int(print_info["layer_num"])
-                if "total_layer_num" in print_info:
-                    job.total_layers = int(print_info["total_layer_num"])
-                if "gcode_start_time" in print_info:
-                    job.gcode_start_time = str(print_info["gcode_start_time"])
-
-            # Lights report: [{"node": "chamber_light", "mode": "on"|"off"|"flashing"}, ...]
-            if "lights_report" in print_info:
-                raw = print_info["lights_report"]
-                if isinstance(raw, list):
-                    for entry in raw:
-                        if not isinstance(entry, dict):
-                            continue
-                        if entry.get("node") == "chamber_light":
-                            mode = entry.get("mode")
-                            if isinstance(mode, str):
-                                # Treat anything other than "off" as on — "flashing"
-                                # still emits light, and the UI only distinguishes on/off.
-                                self._chamber_light_on = mode.lower() != "off"
-
-            # HMS codes
+            # Log HMS and print_error changes before delegating to the shared
+            # parser (the module-level function doesn't have access to the
+            # serial for log context).
             if "hms" in print_info:
                 raw = print_info["hms"]
-                parsed: list[HMSCode] = []
                 if isinstance(raw, list):
-                    for entry in raw:
-                        if not isinstance(entry, dict):
-                            continue
-                        attr = entry.get("attr")
-                        code = entry.get("code")
-                        if isinstance(attr, str) and isinstance(code, str):
-                            parsed.append(HMSCode(attr=attr, code=code))
-                prev_attrs = {c.attr for c in self._status.hms_codes}
-                new_attrs = {c.attr for c in parsed}
-                if prev_attrs != new_attrs:
-                    logger.info(
-                        "Printer %s HMS codes changed: %s -> %s",
-                        self._config.serial,
-                        sorted(prev_attrs) or "none",
-                        sorted(new_attrs) or "none",
-                    )
-                self._status.hms_codes = parsed
+                    prev_attrs = {c.attr for c in self._status.hms_codes}
+                    new_attrs = {
+                        entry.get("attr")
+                        for entry in raw
+                        if isinstance(entry, dict) and isinstance(entry.get("attr"), str)
+                    }
+                    if prev_attrs != new_attrs:
+                        logger.info(
+                            "Printer %s HMS codes changed: %s -> %s",
+                            self._config.serial,
+                            sorted(prev_attrs) or "none",
+                            sorted(new_attrs) or "none",
+                        )
 
-            # print_error: non-zero means the printer auto-paused/stopped on an
-            # error. User-initiated pauses keep this at 0.
-            err_raw = print_info.get("print_error")
-            if err_raw is None:
-                err_raw = print_info.get("mc_print_error_code")
+            err_raw = print_info.get("print_error") or print_info.get("mc_print_error_code")
             if err_raw is not None:
                 try:
                     err_val = int(err_raw)
@@ -701,35 +749,31 @@ class BambuMQTTClient:
                         self._status.print_error,
                         err_val,
                     )
-                    self._status.print_error = err_val
 
-            # Derive state using gcode_state + stg_cur + layer_num
-            if gcode_state is not None or "stg_cur" in print_info:
-                layer_num = self._status.job.current_layer if self._status.job else 0
-                state, category, s_name = determine_state(
-                    self._gcode_state,
-                    self._status.stg_cur,
-                    layer_num,
-                )
-                self._status.state = state
-                self._status.stage_category = category
-                self._status.stage_name = s_name
+            # Shared parser: updates status fields in-place and returns the
+            # (possibly updated) gcode_state string.
+            self._gcode_state = apply_print_payload(
+                self._status,
+                print_info,
+                gcode_state=self._gcode_state,
+                ams_auto_refill_hold_until=self._ams_auto_refill_hold_until,
+            )
 
-            # Populate error_message while paused/stopped at an error. Cleared
-            # automatically on resume (state leaves paused/error).
-            if self._status.state in (PrinterState.paused, PrinterState.error):
-                self._status.error_message = current_error_description(
-                    self._status.hms_codes, self._status.print_error,
-                )
-            else:
-                self._status.error_message = None
-
-            # Clear job when idle/finished/cancelled with 0 progress
-            if self._status.state in (
-                PrinterState.idle, PrinterState.finished, PrinterState.cancelled,
-            ):
-                if self._status.job and self._status.job.progress == 0:
-                    self._status.job = None
+            # Lights report: [{"node": "chamber_light", "mode": "on"|"off"|"flashing"}, ...]
+            # Handled here (not in apply_print_payload) because chamber light
+            # state lives on a separate instance attribute, not PrinterStatus.
+            if "lights_report" in print_info:
+                raw = print_info["lights_report"]
+                if isinstance(raw, list):
+                    for entry in raw:
+                        if not isinstance(entry, dict):
+                            continue
+                        if entry.get("node") == "chamber_light":
+                            mode = entry.get("mode")
+                            if isinstance(mode, str):
+                                # Treat anything other than "off" as on — "flashing"
+                                # still emits light, and the UI only distinguishes on/off.
+                                self._chamber_light_on = mode.lower() != "off"
 
             # AMS tray data
             ams_data = print_info.get("ams")
