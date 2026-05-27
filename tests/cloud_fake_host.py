@@ -70,6 +70,11 @@ def _dispatch(method: str, params: dict) -> dict:
                     "kind": "OnUpdateStatus", "stage": stage, "code": 0, "msg": ""
                 })
         return {"rc": 0}
+    if method == "send_message":
+        if not all(k in params for k in ("dev_id", "payload")):
+            raise ValueError("send_message requires dev_id + payload")
+        rc = int(os.environ.get("FAKE_HOST_SEND_MESSAGE_RC", "0"))
+        return {"rc": rc}
     raise ValueError(f"unknown method: {method}")
 
 

@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import threading
-from typing import AsyncIterator
+from typing import TYPE_CHECKING, AsyncIterator
 
 from app.models import PrinterStatus
 from app.mqtt_client import apply_print_payload
@@ -78,6 +78,30 @@ class CloudPrinterClient:
         if self._progress is None:
             return
         await self._progress.put(event)
+
+    async def send_command(
+        self,
+        *,
+        host,
+        envelope: dict,
+        qos: int = 0,
+    ) -> int:
+        """Publish a command envelope to this printer via the cloud relay.
+
+        The envelope is whatever ``build_<command>`` from ``app.mqtt_client``
+        produces — the same JSON shape the LAN path uses.
+
+        :param host: Active :class:`~app.cloud.plugin_host.PluginHost` instance.
+        :param envelope: Command dict (e.g. ``{"print": {"command": "pause", ...}}``).
+        :param qos: MQTT QoS level (0 = at-most-once, 1 = at-least-once).
+        :returns: Plugin return code — 0 on success, negative on error.
+        """
+        result = await host.call("send_message", {
+            "dev_id": self._dev_id,
+            "payload": json.dumps(envelope),
+            "qos": qos,
+        })
+        return result.get("rc", -1)
 
     async def submit_print(
         self,
