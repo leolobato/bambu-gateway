@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.apns_client import ApnsClient
 from app.apns_jwt import ApnsJwtSigner
+from app.cloud.cloud_printer import CloudPrinterClient
 from app.cloud.event_pump import EventPump
 from app.cloud.plugin_downloader import PluginDownloader
 from app.cloud.plugin_host import PluginHost
@@ -243,7 +244,23 @@ async def lifespan(app: FastAPI):
             app.state.cloud_host = host
             logger.info("Bambu plugin host ready")
 
-            pump = EventPump(host=host, handlers={})  # handlers wired in Phase G
+            # One CloudPrinterClient per configured printer, keyed by serial.
+            cloud_clients: dict[str, CloudPrinterClient] = {
+                cfg.serial: CloudPrinterClient(
+                    dev_id=cfg.serial,
+                    name=cfg.name or f"Printer {cfg.serial[-4:]}",
+                )
+                for cfg in configs
+            }
+            app.state.cloud_printers = cloud_clients
+
+            async def _on_message(event: dict) -> None:
+                dev_id = event.get("dev_id")
+                client = cloud_clients.get(dev_id)
+                if client is not None:
+                    await client.handle_event(event)
+
+            pump = EventPump(host=host, handlers={"OnMessage": _on_message})
             await pump.start()
             app.state.cloud_event_pump = pump
             stack.push_async_callback(pump.stop)
@@ -288,6 +305,9 @@ async def lifespan(app: FastAPI):
             configs, status_change_callback=status_change_callback,
         )
         printer_service.start()
+        # Surface cloud printers through the existing list/status API.
+        if settings.bambu_cloud_enabled and hasattr(app.state, "cloud_printers"):
+            printer_service.set_cloud_printers(app.state.cloud_printers)
         if notification_hub is not None:
             notification_hub.set_printer_service(printer_service)
         if settings.orcaslicer_api_url:

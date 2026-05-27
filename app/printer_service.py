@@ -12,6 +12,9 @@ from app.models import CameraInfo, ChamberLightInfo, PrinterStatus
 from app.mqtt_client import BambuMQTTClient
 from app import ftp_client
 
+# Avoid a circular import at module level — imported locally when needed.
+# from app.cloud.cloud_printer import CloudPrinterClient  (do not import here)
+
 
 # Bambu's internal machine codes (as used by the slicer's `machine` query param)
 # mapped to their camera transport. RTSPS models use port 322 with H.264 over
@@ -66,12 +69,25 @@ class PrinterService:
         self._clients: dict[str, BambuMQTTClient] = {}
         self._proxies: dict[str, CameraProxy] = {}
         self._status_change_callback = status_change_callback
+        # Cloud printer clients keyed by serial. Set via set_cloud_printers()
+        # after the EventPump is wired up; None until then.
+        self._cloud_clients: dict[str, "CloudPrinterClient"] | None = None  # type: ignore[name-defined]
         for cfg in printer_configs:
             self._configs[cfg.serial] = cfg
             client = BambuMQTTClient(cfg)
             if status_change_callback is not None:
                 client.set_status_change_callback(status_change_callback)
             self._clients[cfg.serial] = client
+
+    def set_cloud_printers(self, cloud_clients: dict) -> None:
+        """Register cloud printer clients so they appear in list/status results.
+
+        Called from the lifespan after CloudPrinterClient instances are created.
+        ``cloud_clients`` is a ``dict[serial, CloudPrinterClient]``.
+        When cloud mode is active the LAN MQTT clients are not created
+        (the printer list comes from this dict instead).
+        """
+        self._cloud_clients = cloud_clients
 
     def start(self) -> None:
         """Initialize printer service without opening MQTT connections."""
@@ -151,18 +167,26 @@ class PrinterService:
             self._clients[serial] = client
 
     def get_all_statuses(self) -> list[PrinterStatus]:
-        """Return status for every configured printer."""
-        return [
+        """Return status for every configured printer (LAN + cloud)."""
+        statuses = [
             self._attach_camera(client.get_status(), client)
             for client in self._clients.values()
         ]
+        if self._cloud_clients:
+            for cloud_client in self._cloud_clients.values():
+                statuses.append(cloud_client.get_status())
+        return statuses
 
     def get_status(self, printer_id: str) -> PrinterStatus | None:
         """Return status for a single printer, or None if not found."""
         client = self._clients.get(printer_id)
-        if client is None:
-            return None
-        return self._attach_camera(client.get_status(), client)
+        if client is not None:
+            return self._attach_camera(client.get_status(), client)
+        if self._cloud_clients:
+            cloud_client = self._cloud_clients.get(printer_id)
+            if cloud_client is not None:
+                return cloud_client.get_status()
+        return None
 
     def _attach_camera(
         self, status: PrinterStatus, client: BambuMQTTClient,
