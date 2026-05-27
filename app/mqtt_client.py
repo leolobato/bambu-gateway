@@ -31,6 +31,98 @@ MQTT_USERNAME = "bblp"
 MQTT_IDLE_TIMEOUT_SECONDS = 20
 
 
+# ---------------------------------------------------------------------------
+# Transport-neutral command-JSON builders
+#
+# These functions return the same JSON dict that the BambuMQTTClient publish_*
+# methods construct, but without touching MQTT.  Both the LAN path
+# (BambuMQTTClient) and the cloud path (CloudPrinterClient) call these builders
+# so the envelope shape is always identical regardless of transport.
+# ---------------------------------------------------------------------------
+
+
+def build_pause_command() -> dict:
+    """Return the JSON envelope for a pause command."""
+    return {
+        "print": {
+            "sequence_id": "0",
+            "command": "pause",
+        }
+    }
+
+
+def build_resume_command() -> dict:
+    """Return the JSON envelope for a resume command."""
+    return {
+        "print": {
+            "sequence_id": "0",
+            "command": "resume",
+        }
+    }
+
+
+def build_cancel_command() -> dict:
+    """Return the JSON envelope for a cancel/stop command."""
+    return {
+        "print": {
+            "sequence_id": "0",
+            "command": "stop",
+        }
+    }
+
+
+def build_speed_command(level: int) -> dict:
+    """Return the JSON envelope for a print-speed command.
+
+    :param level: Speed level (1 = silent, 2 = standard, 3 = sport, 4 = ludicrous).
+    """
+    return {
+        "print": {
+            "sequence_id": "0",
+            "command": "print_speed",
+            "param": str(level),
+        }
+    }
+
+
+def build_ams_start_drying_command(
+    ams_id: int,
+    temperature: int = 55,
+    duration_minutes: int = 480,
+) -> dict:
+    """Return the JSON envelope for starting AMS filament drying."""
+    return {
+        "print": {
+            "sequence_id": "0",
+            "command": "ams_filament_drying",
+            "ams_id": ams_id,
+            "temp": temperature,
+            "cooling_temp": 45,
+            "duration": duration_minutes // 60,
+            "humidity": 0,
+            "mode": 1,
+            "rotate_tray": False,
+        }
+    }
+
+
+def build_ams_stop_drying_command(ams_id: int) -> dict:
+    """Return the JSON envelope for stopping AMS filament drying."""
+    return {
+        "print": {
+            "sequence_id": "0",
+            "command": "ams_filament_drying",
+            "ams_id": ams_id,
+            "temp": 0,
+            "cooling_temp": 45,
+            "duration": 0,
+            "humidity": 0,
+            "mode": 0,
+            "rotate_tray": False,
+        }
+    }
+
+
 def apply_print_payload(
     status: "PrinterStatus",
     print_info: dict,
@@ -373,40 +465,19 @@ class BambuMQTTClient:
 
     def send_pause(self) -> None:
         """Send an MQTT command to pause the current print."""
-        self.publish({
-            "print": {
-                "sequence_id": "0",
-                "command": "pause",
-            }
-        })
+        self.publish(build_pause_command())
 
     def send_resume(self) -> None:
         """Send an MQTT command to resume a paused print."""
-        self.publish({
-            "print": {
-                "sequence_id": "0",
-                "command": "resume",
-            }
-        })
+        self.publish(build_resume_command())
 
     def send_stop(self) -> None:
         """Send an MQTT command to cancel/stop the current print."""
-        self.publish({
-            "print": {
-                "sequence_id": "0",
-                "command": "stop",
-            }
-        })
+        self.publish(build_cancel_command())
 
     def send_print_speed(self, level: int) -> None:
         """Send an MQTT command to change the print speed level."""
-        self.publish({
-            "print": {
-                "sequence_id": "0",
-                "command": "print_speed",
-                "param": str(level),
-            }
-        })
+        self.publish(build_speed_command(level))
 
     def send_chamber_light(self, on: bool, node: str = "chamber_light") -> None:
         """Toggle an LED node (chamber light by default) via `system.ledctrl`."""
@@ -436,35 +507,11 @@ class BambuMQTTClient:
         duration_minutes: int = 480,
     ) -> None:
         """Send an MQTT command to start AMS filament drying."""
-        self.publish({
-            "print": {
-                "sequence_id": "0",
-                "command": "ams_filament_drying",
-                "ams_id": ams_id,
-                "temp": temperature,
-                "cooling_temp": 45,
-                "duration": duration_minutes // 60,
-                "humidity": 0,
-                "mode": 1,
-                "rotate_tray": False,
-            }
-        })
+        self.publish(build_ams_start_drying_command(ams_id, temperature, duration_minutes))
 
     def send_stop_drying(self, ams_id: int) -> None:
         """Send an MQTT command to stop AMS filament drying."""
-        self.publish({
-            "print": {
-                "sequence_id": "0",
-                "command": "ams_filament_drying",
-                "ams_id": ams_id,
-                "temp": 0,
-                "cooling_temp": 45,
-                "duration": 0,
-                "humidity": 0,
-                "mode": 0,
-                "rotate_tray": False,
-            }
-        })
+        self.publish(build_ams_stop_drying_command(ams_id))
 
     def send_ams_auto_refill(self, enabled: bool) -> None:
         """Toggle AMS auto-refill.
