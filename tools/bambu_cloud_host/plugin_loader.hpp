@@ -8,6 +8,12 @@
 // for std::string by-value places a 32-byte struct (SSO) on the stack, not
 // a raw pointer.  See discovery notes:
 //   docs/superpowers/notes/2026-05-27-bambu-cloud-host-discovery.md
+//
+// start_print ABI note (Phase A discovery):
+//   bambu_networking.hpp:124 — OnUpdateStatusFn is std::function<void(int,int,string)>
+//   There is NO bambu_network_set_on_update_status_fn symbol.  The callback is
+//   passed as a per-call argument to bambu_network_start_print (and siblings).
+//   PrintParams is a struct passed BY VALUE — no JSON shortcut exists.
 #pragma once
 
 #include <functional>
@@ -17,6 +23,83 @@
 #include "third_party/nlohmann/json.hpp"
 
 namespace bambu_host {
+
+// ---------------------------------------------------------------------------
+// PrintParams — mirrors the plugin's struct byte-for-byte.
+//
+// WARNING: This struct MUST match the layout in the loaded plugin .so exactly.
+// Any field added, removed, or reordered in a future Bambu plugin release will
+// silently corrupt memory.  Pin the plugin .so version and audit on each upgrade.
+//
+// Source: bambu_networking.hpp:217-260 (plugin version 02.05.02.58)
+// ---------------------------------------------------------------------------
+struct PrintParams {
+  // Identity
+  std::string dev_id;
+  std::string task_name;
+  std::string project_name;
+  std::string preset_name;
+
+  // Files
+  std::string filename;
+  std::string config_filename;
+  int         plate_index    = 0;
+  std::string ftp_folder;
+  std::string ftp_file;
+  std::string ftp_file_md5;
+
+  // AMS / Filament mapping
+  std::string nozzle_mapping;
+  std::string ams_mapping;
+  std::string ams_mapping2;
+  std::string ams_mapping_info;
+  std::string nozzles_info;
+
+  // Routing
+  std::string connection_type;    // "lan" or "cloud"
+  std::string comments;
+
+  // Origin / Provenance
+  int         origin_profile_id = 0;
+  int         stl_design_id     = 0;
+  std::string origin_model_id;
+  std::string print_type;
+  std::string dst_file;
+
+  // LAN credentials (leave empty for pure-cloud path)
+  std::string dev_name;
+  std::string dev_ip;
+  bool        use_ssl_for_ftp  = false;
+  bool        use_ssl_for_mqtt = false;
+  std::string username;
+  std::string password;
+
+  // Print-option flags
+  bool        task_bed_leveling      = false;
+  bool        task_flow_cali         = false;
+  bool        task_vibration_cali    = false;
+  bool        task_layer_inspect     = false;
+  bool        task_record_timelapse  = false;
+  bool        task_use_ams           = false;
+  std::string task_bed_type;
+  std::string extra_options;
+
+  // Auto-calibration overrides (newer plugin versions)
+  int         auto_bed_leveling        = 0;
+  int         auto_flow_cali           = 0;
+  int         auto_offset_cali         = 0;
+  int         extruder_cali_manual_mode = -1;
+
+  // Additional flags
+  bool        task_ext_change_assist = false;
+  bool        try_emmc_print         = false;
+};
+
+// Callback types matching bambu_networking.hpp:124-126
+// OnUpdateStatusFn: per-call arg to start_print (no separate setter function).
+using on_update_status_fn = std::function<void(int stage, int code, std::string msg)>;
+using was_cancelled_fn    = std::function<bool()>;
+using on_wait_fn          = std::function<bool(int status, std::string job_info)>;
 
 // Loads libbambu_networking.so and resolves the function pointers we need.
 // Throws std::runtime_error on dlopen / dlsym failure.
@@ -75,6 +158,23 @@ class PluginLoader {
   // Adds a list of device serials to the active MQTT subscription.
   // Returns 0 = ok; negative = error.
   int add_subscribe(const std::vector<std::string>& dev_ids);
+
+  // Calls bambu_network_start_print(agent, params, update_fn, cancel_fn, wait_fn).
+  //
+  // Synchronous — blocks until the job is accepted or fails.  Progress is
+  // reported via update_fn (called from the plugin's internal threads).
+  //
+  // update_fn receives (stage, code, msg):
+  //   stage — SendingPrintJobStage enum value (0-8)
+  //   code  — 0-100 = upload progress %; negative = error code; >100 = error
+  //   msg   — human-readable info string
+  //
+  // For pure-cloud send: set params.connection_type = "cloud" and leave the
+  // LAN fields (dev_ip, password, use_ssl_*) at their defaults.
+  //
+  // Returns 0 on success; negative on error (BAMBU_NETWORK_ERR_* codes).
+  // Returns -1 immediately if bootstrap() has not been called.
+  int start_print(PrintParams params);
 
  private:
   void* dl_handle_  = nullptr;
@@ -136,6 +236,17 @@ class PluginLoader {
   // Source: BBLNetworkPlugin.hpp:49
   using fn_add_subscribe     = int(*)(void*, std::vector<std::string>);
 
+  // int bambu_network_start_print(void* agent, PrintParams params,
+  //                                OnUpdateStatusFn update_fn,
+  //                                WasCancelledFn cancel_fn,
+  //                                OnWaitFn wait_fn)
+  // PrintParams is passed BY VALUE — the full struct is copied to the stack.
+  // Source: BBLNetworkPlugin.hpp:77, bambu_networking.hpp:217-260
+  using fn_start_print = int(*)(void*, PrintParams,
+                                on_update_status_fn,
+                                was_cancelled_fn,
+                                on_wait_fn);
+
   fn_create_agent       p_create_agent_       = nullptr;
   fn_init_log           p_init_log_           = nullptr;
   fn_set_config_dir     p_set_config_dir_     = nullptr;
@@ -148,6 +259,7 @@ class PluginLoader {
   fn_connect_server     p_connect_server_     = nullptr;
   fn_start_subscribe    p_start_subscribe_    = nullptr;
   fn_add_subscribe      p_add_subscribe_      = nullptr;
+  fn_start_print        p_start_print_        = nullptr;
 };
 
 }  // namespace bambu_host

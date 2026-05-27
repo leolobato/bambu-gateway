@@ -123,6 +123,7 @@ void PluginLoader::load_from_env() {
   p_connect_server_    = must_resolve<fn_connect_server>    (dl_handle_, "bambu_network_connect_server");
   p_start_subscribe_   = must_resolve<fn_start_subscribe>   (dl_handle_, "bambu_network_start_subscribe");
   p_add_subscribe_     = must_resolve<fn_add_subscribe>     (dl_handle_, "bambu_network_add_subscribe");
+  p_start_print_       = must_resolve<fn_start_print>       (dl_handle_, "bambu_network_start_print");
 }
 
 int PluginLoader::bootstrap() {
@@ -342,6 +343,62 @@ int PluginLoader::add_subscribe(const std::vector<std::string>& dev_ids) {
   int rc = p_add_subscribe_(agent_, dev_ids);
   std::fprintf(stderr, "bambu_cloud_host: add_subscribe n=%zu rc=%d\n",
                dev_ids.size(), rc);
+  return rc;
+}
+
+// start_print — synchronous cloud print submission.
+//
+// Constructs the three required callbacks inline:
+//   update_fn  — pushes OnUpdateStatus events into the global event queue.
+//                These are drained by bridge.poll_events and forwarded to
+//                the Python side as SSE progress frames.
+//   cancel_fn  — always returns false (no cancellation in v1).
+//   on_wait_fn — always returns true (let the plugin handle WaitPrinter timeout).
+//
+// The call blocks until the plugin finishes (job accepted, error, or timeout).
+//
+// ABI note: PrintParams is passed by value — the full struct (all 30 fields)
+// is copied onto the stack per the C++ calling convention.  See discovery notes:
+//   docs/superpowers/notes/2026-05-27-bambu-cloud-print-discovery.md §1
+int PluginLoader::start_print(PrintParams params) {
+  if (!agent_) return -1;
+
+  // OnUpdateStatusFn trampoline — pushes progress/error events to the queue.
+  // Invoked from the plugin's internal threads; EventQueue::push is mutex-guarded.
+  on_update_status_fn update_fn = [](int stage, int code, std::string msg) {
+    json event = {
+      {"kind",  "OnUpdateStatus"},
+      {"stage", stage},
+      {"code",  code},
+      {"msg",   std::move(msg)},
+    };
+    global_event_queue().push(std::move(event));
+  };
+
+  // WasCancelledFn — no cancellation support in v1.
+  was_cancelled_fn cancel_fn = []() -> bool {
+    return false;
+  };
+
+  // OnWaitFn — always continue waiting; let the plugin manage the timeout.
+  on_wait_fn wait_fn = [](int /*status*/, std::string /*job_info*/) -> bool {
+    return true;
+  };
+
+  std::fprintf(stderr,
+               "bambu_cloud_host: start_print dev_id=%s filename=%s "
+               "connection_type=%s plate=%d\n",
+               params.dev_id.c_str(),
+               params.filename.c_str(),
+               params.connection_type.c_str(),
+               params.plate_index);
+
+  int rc = p_start_print_(agent_,
+                          std::move(params),
+                          std::move(update_fn),
+                          std::move(cancel_fn),
+                          std::move(wait_fn));
+  std::fprintf(stderr, "bambu_cloud_host: start_print rc=%d\n", rc);
   return rc;
 }
 
