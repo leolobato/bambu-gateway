@@ -75,6 +75,7 @@ from app.models import (
     StlMaterializedProject,
     TransferredSetting,
 )
+from app.cloud.print_params import build_print_params
 from app.parse_3mf import parse_3mf_token_via_slicer, parse_3mf_via_slicer
 from app.printer_service import PrinterService
 from app.slice_jobs import SliceJobManager, SliceJobStatus, SliceJobStore
@@ -1432,6 +1433,22 @@ async def materialize_stl_draft(
     )
 
 
+def _get_cloud_client(pid: str):
+    """Return (host, CloudPrinterClient) for ``pid`` when cloud mode is active, else None."""
+    if not settings.bambu_cloud_enabled:
+        return None
+    cloud_printers = getattr(app.state, "cloud_printers", None)
+    if cloud_printers is None:
+        return None
+    client = cloud_printers.get(pid)
+    if client is None:
+        return None
+    host = getattr(app.state, "cloud_host", None)
+    if host is None:
+        return None
+    return host, client
+
+
 def _background_submit(
     upload_state,
     printer_id: str,
@@ -1731,7 +1748,66 @@ async def print_file(
         filament_payload, ams_mapping, use_ams, len(info.filaments),
     )
 
-    # Validate printer is reachable before starting background upload
+    fname = file.filename
+    p_id = plate_id or 1
+
+    # --- Cloud path ---
+    cloud_pair = _get_cloud_client(pid)
+    if cloud_pair is not None:
+        cloud_host, cloud_client = cloud_pair
+        # Write sliced bytes to a temp file so the plugin can upload from disk.
+        import tempfile, os as _os
+        suffix = Path(fname).suffix or ".3mf"
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=suffix, prefix="bambu_cloud_"
+        ) as tmp:
+            tmp.write(file_data)
+            tmp_path = tmp.name
+        try:
+            project_name = Path(fname).stem
+            ams_mapping_dict: dict[str, str] | None = None
+            if ams_mapping:
+                ams_mapping_dict = {str(i): str(v) for i, v in enumerate(ams_mapping)}
+            print_params = build_print_params(
+                dev_id=pid,
+                project_name=project_name,
+                plate_index=p_id,
+                gcode_3mf_path=tmp_path,
+                ams_mapping=ams_mapping_dict,
+                use_ams=use_ams,
+            )
+            # Consume the async generator to completion (non-streaming endpoint).
+            last_error: dict | None = None
+            async for frame in cloud_client.submit_print(
+                host=cloud_host, print_params=print_params,
+            ):
+                if frame.get("event") == "error":
+                    last_error = frame
+                    break
+                if frame.get("event") == "done":
+                    break
+        finally:
+            try:
+                _os.unlink(tmp_path)
+            except OSError:
+                pass
+
+        if last_error is not None:
+            raise HTTPException(
+                status_code=502,
+                detail=last_error.get("msg", "Cloud print submission failed"),
+            )
+        return PrintResponse(
+            status="printing",
+            file_name=fname,
+            printer_id=pid,
+            was_sliced=was_sliced,
+            settings_transfer=settings_transfer,
+            estimate=slice_result.estimate if slice_result else None,
+        )
+
+    # --- LAN path ---
+    # Validate printer is reachable before starting background upload.
     client = printer_service.get_client(pid)
     if client is None:
         raise HTTPException(status_code=404, detail=f"Printer {pid} not found")
@@ -1742,11 +1818,9 @@ async def print_file(
     except ConnectionError as e:
         raise HTTPException(status_code=409, detail=str(e))
 
-    fname = file.filename
     # Sliced output preserves the source plate id: `Metadata/plate_{N}.gcode`
     # where N is the plate_id we passed to /slice/v2. Unsliced uploads use
     # the user-supplied plate_id (or 1 when omitted).
-    p_id = plate_id or 1
     state = upload_tracker.create(fname, pid, len(file_data))
     asyncio.get_running_loop().run_in_executor(None, lambda: _background_submit(
         state, pid, file_data, fname,
@@ -1953,6 +2027,11 @@ async def print_file_stream(
     if auto_print and not pid:
         raise HTTPException(status_code=404, detail="No printers configured")
 
+    # For cloud printers with auto_print, slice first (auto_print=False),
+    # then dispatch to CloudPrinterClient.submit_print once the job is ready.
+    cloud_pair = _get_cloud_client(pid) if (auto_print and pid) else None
+    job_auto_print = auto_print and cloud_pair is None
+
     job = await slice_jobs.submit(
         file_data=file_data,
         filename=file.filename,
@@ -1964,7 +2043,7 @@ async def print_file_stream(
         project_filament_count=len(info.filaments),
         slot_indices=[f.index for f in info.filaments] or None,
         printer_id=pid or None,
-        auto_print=auto_print,
+        auto_print=job_auto_print,
         process_overrides=process_overrides_dict,
         copies=copies,
     )
@@ -1993,6 +2072,8 @@ async def print_file_stream(
             if cur.status.is_terminal:
                 if cur.status.value == "failed":
                     yield _sse_event("error", {"error": cur.error or "Failed"})
+                    yield _sse_event("done", {"job_id": cur.id})
+                    return
                 else:
                     payload = {}
                     if (slice_only or preview) and cur.output_path:
@@ -2006,13 +2087,71 @@ async def print_file_stream(
                     if preview:
                         payload["preview_id"] = cur.id  # backward-compat alias
                     yield _sse_event("result", payload)
-                    if auto_print and cur.printed:
+                    if job_auto_print and cur.printed:
                         yield _sse_event("print_started", {
                             "printer_id": cur.printer_id,
                             "file_name": cur.filename,
                             "settings_transfer": cur.settings_transfer,
                             "estimate": cur.estimate,
                         })
+
+                    # Cloud auto-print: slice is done, now submit to cloud.
+                    if cloud_pair is not None and not slice_only and not preview:
+                        cloud_host, cloud_client = cloud_pair
+                        import tempfile, os as _os
+                        suffix = Path(file.filename).suffix or ".3mf"
+                        output_bytes = Path(cur.output_path).read_bytes() if cur.output_path else b""
+                        with tempfile.NamedTemporaryFile(
+                            delete=False, suffix=suffix, prefix="bambu_cloud_"
+                        ) as tmp:
+                            tmp.write(output_bytes)
+                            tmp_path = tmp.name
+                        try:
+                            ams_map_inner, use_ams_inner = build_ams_mapping(
+                                cur.filament_profiles,
+                                project_filament_count=cur.project_filament_count,
+                                slot_indices=cur.slot_indices,
+                            )
+                            ams_mapping_dict: dict[str, str] | None = None
+                            if ams_map_inner:
+                                ams_mapping_dict = {str(i): str(v) for i, v in enumerate(ams_map_inner)}
+                            print_params = build_print_params(
+                                dev_id=pid,
+                                project_name=Path(file.filename).stem,
+                                plate_index=cur.plate_id or 1,
+                                gcode_3mf_path=tmp_path,
+                                ams_mapping=ams_mapping_dict,
+                                use_ams=use_ams_inner,
+                            )
+                            yield _sse_event("status", {"phase": "submitting", "message": "submitting"})
+                            async for frame in cloud_client.submit_print(
+                                host=cloud_host, print_params=print_params,
+                            ):
+                                ev = frame.get("event", "")
+                                if ev == "progress":
+                                    yield _sse_event("status", {
+                                        "phase": "uploading",
+                                        "message": frame.get("msg", ""),
+                                    })
+                                elif ev == "done":
+                                    yield _sse_event("print_started", {
+                                        "printer_id": pid,
+                                        "file_name": cur.filename,
+                                        "settings_transfer": cur.settings_transfer,
+                                        "estimate": cur.estimate,
+                                    })
+                                    break
+                                elif ev == "error":
+                                    yield _sse_event("error", {
+                                        "error": frame.get("msg", "Cloud print failed"),
+                                    })
+                                    break
+                        finally:
+                            try:
+                                _os.unlink(tmp_path)
+                            except OSError:
+                                pass
+
                 yield _sse_event("done", {"job_id": cur.id})
                 return
             await asyncio.sleep(0.2)
