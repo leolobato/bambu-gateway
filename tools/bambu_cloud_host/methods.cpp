@@ -99,6 +99,96 @@ json method_add_subscribe(const json& params) {
   return {{"rc", loader().add_subscribe(vec)}};
 }
 
+// start_print — submit a print job via the cloud plugin.
+//
+// Params (JSON keys map directly to PrintParams fields):
+//   Required:
+//     dev_id          (string) — printer serial number
+//     filename        (string) — local path to the sliced 3MF/gcode file
+//     connection_type (string) — "cloud" or "lan"
+//     plate_index     (int)    — 1-based plate index
+//   Optional (all have sane zero/false defaults):
+//     task_name, project_name, preset_name, config_filename,
+//     ftp_folder, ftp_file, ftp_file_md5, dst_file,
+//     nozzle_mapping, ams_mapping, ams_mapping2, ams_mapping_info, nozzles_info,
+//     comments, origin_profile_id, stl_design_id, origin_model_id, print_type,
+//     dev_name, dev_ip, use_ssl_for_ftp, use_ssl_for_mqtt, username, password,
+//     task_bed_leveling, task_flow_cali, task_vibration_cali, task_layer_inspect,
+//     task_record_timelapse, task_use_ams, task_bed_type, extra_options,
+//     auto_bed_leveling, auto_flow_cali, auto_offset_cali,
+//     extruder_cali_manual_mode, task_ext_change_assist, try_emmc_print
+//
+// Returns {"rc": N} where N == 0 means the job was accepted by the cloud/printer.
+// Negative rc values are BAMBU_NETWORK_ERR_* codes — see discovery notes §6.
+//
+// Progress events are pushed to the global event queue as the call proceeds;
+// drain them with bridge.poll_events while this call is running.
+// NOTE: start_print is synchronous — it BLOCKS until the job finishes or errors.
+// The Python caller must run this in a thread and poll bridge.poll_events
+// concurrently to receive OnUpdateStatus progress events.
+json method_start_print(const json& p) {
+  PrintParams pp;
+
+  // Helper: get a string field or return a default.
+  auto str = [&](const char* key, const std::string& def = "") -> std::string {
+    return p.contains(key) ? p.at(key).get<std::string>() : def;
+  };
+  auto boo = [&](const char* key, bool def = false) -> bool {
+    return p.contains(key) ? p.at(key).get<bool>() : def;
+  };
+  auto num = [&](const char* key, int def = 0) -> int {
+    return p.contains(key) ? p.at(key).get<int>() : def;
+  };
+
+  pp.dev_id            = str("dev_id");
+  pp.task_name         = str("task_name");
+  pp.project_name      = str("project_name");
+  pp.preset_name       = str("preset_name");
+  pp.filename          = str("filename");
+  pp.config_filename   = str("config_filename");
+  pp.plate_index       = num("plate_index", 0);
+  pp.ftp_folder        = str("ftp_folder");
+  pp.ftp_file          = str("ftp_file");
+  pp.ftp_file_md5      = str("ftp_file_md5");
+  pp.nozzle_mapping    = str("nozzle_mapping");
+  pp.ams_mapping       = str("ams_mapping");
+  pp.ams_mapping2      = str("ams_mapping2");
+  pp.ams_mapping_info  = str("ams_mapping_info");
+  pp.nozzles_info      = str("nozzles_info");
+  pp.connection_type   = str("connection_type", "cloud");
+  pp.comments          = str("comments");
+  pp.origin_profile_id = num("origin_profile_id", 0);
+  pp.stl_design_id     = num("stl_design_id", 0);
+  pp.origin_model_id   = str("origin_model_id");
+  pp.print_type        = str("print_type");
+  pp.dst_file          = str("dst_file");
+  pp.dev_name          = str("dev_name");
+  pp.dev_ip            = str("dev_ip");
+  pp.use_ssl_for_ftp   = boo("use_ssl_for_ftp", false);
+  pp.use_ssl_for_mqtt  = boo("use_ssl_for_mqtt", false);
+  pp.username          = str("username");
+  pp.password          = str("password");
+
+  pp.task_bed_leveling     = boo("task_bed_leveling",     false);
+  pp.task_flow_cali        = boo("task_flow_cali",        false);
+  pp.task_vibration_cali   = boo("task_vibration_cali",   false);
+  pp.task_layer_inspect    = boo("task_layer_inspect",    false);
+  pp.task_record_timelapse = boo("task_record_timelapse", false);
+  pp.task_use_ams          = boo("task_use_ams",          false);
+  pp.task_bed_type         = str("task_bed_type");
+  pp.extra_options         = str("extra_options");
+
+  pp.auto_bed_leveling         = num("auto_bed_leveling",         0);
+  pp.auto_flow_cali            = num("auto_flow_cali",            0);
+  pp.auto_offset_cali          = num("auto_offset_cali",          0);
+  pp.extruder_cali_manual_mode = num("extruder_cali_manual_mode", -1);
+  pp.task_ext_change_assist    = boo("task_ext_change_assist",    false);
+  pp.try_emmc_print            = boo("try_emmc_print",            false);
+
+  int rc = loader().start_print(std::move(pp));
+  return {{"rc", rc}};
+}
+
 }  // namespace
 
 json dispatch_method(const std::string& method, const json& params) {
@@ -111,6 +201,7 @@ json dispatch_method(const std::string& method, const json& params) {
   if (method == "connect_server")      return method_connect_server(params);
   if (method == "start_subscribe")     return method_start_subscribe(params);
   if (method == "add_subscribe")       return method_add_subscribe(params);
+  if (method == "start_print")         return method_start_print(params);
   throw std::runtime_error("unknown method: " + method);
 }
 
