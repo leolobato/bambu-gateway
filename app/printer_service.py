@@ -280,6 +280,35 @@ class PrinterService:
             return None
         return await client.get_ams_info_async(wait_timeout=wait_timeout)
 
+    async def _dispatch_command(
+        self,
+        printer_id: str,
+        envelope: dict,
+        *,
+        host=None,
+    ) -> int:
+        """Send ``envelope`` to the printer over whichever transport applies.
+
+        - Cloud path: calls ``CloudPrinterClient.send_command`` via the plugin host
+          and returns the plugin rc (0 = success, negative = error).
+        - LAN path: calls ``BambuMQTTClient.publish`` and returns 0.
+
+        :param printer_id: Printer serial number.
+        :param envelope: Command dict as returned by a ``build_<command>`` builder.
+        :param host: :class:`~app.cloud.plugin_host.PluginHost` instance.  Required
+            when a cloud client is registered for the printer; ignored on the LAN path.
+        :raises ValueError: if the printer is not found in either client dict.
+        """
+        cloud_client = (self._cloud_clients or {}).get(printer_id)
+        if cloud_client is not None:
+            return await cloud_client.send_command(host=host, envelope=envelope)
+        # LAN path
+        lan_client = self._clients.get(printer_id)
+        if lan_client is None:
+            raise ValueError(f"Printer {printer_id} not found")
+        lan_client.publish(envelope)
+        return 0
+
     def pause_print(self, printer_id: str) -> None:
         """Pause the current print on the given printer."""
         client = self._clients.get(printer_id)

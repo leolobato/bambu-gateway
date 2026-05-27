@@ -125,12 +125,14 @@ def cloud_control_app(monkeypatch, tmp_path):
         patch("app.main.PluginHost", _AlreadyOpenHost),
     ):
         with TestClient(main_mod.app) as client:
-            # Register a cloud printer so the route can find it.
+            # Register a cloud printer so both _get_cloud_client (reads
+            # app.state.cloud_printers) and PrinterService (reads
+            # _cloud_clients) can find DEV1.
             from app.cloud.cloud_printer import CloudPrinterClient as CPC
             cloud_client = CPC(dev_id="DEV1", name="Cloud Printer")
-            main_mod.printer_service.set_cloud_printers({"DEV1": cloud_client})
-            # Expose the host on app.state so _dispatch_command can reach it.
-            main_mod.app.state.cloud_host = real_host_holder[0] if real_host_holder else _AlreadyOpenHost()
+            cloud_map = {"DEV1": cloud_client}
+            main_mod.app.state.cloud_printers = cloud_map
+            main_mod.printer_service.set_cloud_printers(cloud_map)
             yield client
 
 

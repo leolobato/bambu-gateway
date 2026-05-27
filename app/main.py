@@ -76,6 +76,14 @@ from app.models import (
     TransferredSetting,
 )
 from app.cloud.print_params import build_print_params
+from app.mqtt_client import (
+    build_ams_start_drying_command,
+    build_ams_stop_drying_command,
+    build_cancel_command,
+    build_pause_command,
+    build_resume_command,
+    build_speed_command,
+)
 from app.parse_3mf import parse_3mf_token_via_slicer, parse_3mf_via_slicer
 from app.printer_service import PrinterService
 from app.slice_jobs import SliceJobManager, SliceJobStatus, SliceJobStore
@@ -537,13 +545,22 @@ async def get_printer(printer_id: str):
 
 
 def _resolve_printer_id(printer_id: str) -> str:
-    """Resolve a printer_id, falling back to the default printer."""
+    """Resolve a printer_id, falling back to the default printer.
+
+    Accepts both LAN printers (``printer_service.get_client``) and cloud
+    printers (``app.state.cloud_printers``).
+    """
     pid = printer_id or printer_service.default_printer_id()
     if pid is None:
         raise HTTPException(status_code=404, detail="No printers configured")
-    if printer_service.get_client(pid) is None:
-        raise HTTPException(status_code=404, detail="Printer not found")
-    return pid
+    # Check LAN client first (fast path, backward-compatible with test stubs).
+    if printer_service.get_client(pid) is not None:
+        return pid
+    # Also accept cloud printers when cloud mode is active.
+    cloud_printers = getattr(app.state, "cloud_printers", None)
+    if cloud_printers and pid in cloud_printers:
+        return pid
+    raise HTTPException(status_code=404, detail="Printer not found")
 
 
 def _run_printer_command(
@@ -562,31 +579,75 @@ def _run_printer_command(
     return CommandResponse(printer_id=pid, command=command)
 
 
-@app.post("/api/printers/{printer_id}/pause", response_model=CommandResponse)
-async def pause_print(printer_id: str):
-    return _run_printer_command(printer_id, "pause", printer_service.pause_print)
+async def _run_control_command(
+    printer_id: str,
+    command: str,
+    envelope: dict,
+    *,
+    lan_action,
+) -> CommandResponse:
+    """Route a control command to cloud or LAN depending on printer type.
 
+    Cloud printers are dispatched via ``PrinterService._dispatch_command`` which
+    calls ``CloudPrinterClient.send_command`` and returns the plugin rc.
+    LAN printers fall back to the existing synchronous ``lan_action`` path.
 
-@app.post("/api/printers/{printer_id}/resume", response_model=CommandResponse)
-async def resume_print(printer_id: str):
-    return _run_printer_command(printer_id, "resume", printer_service.resume_print)
-
-
-@app.post("/api/printers/{printer_id}/cancel", response_model=CommandResponse)
-async def cancel_print(printer_id: str):
-    return _run_printer_command(printer_id, "cancel", printer_service.cancel_print)
-
-
-@app.post("/api/printers/{printer_id}/speed", response_model=CommandResponse)
-async def set_print_speed(printer_id: str, body: SpeedRequest):
+    A single branch here replaces per-route ``if cloud`` blocks so each of the
+    six control routes stays a 2-3 line body.
+    """
     pid = _resolve_printer_id(printer_id)
+    cloud_pair = _get_cloud_client(pid)
+    if cloud_pair is not None:
+        host, cloud_client = cloud_pair
+        rc = await printer_service._dispatch_command(pid, envelope, host=host)
+        if rc != 0:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Cloud plugin error rc={rc} for command {command}",
+            )
+        return CommandResponse(printer_id=pid, command=command)
+    # LAN path — call the existing synchronous action unchanged.
     try:
-        printer_service.set_print_speed(pid, body.level.value)
+        lan_action(pid)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ConnectionError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    return CommandResponse(printer_id=pid, command=f"speed:{body.level.name}")
+    return CommandResponse(printer_id=pid, command=command)
+
+
+@app.post("/api/printers/{printer_id}/pause", response_model=CommandResponse)
+async def pause_print(printer_id: str):
+    return await _run_control_command(
+        printer_id, "pause", build_pause_command(),
+        lan_action=printer_service.pause_print,
+    )
+
+
+@app.post("/api/printers/{printer_id}/resume", response_model=CommandResponse)
+async def resume_print(printer_id: str):
+    return await _run_control_command(
+        printer_id, "resume", build_resume_command(),
+        lan_action=printer_service.resume_print,
+    )
+
+
+@app.post("/api/printers/{printer_id}/cancel", response_model=CommandResponse)
+async def cancel_print(printer_id: str):
+    return await _run_control_command(
+        printer_id, "cancel", build_cancel_command(),
+        lan_action=printer_service.cancel_print,
+    )
+
+
+@app.post("/api/printers/{printer_id}/speed", response_model=CommandResponse)
+async def set_print_speed(printer_id: str, body: SpeedRequest):
+    return await _run_control_command(
+        printer_id,
+        f"speed:{body.level.name}",
+        build_speed_command(body.level.value),
+        lan_action=lambda pid: printer_service.set_print_speed(pid, body.level.value),
+    )
 
 
 @app.post("/api/printers/{printer_id}/light", response_model=CommandResponse)
@@ -653,16 +714,14 @@ async def start_drying(
     ams_id: int,
     body: StartDryingRequest | None = None,
 ):
-    pid = _resolve_printer_id(printer_id)
     temp = body.temperature if body else 55
     duration = body.duration_minutes if body else 480
-    try:
-        printer_service.start_drying(pid, ams_id, temp, duration)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ConnectionError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    return CommandResponse(printer_id=pid, command=f"start_drying:ams{ams_id}")
+    return await _run_control_command(
+        printer_id,
+        f"start_drying:ams{ams_id}",
+        build_ams_start_drying_command(ams_id, temp, duration),
+        lan_action=lambda pid: printer_service.start_drying(pid, ams_id, temp, duration),
+    )
 
 
 @app.post(
@@ -670,14 +729,12 @@ async def start_drying(
     response_model=CommandResponse,
 )
 async def stop_drying(printer_id: str, ams_id: int):
-    pid = _resolve_printer_id(printer_id)
-    try:
-        printer_service.stop_drying(pid, ams_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ConnectionError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    return CommandResponse(printer_id=pid, command=f"stop_drying:ams{ams_id}")
+    return await _run_control_command(
+        printer_id,
+        f"stop_drying:ams{ams_id}",
+        build_ams_stop_drying_command(ams_id),
+        lan_action=lambda pid: printer_service.stop_drying(pid, ams_id),
+    )
 
 
 @app.post(
