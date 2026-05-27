@@ -191,6 +191,26 @@ json method_start_print(const json& p) {
   return {{"rc", 0}, {"in_flight", true}};
 }
 
+// send_message — relay a JSON command to the printer via the cloud MQTT relay.
+//
+// Params:
+//   dev_id  (string, required) — printer serial number
+//   payload (string, required) — JSON command string (Bambu MQTT envelope)
+//   qos     (int,    optional, default 0) — MQTT QoS level
+//   flag    (int,    optional, default 0) — routing flag (always 0 for cloud)
+//
+// Returns {"rc": N} where N == 0 means the message was queued by the plugin.
+//
+// The call is synchronous and non-blocking — safe to call from the RPC loop
+// without a worker thread.
+json method_send_message(const json& params) {
+  std::string dev_id  = params.at("dev_id").get<std::string>();
+  std::string payload = params.at("payload").get<std::string>();
+  int qos             = params.value("qos",  0);
+  int flag            = params.value("flag", 0);
+  return {{"rc", loader().send_message(dev_id, payload, qos, flag)}};
+}
+
 }  // namespace
 
 json dispatch_method(const std::string& method, const json& params) {
@@ -204,6 +224,7 @@ json dispatch_method(const std::string& method, const json& params) {
   if (method == "start_subscribe")     return method_start_subscribe(params);
   if (method == "add_subscribe")       return method_add_subscribe(params);
   if (method == "start_print")         return method_start_print(params);
+  if (method == "send_message")        return method_send_message(params);
   throw std::runtime_error("unknown method: " + method);
 }
 

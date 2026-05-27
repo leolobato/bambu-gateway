@@ -173,6 +173,25 @@ class PluginLoader {
   // Returns -1 immediately if bootstrap() has not been called.
   int start_print(PrintParams params);
 
+  // Calls bambu_network_send_message(agent, dev_id, payload, qos, flag).
+  // Relays a pre-serialised JSON command string to the printer via the cloud
+  // MQTT relay.  The call is synchronous and non-blocking — the plugin enqueues
+  // the message with its internal MQTT client and returns immediately.
+  //
+  // dev_id  — printer serial number
+  // payload — JSON command string (same envelope as the LAN MQTT path)
+  // qos     — MQTT QoS level (0 = at-most-once, 1 = at-least-once)
+  // flag    — routing flag; 0 for normal cloud relay (OrcaSlicer always passes 0)
+  //
+  // Returns 0 on success, negative on error.
+  // Throws std::runtime_error if bootstrap() was not called first.
+  //
+  // Source: BBLNetworkPlugin.hpp:52, BBLPrinterAgent.cpp:163-176
+  int send_message(const std::string& dev_id,
+                   const std::string& payload,
+                   int qos  = 0,
+                   int flag = 0);
+
   // True while a start_print worker thread is running.
   bool print_in_flight() const { return print_in_flight_.load(); }
 
@@ -247,6 +266,13 @@ class PluginLoader {
                                 was_cancelled_fn,
                                 on_wait_fn);
 
+  // int bambu_network_send_message(void* agent, std::string dev_id,
+  //                                std::string json_str, int qos, int flag)
+  // Relays a JSON command string to the printer via the cloud MQTT relay.
+  // std::string args are BY VALUE (C++ ABI — SSO struct on stack).
+  // Source: BBLNetworkPlugin.hpp:52, BBLPrinterAgent.cpp:163-176
+  using fn_send_message = int(*)(void*, std::string, std::string, int, int);
+
   fn_create_agent       p_create_agent_       = nullptr;
   fn_init_log           p_init_log_           = nullptr;
   fn_set_config_dir     p_set_config_dir_     = nullptr;
@@ -260,6 +286,7 @@ class PluginLoader {
   fn_start_subscribe    p_start_subscribe_    = nullptr;
   fn_add_subscribe      p_add_subscribe_      = nullptr;
   fn_start_print        p_start_print_        = nullptr;
+  fn_send_message       p_send_message_       = nullptr;
 
   // True while a start_print worker thread is executing.
   // compare_exchange ensures only one thread can own the "in-flight" slot.

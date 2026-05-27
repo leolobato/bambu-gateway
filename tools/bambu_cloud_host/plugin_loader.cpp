@@ -125,6 +125,7 @@ void PluginLoader::load_from_env() {
   p_start_subscribe_   = must_resolve<fn_start_subscribe>   (dl_handle_, "bambu_network_start_subscribe");
   p_add_subscribe_     = must_resolve<fn_add_subscribe>     (dl_handle_, "bambu_network_add_subscribe");
   p_start_print_       = must_resolve<fn_start_print>       (dl_handle_, "bambu_network_start_print");
+  p_send_message_      = must_resolve<fn_send_message>      (dl_handle_, "bambu_network_send_message");
 }
 
 int PluginLoader::bootstrap() {
@@ -443,6 +444,31 @@ int PluginLoader::start_print(PrintParams params) {
 
   worker.detach();
   return 0;
+}
+
+// send_message — relay a JSON command to the printer via the cloud MQTT relay.
+//
+// The call is synchronous and non-blocking: the plugin enqueues the message
+// with its internal MQTT client and returns immediately.  No worker thread is
+// needed (unlike start_print).
+//
+// ABI note: std::string args are BY VALUE — the plugin was compiled as C++ and
+// the ABI places the SSO struct on the stack, not a raw pointer.  The `flag`
+// parameter defaults to 0; OrcaSlicer always passes 0 at this call site.
+//
+// Source: BBLNetworkPlugin.hpp:52, BBLPrinterAgent.cpp:163-176
+int PluginLoader::send_message(const std::string& dev_id,
+                                const std::string& payload,
+                                int qos,
+                                int flag) {
+  if (!agent_) {
+    throw std::runtime_error("send_message: agent not bootstrapped");
+  }
+  int rc = p_send_message_(agent_, dev_id, payload, qos, flag);
+  std::fprintf(stderr,
+               "bambu_cloud_host: send_message dev_id=%s qos=%d flag=%d rc=%d\n",
+               dev_id.c_str(), qos, flag, rc);
+  return rc;
 }
 
 }  // namespace bambu_host
