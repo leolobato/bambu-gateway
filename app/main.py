@@ -260,7 +260,26 @@ async def lifespan(app: FastAPI):
                 if client is not None:
                     await client.handle_event(event)
 
-            pump = EventPump(host=host, handlers={"OnMessage": _on_message})
+            async def _on_update_status(event: dict) -> None:
+                # OnUpdateStatus is per-printer if events carry dev_id; otherwise
+                # it belongs to whichever printer has an active submit_print. For
+                # v1 we rely on the per-printer single-in-flight invariant: route
+                # to WHICHEVER client currently has self._progress != None.
+                dev_id = event.get("dev_id")
+                if dev_id:
+                    client = cloud_clients.get(dev_id)
+                    if client is not None:
+                        await client.handle_update_status(event)
+                    return
+                for client in cloud_clients.values():
+                    if client._progress is not None:
+                        await client.handle_update_status(event)
+                        return
+
+            pump = EventPump(host=host, handlers={
+                "OnMessage": _on_message,
+                "OnUpdateStatus": _on_update_status,
+            })
             await pump.start()
             app.state.cloud_event_pump = pump
             stack.push_async_callback(pump.stop)
