@@ -22,10 +22,12 @@ from fastapi.staticfiles import StaticFiles
 
 from app.apns_client import ApnsClient
 from app.apns_jwt import ApnsJwtSigner
+from app.cloud import auth as cloud_auth
 from app.cloud.cloud_printer import CloudPrinterClient
 from app.cloud.event_pump import EventPump
 from app.cloud.plugin_downloader import PluginDownloader
 from app.cloud.plugin_host import PluginHost
+from app.cloud.session import establish_session
 from app.config import PrinterConfig, settings
 from app import config_store
 from app.device_store import ActiveActivity, DeviceRecord, DeviceStore
@@ -320,6 +322,30 @@ async def lifespan(app: FastAPI):
             await pump.start()
             app.state.cloud_event_pump = pump
             stack.push_async_callback(pump.stop)
+
+            # Connect the plugin's cloud MQTT relay and subscribe the printer
+            # serials. Exposed on app.state so the login route can re-run it
+            # the moment a session appears (without it no event ever arrives).
+            async def _cloud_connect() -> bool:
+                # config_store is the durable source of truth, so this picks
+                # up printers added via the settings CRUD since startup.
+                serials = [c.serial for c in config_store.load()]
+                return await establish_session(host=host, dev_ids=serials)
+
+            app.state.cloud_connect = _cloud_connect
+
+            if await cloud_auth.is_signed_in(host=host):
+                if await _cloud_connect():
+                    logger.info("Bambu cloud session established")
+                else:
+                    logger.warning(
+                        "Bambu cloud session could not be established; "
+                        "printer status will be unavailable until re-login"
+                    )
+            else:
+                logger.info(
+                    "Bambu cloud: no user signed in — waiting for login"
+                )
 
         # Device registry + APNs
         device_store_path = config_store._config_path.parent / "devices.json"

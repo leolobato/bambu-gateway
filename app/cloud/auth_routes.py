@@ -67,7 +67,18 @@ async def post_paste(request: Request, body: PasteBody) -> dict:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except (auth.LoginFailed, PluginHostError) as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"profile": profile}
+
+    # Login succeeded — connect the cloud MQTT relay and subscribe printers so
+    # status starts flowing. A connect failure doesn't invalidate the login;
+    # surface it in the response instead of failing the request.
+    connected = False
+    connect = getattr(request.app.state, "cloud_connect", None)
+    if connect is not None:
+        try:
+            connected = await connect()
+        except PluginHostError as exc:
+            logger.warning("cloud connect after login failed: %s", exc)
+    return {"profile": profile, "connected": connected}
 
 
 @router.post("/logout")

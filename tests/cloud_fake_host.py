@@ -49,7 +49,7 @@ def _dispatch(method: str, params: dict) -> dict:
             "refresh_expires_in": "86400",
         }
     if method == "connect_server":
-        return {"rc": 0}
+        return {"rc": int(os.environ.get("FAKE_HOST_CONNECT_SERVER_RC", "0"))}
     if method == "start_subscribe":
         return {"rc": 0}
     if method == "add_subscribe":
