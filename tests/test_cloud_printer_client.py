@@ -74,3 +74,26 @@ async def test_cloud_printer_client_handles_invalid_json_payload_gracefully():
         "payload": "this is not valid json {{{",
     })
     assert client.get_status().state == PrinterState.offline
+
+
+async def test_cloud_printer_client_goes_online_when_events_arrive():
+    """A printer streaming cloud reports is online — the dashboard gates
+    every control on this flag, so leaving it False renders an actively
+    printing machine as an offline card with no controls."""
+    client = CloudPrinterClient(dev_id="DEV1", name="Test Printer")
+    await client.handle_event({
+        "kind": "OnMessage",
+        "dev_id": "DEV1",
+        "payload": json.dumps({"print": {"gcode_state": "RUNNING"}}),
+    })
+    assert client.get_status().online is True
+
+
+async def test_cloud_printer_client_stays_offline_on_garbage_payload():
+    client = CloudPrinterClient(dev_id="DEV1", name="Test Printer")
+    await client.handle_event({
+        "kind": "OnMessage",
+        "dev_id": "DEV1",
+        "payload": "not json",
+    })
+    assert client.get_status().online is False

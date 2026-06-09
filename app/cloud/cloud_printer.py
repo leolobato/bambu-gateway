@@ -44,6 +44,10 @@ class CloudPrinterClient:
         with self._lock:
             return self._status.model_copy()
 
+    def set_name(self, name: str) -> None:
+        with self._lock:
+            self._status.name = name
+
     async def handle_event(self, event: dict) -> None:
         """Dispatch an EventPump event for this device.
 
@@ -67,6 +71,9 @@ class CloudPrinterClient:
             return
 
         with self._lock:
+            # Receiving cloud reports is this transport's notion of liveness —
+            # the UI hides all controls for printers with online == False.
+            self._status.online = True
             self._gcode_state = apply_print_payload(
                 self._status,
                 print_info,

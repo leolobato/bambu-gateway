@@ -64,16 +64,24 @@ class PrinterService:
         self,
         printer_configs: list[PrinterConfig],
         status_change_callback=None,
+        cloud_mode: bool = False,
     ) -> None:
         self._configs: dict[str, PrinterConfig] = {}
         self._clients: dict[str, BambuMQTTClient] = {}
         self._proxies: dict[str, CameraProxy] = {}
         self._status_change_callback = status_change_callback
+        self._cloud_mode = cloud_mode
         # Cloud printer clients keyed by serial. Set via set_cloud_printers()
         # after the EventPump is wired up; None until then.
         self._cloud_clients: dict[str, "CloudPrinterClient"] | None = None  # type: ignore[name-defined]
         for cfg in printer_configs:
             self._configs[cfg.serial] = cfg
+            if cloud_mode:
+                # Cloud mode: printers are reached via CloudPrinterClient
+                # (registered through set_cloud_printers); creating a LAN
+                # client too would list every printer twice and shadow the
+                # live cloud status with a never-connected LAN one.
+                continue
             client = BambuMQTTClient(cfg)
             if status_change_callback is not None:
                 client.set_status_change_callback(status_change_callback)
@@ -83,9 +91,9 @@ class PrinterService:
         """Register cloud printer clients so they appear in list/status results.
 
         Called from the lifespan after CloudPrinterClient instances are created.
-        ``cloud_clients`` is a ``dict[serial, CloudPrinterClient]``.
-        When cloud mode is active the LAN MQTT clients are not created
-        (the printer list comes from this dict instead).
+        ``cloud_clients`` is a ``dict[serial, CloudPrinterClient]``. The dict
+        object is shared with ``app.state.cloud_printers`` and the EventPump
+        handler closures, so :meth:`sync_printers` mutates it in place.
         """
         self._cloud_clients = cloud_clients
 
@@ -116,7 +124,14 @@ class PrinterService:
         - New serials get added and started.
         - Removed serials get stopped and deleted.
         - Changed configs (ip or access_code) get stopped and restarted.
+
+        In cloud mode the same diff is applied to the cloud-client registry
+        instead (in place, so app.state and the EventPump handlers see it).
         """
+        if self._cloud_mode:
+            self._sync_cloud_printers(new_configs)
+            return
+
         new_by_serial = {c.serial: c for c in new_configs}
         old_serials = set(self._configs.keys())
         new_serials = set(new_by_serial.keys())
@@ -165,6 +180,27 @@ class PrinterService:
             if self._status_change_callback is not None:
                 client.set_status_change_callback(self._status_change_callback)
             self._clients[serial] = client
+
+    def _sync_cloud_printers(self, new_configs: list[PrinterConfig]) -> None:
+        from app.cloud.cloud_printer import CloudPrinterClient
+
+        new_by_serial = {c.serial: c for c in new_configs}
+        self._configs = dict(new_by_serial)
+        if self._cloud_clients is None:
+            return
+        for serial in set(self._cloud_clients) - set(new_by_serial):
+            logger.info("Removing cloud printer %s", serial)
+            del self._cloud_clients[serial]
+        for serial, cfg in new_by_serial.items():
+            display = cfg.name or f"Printer {serial[-4:]}"
+            existing = self._cloud_clients.get(serial)
+            if existing is None:
+                logger.info("Adding cloud printer %s", serial)
+                self._cloud_clients[serial] = CloudPrinterClient(
+                    dev_id=serial, name=display,
+                )
+            else:
+                existing.set_name(display)
 
     def get_all_statuses(self) -> list[PrinterStatus]:
         """Return status for every configured printer (LAN + cloud)."""
@@ -248,6 +284,8 @@ class PrinterService:
         """Return the serial of the first configured printer."""
         if self._clients:
             return next(iter(self._clients))
+        if self._cloud_clients:
+            return next(iter(self._cloud_clients))
         return None
 
     def get_config(self, printer_id: str) -> PrinterConfig | None:

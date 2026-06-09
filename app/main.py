@@ -384,7 +384,9 @@ async def lifespan(app: FastAPI):
             logger.info("APNs push disabled — set APNS_KEY_PATH and related vars to enable")
 
         printer_service = PrinterService(
-            configs, status_change_callback=status_change_callback,
+            configs,
+            status_change_callback=status_change_callback,
+            cloud_mode=settings.bambu_cloud_enabled,
         )
         printer_service.start()
         # Surface cloud printers through the existing list/status API.
