@@ -2388,6 +2388,15 @@ async def create_slice_job(
             detail=filament_error or "filament_profiles must be valid JSON",
         )
 
+    # Decide recentering from the ORIGINAL file. `prepare` below rewrites the
+    # project's authored printer to the target machine, so deriving this from
+    # the prepared file would always read "same printer" and leave a
+    # cross-printer retarget off-plate. Compute it here, while source_token
+    # still carries the authored printer, and pass it through explicitly.
+    auto_center = await slicer_client.should_auto_center_for_machine(
+        source_token, machine_profile,
+    )
+
     try:
         prepared = await slicer_client.prepare_3mf_token(
             source_token,
@@ -2415,6 +2424,7 @@ async def create_slice_job(
         auto_print=auto_print,
         process_overrides=process_overrides_dict,
         copies=copies,
+        auto_center=auto_center,
     )
     return _slice_job_to_response(job)
 

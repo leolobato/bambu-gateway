@@ -50,8 +50,12 @@ async def app_client(tmp_path: Path, monkeypatch):
     async def _default_prepare(input_token, **kwargs):
         return {"input_token": "preparedtok", "content": b"prepared"}
 
+    async def _default_should_auto_center(input_token, machine_profile):
+        return False
+
     slicer.upload_3mf = _default_upload
     slicer.prepare_3mf_token = _default_prepare
+    slicer.should_auto_center_for_machine = _default_should_auto_center
     main_mod.slicer_client = slicer
 
     store = SliceJobStore(tmp_path / "slice_jobs.json")
@@ -566,6 +570,49 @@ async def test_copies_value_forwarded(app_client, monkeypatch):
     )
     assert resp.status_code == 202
     assert captured.get("copies") == 5
+
+
+async def test_auto_center_decided_from_original_and_forwarded(app_client, monkeypatch):
+    """create_slice_job must compute auto_center from the ORIGINAL upload
+    (before prepare rewrites the printer) and forward it to submit.
+
+    Regression for the Flycatraz P2S→A1-mini off-plate preview: prepare
+    stamps the target printer into the project, so re-deriving the decision
+    from the prepared file always reads "same printer" → no recenter."""
+    import app.main as main_mod
+
+    seen_token = {}
+
+    async def fake_should(input_token, machine_profile):
+        seen_token["value"] = input_token
+        return True  # pretend it's a cross-printer retarget
+
+    monkeypatch.setattr(
+        main_mod.slicer_client, "should_auto_center_for_machine", fake_should,
+    )
+
+    captured: dict = {}
+    real_submit = main_mod.slice_jobs.submit
+
+    async def spy_submit(*args, **kwargs):
+        captured.update(kwargs)
+        return await real_submit(*args, **kwargs)
+
+    monkeypatch.setattr(main_mod.slice_jobs, "submit", spy_submit)
+
+    resp = await app_client.post(
+        "/api/slice-jobs",
+        files={"file": ("cube.3mf", b"x", "application/octet-stream")},
+        data={
+            "machine_profile": "GM014",
+            "process_profile": "0.20mm",
+            "filament_profiles": "{}",
+        },
+    )
+    assert resp.status_code == 202
+    assert captured.get("auto_center") is True
+    # Decided from the original upload token, not the prepared one.
+    assert seen_token["value"] == "uploadedtok"
 
 
 async def test_copies_out_of_range_returns_400(app_client):

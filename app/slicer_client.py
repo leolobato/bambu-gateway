@@ -160,6 +160,7 @@ class SlicerClient:
         plate: int = 1,
         process_overrides: dict[str, str] | None = None,
         copies: int = 1,
+        auto_center: bool | None = None,
     ) -> SliceResult:
         """Slice a 3MF via orcaslicer-headless's token-based v2 API.
 
@@ -185,6 +186,7 @@ class SlicerClient:
             plate_type=plate_type,
             process_overrides=process_overrides,
             copies=copies,
+            auto_center=auto_center,
         )
 
         url = f"{self._base_url}/slice/v2"
@@ -226,6 +228,7 @@ class SlicerClient:
         plate: int = 1,
         process_overrides: dict[str, str] | None = None,
         copies: int = 1,
+        auto_center: bool | None = None,
     ):
         """Stream SSE events for a slice operation.
 
@@ -236,19 +239,19 @@ class SlicerClient:
         if await self._check_stream_support():
             async for event in self._slice_stream_real(
                 file_data, filename, machine_profile, process_profile, filament_profiles,
-                plate, plate_type, process_overrides, copies,
+                plate, plate_type, process_overrides, copies, auto_center,
             ):
                 yield event
         else:
             async for event in self._slice_stream_fallback(
                 file_data, filename, machine_profile, process_profile, filament_profiles,
-                plate, plate_type, process_overrides, copies,
+                plate, plate_type, process_overrides, copies, auto_center,
             ):
                 yield event
 
     async def _slice_stream_real(
         self, file_data, filename, machine_profile, process_profile, filament_profiles,
-        plate=1, plate_type="", process_overrides=None, copies=1,
+        plate=1, plate_type="", process_overrides=None, copies=1, auto_center=None,
     ):
         upload = await self.upload_3mf(file_data, filename=filename)
         input_token = upload["token"]
@@ -261,6 +264,7 @@ class SlicerClient:
             plate_type=plate_type,
             process_overrides=process_overrides,
             copies=copies,
+            auto_center=auto_center,
         )
 
         url = f"{self._base_url}/slice-stream/v2"
@@ -300,7 +304,7 @@ class SlicerClient:
 
     async def _slice_stream_fallback(
         self, file_data, filename, machine_profile, process_profile, filament_profiles,
-        plate=1, plate_type="", process_overrides=None, copies=1,
+        plate=1, plate_type="", process_overrides=None, copies=1, auto_center=None,
     ):
         """Use the non-streaming /slice/v2 endpoint and emit synthetic SSE events."""
         yield {"event": "status", "data": {"phase": "slicing", "message": "Slicing..."}}
@@ -308,6 +312,7 @@ class SlicerClient:
         result = await self.slice(
             file_data, filename, machine_profile, process_profile, filament_profiles,
             plate_type, plate, process_overrides=process_overrides, copies=copies,
+            auto_center=auto_center,
         )
 
         transfer_info = {}
@@ -342,6 +347,7 @@ class SlicerClient:
         plate_type: str = "",
         process_overrides: dict[str, str] | None = None,
         copies: int = 1,
+        auto_center: bool | None = None,
     ) -> dict[str, Any]:
         """Translate the gateway's filament_profiles shape to the v2 schema.
 
@@ -354,6 +360,13 @@ class SlicerClient:
 
         ``process_overrides`` is included in the body only when non-empty
         (``None`` and ``{}`` are no-ops per the slicer API contract).
+
+        ``auto_center``: when ``None`` (the default), the decision is
+        derived from ``input_token``'s authored printer. Callers that
+        slice a *prepared* 3MF — whose authored printer has already been
+        rewritten to the target — must compute the decision from the
+        ORIGINAL file and pass it here, otherwise the probe always reads
+        "same printer" and a cross-printer retarget is left off-plate.
         """
         filament_ids, filament_map = await self._normalize_filament_selection(
             input_token, filament_profiles,
@@ -368,9 +381,10 @@ class SlicerClient:
         # libslic3r's ``Model::center_instances_around_point``, the
         # same primitive the GUI calls on project import).
         # Same-printer retargets keep authored placement.
-        auto_center = await self._should_auto_center_for_machine(
-            input_token, machine_profile,
-        )
+        if auto_center is None:
+            auto_center = await self.should_auto_center_for_machine(
+                input_token, machine_profile,
+            )
         body: dict[str, Any] = {
             "input_token": input_token,
             "machine_id": machine_profile,
@@ -481,7 +495,7 @@ class SlicerClient:
 
         return filament_ids, None
 
-    async def _should_auto_center_for_machine(
+    async def should_auto_center_for_machine(
         self,
         input_token: str,
         machine_profile: str,
@@ -546,7 +560,7 @@ class SlicerClient:
         backoff: the orcaslicer-headless serializes all slices behind a
         single semaphore, so this probe can momentarily lose the race
         against an in-flight slice. A single blip must not be allowed to
-        decide placement — see ``_should_auto_center_for_machine``.
+        decide placement — see ``should_auto_center_for_machine``.
         """
         url = f"{self._base_url}/profiles/machines/{machine_profile}"
         last = "no attempt made"

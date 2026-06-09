@@ -63,6 +63,41 @@ async def test_auto_center_true_when_printer_differs():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("override", [True, False])
+async def test_explicit_auto_center_override_bypasses_probes(override):
+    """An explicit ``auto_center`` wins over the inspect/machine probes.
+
+    The async slice-jobs path slices a *prepared* 3MF whose authored
+    ``printer_settings_id`` has already been stamped to the target
+    machine, so inspecting it would always read "same printer" → False.
+    The caller computes the decision from the ORIGINAL file before
+    prepare and passes it straight through; the probes must not run."""
+
+    probed = {"inspect": 0, "machines": 0}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/inspect"):
+            probed["inspect"] += 1
+            return _inspect_response("Bambu Lab A1 mini 0.4 nozzle")
+        if "/profiles/machines/" in request.url.path:
+            probed["machines"] += 1
+            return _machine_response("Bambu Lab A1 mini 0.4 nozzle")
+        return httpx.Response(404)
+
+    client = SlicerClient("http://test", transport=httpx.MockTransport(_handler))
+    body = await client._build_v2_slice_body(
+        input_token="prepared-tok",
+        machine_profile="GM020",
+        process_profile="GP000",
+        filament_profiles=["Bambu PLA Basic @BBL A1M"],
+        plate=1,
+        auto_center=override,
+    )
+    assert body["auto_center"] is override
+    assert probed == {"inspect": 0, "machines": 0}
+
+
+@pytest.mark.asyncio
 async def test_auto_center_false_when_printer_matches():
     """Project authored for a P2S printer + slice request targeting the
     same P2S → keep authored placement."""

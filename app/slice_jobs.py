@@ -76,6 +76,14 @@ class SliceJob:
     # printer's `ams_mapping` is keyed by slot, not position. Optional for
     # back-compat with jobs persisted before this field existed.
     slot_indices: list[int] | None = None
+    # Explicit recenter decision computed by the caller from the ORIGINAL
+    # (pre-prepare) 3MF. None lets the slicer derive it from the sliced
+    # file's authored printer — correct only when that file still carries
+    # the original printer identity (e.g. the sync /api/print-preview path,
+    # which doesn't prepare). The async create_slice_job path slices a
+    # prepared file whose printer was rewritten to the target, so it must
+    # set this. See SlicerClient._build_v2_slice_body.
+    auto_center: bool | None = None
 
     # progress
     status: SliceJobStatus = SliceJobStatus.QUEUED
@@ -116,6 +124,7 @@ class SliceJob:
         process_overrides: dict[str, str] | None = None,
         copies: int = 1,
         slot_indices: list[int] | None = None,
+        auto_center: bool | None = None,
     ) -> "SliceJob":
         ts = _now()
         return cls(
@@ -135,6 +144,7 @@ class SliceJob:
             process_overrides=process_overrides,
             copies=copies,
             slot_indices=slot_indices,
+            auto_center=auto_center,
         )
 
     def touch(self) -> None:
@@ -533,6 +543,7 @@ class SliceJobManager:
         process_overrides: dict[str, str] | None = None,
         copies: int = 1,
         slot_indices: list[int] | None = None,
+        auto_center: bool | None = None,
     ) -> SliceJob:
         # Allocate job id, then write input blob at the matching path so the
         # job record always references a real file.
@@ -554,6 +565,7 @@ class SliceJobManager:
             process_overrides=process_overrides,
             copies=copies,
             slot_indices=slot_indices,
+            auto_center=auto_center,
         )
         # SliceJob.new generates its own id, but we want it to match the blob.
         job.id = job_id
@@ -626,6 +638,7 @@ class SliceJobManager:
                 plate=job.plate_id or 1,
                 process_overrides=job.process_overrides,
                 copies=job.copies,
+                auto_center=job.auto_center,
             )
             try:
                 while True:
