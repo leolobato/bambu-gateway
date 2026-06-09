@@ -445,7 +445,7 @@ async def lifespan(app: FastAPI):
             await apns_client.aclose()
 
 
-app = FastAPI(title="Bambu Gateway", version="2.4.2", lifespan=lifespan)
+app = FastAPI(title="Bambu Gateway", version="2.5.0", lifespan=lifespan)
 
 from app.cloud.auth_routes import router as cloud_auth_router  # noqa: E402
 app.include_router(cloud_auth_router)
