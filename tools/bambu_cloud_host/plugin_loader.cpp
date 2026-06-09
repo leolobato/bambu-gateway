@@ -119,6 +119,8 @@ void PluginLoader::load_from_env() {
   p_set_country_code_  = must_resolve<fn_set_country_code>  (dl_handle_, "bambu_network_set_country_code");
   p_start_             = must_resolve<fn_start>             (dl_handle_, "bambu_network_start");
   p_change_user_       = must_resolve<fn_change_user>       (dl_handle_, "bambu_network_change_user");
+  p_is_user_login_     = must_resolve<fn_is_user_login>     (dl_handle_, "bambu_network_is_user_login");
+  p_user_logout_       = must_resolve<fn_user_logout>       (dl_handle_, "bambu_network_user_logout");
   p_get_my_token_      = must_resolve<fn_get_my_token>      (dl_handle_, "bambu_network_get_my_token");
   p_set_on_message_fn_ = must_resolve<fn_set_on_message_fn> (dl_handle_, "bambu_network_set_on_message_fn");
   p_connect_server_    = must_resolve<fn_connect_server>    (dl_handle_, "bambu_network_connect_server");
@@ -235,6 +237,19 @@ int PluginLoader::change_user(const std::string& canonical_login_json) {
   // std::string is passed BY VALUE — construct here, pass directly.
   int rc = p_change_user_(agent_, canonical_login_json);
   std::fprintf(stderr, "bambu_cloud_host: change_user rc=%d\n", rc);
+  return rc;
+}
+
+bool PluginLoader::is_user_login() {
+  if (!agent_) return false;
+  return p_is_user_login_(agent_);
+}
+
+int PluginLoader::user_logout(bool request) {
+  if (!agent_) return -1;
+  int rc = p_user_logout_(agent_, request);
+  std::fprintf(stderr, "bambu_cloud_host: user_logout request=%d rc=%d\n",
+               request ? 1 : 0, rc);
   return rc;
 }
 

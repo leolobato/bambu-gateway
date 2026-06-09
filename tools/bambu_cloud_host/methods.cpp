@@ -52,6 +52,22 @@ json method_change_user(const json& params) {
   return {{"rc", rc}};
 }
 
+// is_user_login — query whether the plugin holds a valid logged-in session.
+// Returns {"is_login": bool}.  False when the agent is not bootstrapped.
+json method_is_user_login(const json& /*params*/) {
+  return {{"is_login", loader().is_user_login()}};
+}
+
+// user_logout — sign the current user out of the plugin session.
+// Params: {"with_backend_notify": bool, optional, default true} — when true
+// the plugin also revokes the session with Bambu's backend (mirrors
+// OrcaSlicer's request_user_logout, which passes true).
+// Returns {"rc": N} where N == 0 means success.
+json method_user_logout(const json& params) {
+  bool request = params.value("with_backend_notify", true);
+  return {{"rc", loader().user_logout(request)}};
+}
+
 // get_my_token — exchange a Bambu ticket for an access-token bundle.
 // Params: {"ticket": "<ticket string from OAuth redirect>"}
 // Returns the token JSON returned by the plugin (accessToken/access_token,
@@ -217,6 +233,8 @@ json dispatch_method(const std::string& method, const json& params) {
   if (method == "echo")                return method_echo(params);
   if (method == "init_plugin")         return method_init_plugin(params);
   if (method == "change_user")         return method_change_user(params);
+  if (method == "is_user_login")       return method_is_user_login(params);
+  if (method == "user_logout")         return method_user_logout(params);
   if (method == "get_my_token")        return method_get_my_token(params);
   if (method == "bridge.poll_events")  return method_bridge_poll_events(params);
   if (method == "_test_push_event")    return method_test_push_event(params);

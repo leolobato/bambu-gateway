@@ -121,6 +121,16 @@ class PluginLoader {
   // Returns -1 immediately if bootstrap() has not been called.
   int change_user(const std::string& canonical_login_json);
 
+  // Calls bambu_network_is_user_login(agent).
+  // Returns false if bootstrap() has not been called.
+  bool is_user_login();
+
+  // Calls bambu_network_user_logout(agent, request).
+  // request=true also revokes the session with Bambu's backend, matching
+  // OrcaSlicer's logout flow (GUI_App::request_user_logout passes true).
+  // Returns -1 immediately if bootstrap() has not been called.
+  int user_logout(bool request);
+
   // Calls bambu_network_get_my_token(agent, ticket, &http_code, &http_body).
   // Exchanges a Bambu ticket (from the paste-fallback OAuth redirect) for an
   // access-token bundle.  The plugin makes a synchronous HTTPS call and fills
@@ -226,6 +236,14 @@ class PluginLoader {
   // int bambu_network_change_user(void *agent, std::string user_info)
   using fn_change_user       = int(*)(void*, std::string);
 
+  // bool bambu_network_is_user_login(void *agent)
+  // Source: BBLNetworkPlugin.hpp:60
+  using fn_is_user_login     = bool(*)(void*);
+
+  // int bambu_network_user_logout(void *agent, bool request)
+  // Source: BBLNetworkPlugin.hpp:61
+  using fn_user_logout       = int(*)(void*, bool);
+
   // int bambu_network_get_my_token(void *agent, std::string ticket,
   //                                unsigned int *http_code, std::string *http_body)
   // Synchronous — makes an HTTPS call to Bambu's token endpoint, fills
@@ -280,6 +298,8 @@ class PluginLoader {
   fn_set_country_code   p_set_country_code_   = nullptr;
   fn_start              p_start_              = nullptr;
   fn_change_user        p_change_user_        = nullptr;
+  fn_is_user_login      p_is_user_login_      = nullptr;
+  fn_user_logout        p_user_logout_        = nullptr;
   fn_get_my_token       p_get_my_token_       = nullptr;
   fn_set_on_message_fn  p_set_on_message_fn_  = nullptr;
   fn_connect_server     p_connect_server_     = nullptr;
