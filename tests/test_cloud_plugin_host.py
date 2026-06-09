@@ -72,3 +72,37 @@ async def test_plugin_host_raises_when_subprocess_dies(fake_host_cmd):
         await host._proc.wait()
         with pytest.raises(PluginHostError):
             await host.call("echo", {})
+
+
+async def test_plugin_host_handles_responses_larger_than_64kib(fake_host_cmd):
+    """bridge.poll_events can return several full push_all payloads in one
+    JSONL line; asyncio's default 64KiB stream limit killed the reader and
+    every later call hung forever."""
+    async with PluginHost(cmd=fake_host_cmd) as host:
+        big = "x" * (256 * 1024)
+        result = await host.call("echo", {"blob": big})
+        assert result["blob"] == big
+        # The host must still be usable afterwards.
+        assert await host.call("echo", {"ok": 1}) == {"ok": 1}
+
+
+async def test_plugin_host_call_fails_fast_when_reader_is_dead(fake_host_cmd):
+    """If the read loop dies while the process is alive, calls must raise
+    instead of awaiting a future nothing will ever resolve."""
+    async with PluginHost(cmd=fake_host_cmd) as host:
+        await host.call("echo", {})  # warm up
+        host._reader_task.cancel()
+        await asyncio.sleep(0)  # let the cancellation land
+        with pytest.raises(PluginHostError):
+            await host.call("echo", {})
+
+
+async def test_plugin_host_call_times_out(fake_host_cmd):
+    """A host that accepts a request but never answers must not hang the
+    caller forever."""
+    async with PluginHost(
+        cmd=fake_host_cmd, env={"FAKE_HOST_HANG_METHOD": "echo"},
+    ) as host:
+        with pytest.raises(PluginHostError) as exc_info:
+            await host.call("echo", {}, timeout=0.2)
+        assert "timed out" in str(exc_info.value)

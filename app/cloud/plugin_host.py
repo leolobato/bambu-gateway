@@ -61,6 +61,10 @@ class PluginHost:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=full_env,
+            # One bridge.poll_events response can carry several full
+            # push_all payloads on a single JSONL line; asyncio's default
+            # 64 KiB readline limit would kill the reader.
+            limit=16 * 1024 * 1024,
         )
         self._reader_task = asyncio.create_task(
             self._read_loop(), name="bambu-cloud-host-reader"
@@ -93,13 +97,24 @@ class PluginHost:
                 )
         self._pending.clear()
 
-    async def call(self, method: str, params: dict[str, Any]) -> Any:
+    async def call(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        timeout: float | None = 60.0,
+    ) -> Any:
         if self._closed or self._proc is None:
             raise PluginHostError("host not running")
         if self._proc.returncode is not None:
             raise PluginHostError(
                 f"host died (exit code {self._proc.returncode})"
             )
+        if self._reader_task is not None and self._reader_task.done():
+            # The reader can die while the process lives (oversized frame,
+            # unexpected I/O error); without this guard the future below
+            # would never resolve.
+            raise PluginHostError("host reader terminated")
 
         async with self._lock:
             self._next_id += 1
@@ -118,7 +133,13 @@ class PluginHost:
             self._pending.pop(rid, None)
             raise PluginHostError(f"host stdin closed: {exc}") from exc
 
-        return await fut
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._pending.pop(rid, None)
+            raise PluginHostError(
+                f"RPC {method} timed out after {timeout:g}s"
+            ) from None
 
     async def _read_loop(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None

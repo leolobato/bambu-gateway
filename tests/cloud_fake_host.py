@@ -95,6 +95,8 @@ def main() -> int:
             rid = req.get("id", -1)
             method = req["method"]
             params = req.get("params", {})
+            if method == os.environ.get("FAKE_HOST_HANG_METHOD"):
+                continue  # swallow the request — simulates a wedged host
             result = _dispatch(method, params)
             print(json.dumps({"id": rid, "result": result}), flush=True)
         except Exception as exc:

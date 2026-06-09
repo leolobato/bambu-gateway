@@ -406,13 +406,18 @@ int PluginLoader::start_print(PrintParams params) {
 
   std::thread worker([agent, p_start_print, &in_flight,
                       pp = std::move(params)]() mutable {
-    // OnUpdateStatus trampoline — same as before, just inside the thread.
-    on_update_status_fn update_fn = [](int stage, int code, std::string msg) {
+    // OnUpdateStatus trampoline.  Carries the printer serial so the Python
+    // side can route progress frames to the right client instead of
+    // guessing by "whichever printer has a job in flight".
+    std::string dev_id = pp.dev_id;
+    on_update_status_fn update_fn =
+        [dev_id](int stage, int code, std::string msg) {
       json event = {
-        {"kind",  "OnUpdateStatus"},
-        {"stage", stage},
-        {"code",  code},
-        {"msg",   std::move(msg)},
+        {"kind",   "OnUpdateStatus"},
+        {"dev_id", dev_id},
+        {"stage",  stage},
+        {"code",   code},
+        {"msg",    std::move(msg)},
       };
       global_event_queue().push(std::move(event));
     };
