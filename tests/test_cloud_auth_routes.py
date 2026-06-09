@@ -1,70 +1,19 @@
 """Route-level tests for /api/cloud/auth/* using the fake host."""
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
-
-import app.main as main_mod
-
-
-FAKE_HOST = Path(__file__).parent / "cloud_fake_host.py"
 
 
 @pytest.fixture
-def cloud_app(monkeypatch, tmp_path):
+def cloud_app(cloud_app_factory):
     """A TestClient with cloud mode enabled and the Python fake host wired in."""
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(main_mod.settings, "bambu_cloud_enabled", True)
-    monkeypatch.setattr(main_mod.settings, "bambu_cloud_plugin_dir", tmp_path)
-    monkeypatch.setattr(main_mod.settings, "bambu_cloud_region", "US")
-    monkeypatch.setattr(
-        main_mod.settings,
-        "bambu_cloud_host_binary",
-        tmp_path / "ignored",
-    )
-
-    # The auth-routes layer reads app.state.cloud_host; we stub
-    # the lifespan to attach a Python fake host directly.
-    # The real_host is started inside __aenter__ so it runs in the same
-    # event loop as the TestClient (anyio), avoiding cross-loop future issues.
-    from app.cloud.plugin_host import PluginHost
-
-    real_host_holder: list = []
-
-    class _AlreadyOpenHost:
-        def __init__(self, *_, **__): pass
-
-        async def __aenter__(self):
-            host = PluginHost(
-                cmd=[sys.executable, str(FAKE_HOST)],
-                env={"FAKE_HOST_USER_LOGGED_IN": "1"},
-            )
-            await host.start()
-            real_host_holder.append(host)
-            return self
-
-        async def __aexit__(self, *_):
-            if real_host_holder:
-                await real_host_holder[0].stop()
-
-        async def call(self, method, params):
-            return await real_host_holder[0].call(method, params)
-
-    with (
-        patch(
-            "app.cloud.plugin_downloader.PluginDownloader.ensure_active",
-            new=AsyncMock(return_value=None),
-        ),
-        patch("app.printer_service.PrinterService.start", new=MagicMock()),
-        patch("app.main.PluginHost", _AlreadyOpenHost),
-    ):
-        with TestClient(main_mod.app) as client:
-            yield client
+    with cloud_app_factory(
+        fake_env={"FAKE_HOST_USER_LOGGED_IN": "1"},
+    ) as client:
+        yield client
 
 
 def test_get_signin_url(cloud_app):

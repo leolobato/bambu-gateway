@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.apns_client import ApnsClient
 from app.apns_jwt import ApnsJwtSigner
-from app.cloud import auth as cloud_auth
+from app.cloud import auth as cloud_auth, region_api_base
 from app.cloud.cloud_printer import CloudPrinterClient
 from app.cloud.event_pump import EventPump
 from app.cloud.plugin_downloader import PluginDownloader
@@ -125,13 +125,6 @@ class StlDraftLayoutRequest(BaseModel):
 
 class StlDraftMaterializeRequest(BaseModel):
     thumbnail_png_data_url: str = ""
-
-
-def _bambu_cdn_base_url(region: str) -> str:
-    """Map a Bambu region code to the API base URL."""
-    if region == "CN":
-        return "https://api.bambulab.cn"
-    return "https://api.bambulab.com"
 
 
 def _stl_draft_dir() -> Path:
@@ -240,7 +233,7 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
     the lifespan catches and degrades to LAN-only mode.
     """
     async with httpx.AsyncClient(
-        base_url=_bambu_cdn_base_url(settings.bambu_cloud_region),
+        base_url=region_api_base(settings.bambu_cloud_region),
         timeout=30.0,
     ) as cdn_client:
         downloader = PluginDownloader(

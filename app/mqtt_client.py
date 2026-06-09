@@ -788,7 +788,12 @@ class BambuMQTTClient:
                             sorted(new_attrs) or "none",
                         )
 
-            err_raw = print_info.get("print_error") or print_info.get("mc_print_error_code")
+            # Same fallback rule as apply_print_payload (`is None`, not
+            # truthiness) so the log never disagrees with the stored value
+            # when print_error is 0 alongside a non-zero mc code.
+            err_raw = print_info.get("print_error")
+            if err_raw is None:
+                err_raw = print_info.get("mc_print_error_code")
             if err_raw is not None:
                 try:
                     err_val = int(err_raw)

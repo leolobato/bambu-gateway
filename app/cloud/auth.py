@@ -1,7 +1,16 @@
 """Cloud auth flow: sign-in URL, paste-callback parsing, canonical payload."""
 from __future__ import annotations
 
-from urllib.parse import urlencode
+import json as _json
+import logging
+from urllib.parse import parse_qs, urlencode, urlparse
+
+import httpx
+
+from app.cloud import bambu_studio_headers, region_api_base
+from app.cloud.plugin_host import PluginHost, PluginHostError
+
+logger = logging.getLogger("bambu.cloud.auth")
 
 # These values mirror `pjarczak_browser_login_url()` in
 # WebUserLoginDialog.cpp:64-76 (see Phase A discovery notes §A.1).
@@ -52,9 +61,6 @@ def build_signin_url(*, region: str, locale: str = "en") -> str:
     return f"{base}?{outer_qs}"
 
 
-from urllib.parse import parse_qs, urlparse
-
-
 class PasteParseError(ValueError):
     """Raised when the user-pasted URL doesn't carry a usable ticket."""
 
@@ -89,19 +95,9 @@ def parse_paste_url(pasted: str) -> str:
     return ticket[0]
 
 
-import httpx
-
-from app.cloud import BAMBU_STUDIO_USER_AGENT, BAMBU_NETWORK_AGENT_VERSION
-
-
 class ProfileFetchError(RuntimeError):
     """Raised when the Bambu profile API rejects the access token."""
 
-
-_REGION_API_BASE: dict[str, str] = {
-    "US": "https://api.bambulab.com",
-    "CN": "https://api.bambulab.cn",
-}
 
 # Confirmed by Phase A.2 discovery (2026-05-27-bambu-auth-discovery.md §A.2).
 _PROFILE_PATH = "/v1/user-service/u/info"
@@ -114,18 +110,11 @@ async def fetch_profile(
 
     Raises :class:`ProfileFetchError` on non-2xx responses.
     """
-    base = _REGION_API_BASE.get(region)
-    if base is None:
-        raise ValueError(f"unsupported region: {region!r}")
     response = await client.get(
-        base + _PROFILE_PATH,
+        region_api_base(region) + _PROFILE_PATH,
         headers={
             "Authorization": f"Bearer {access_token}",
-            "User-Agent": BAMBU_STUDIO_USER_AGENT,
-            "X-BBL-Client-Type": "slicer",
-            "X-BBL-Client-Name": "BambuStudio",
-            "X-BBL-Client-Version": BAMBU_NETWORK_AGENT_VERSION,
-            "X-BBL-OS-Type": "linux",
+            **bambu_studio_headers(),
         },
         timeout=15.0,
     )
@@ -135,9 +124,6 @@ async def fetch_profile(
             f"{response.text[:200]}"
         )
     return response.json()
-
-
-import json as _json
 
 
 def _first_present(d: dict, *keys: str) -> str | None:
@@ -189,13 +175,6 @@ def build_canonical_login(*, tokens: dict, profile: dict) -> str:
         },
     }
     return _json.dumps(payload)
-
-
-import logging
-
-from app.cloud.plugin_host import PluginHost, PluginHostError
-
-logger = logging.getLogger("bambu.cloud.auth")
 
 
 class LoginFailed(RuntimeError):

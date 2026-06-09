@@ -18,7 +18,10 @@ from pathlib import Path
 
 import httpx
 
-from app.cloud import BAMBU_NETWORK_AGENT_VERSION, BAMBU_STUDIO_USER_AGENT
+from app.cloud import (
+    BAMBU_NETWORK_AGENT_VERSION,
+    bambu_studio_headers,
+)
 
 logger = logging.getLogger("bambu.cloud.downloader")
 
@@ -103,18 +106,12 @@ def validate_sha256(path: Path, expected_hex: str) -> None:
     """Confirm that ``path`` hashes to ``expected_hex`` under SHA-256.
 
     Raises :class:`IntegrityError` on mismatch or if the file cannot be read.
-    Reads in 1 MiB chunks so the plugin (often 10+ MiB) doesn't load entirely
-    into memory.
     """
     try:
-        h = hashlib.sha256()
-        with path.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                h.update(chunk)
+        actual = _hex_sha256_of_file(path)
     except OSError as exc:
         raise IntegrityError(f"cannot read {path}: {exc}") from exc
 
-    actual = h.hexdigest()
     if actual.lower() != expected_hex.lower():
         raise IntegrityError(
             f"SHA-256 mismatch for {path.name}: "
@@ -203,23 +200,6 @@ _LISTING_PATH = "/v1/iot-service/api/slicer/resource"
 _NETWORK_SO = "libbambu_networking.so"
 _SOURCE_SO = "libBambuSource.so"
 _MANIFEST_FILE = "linux_payload_manifest.json"
-
-
-def bambu_studio_headers() -> dict[str, str]:
-    """Headers that brand the request as a Linux build of Bambu Studio.
-
-    Required by Bambu's CDN to serve the proprietary plugin payload.
-    Identity must match :data:`BAMBU_NETWORK_AGENT_VERSION`; ``X-BBL-OS-Type:
-    linux`` is load-bearing on every host (even when called from a Linux
-    container) because it selects which prebuilt binary the CDN serves.
-    """
-    return {
-        "User-Agent": BAMBU_STUDIO_USER_AGENT,
-        "X-BBL-Client-Type": "slicer",
-        "X-BBL-Client-Name": "BambuStudio",
-        "X-BBL-Client-Version": BAMBU_NETWORK_AGENT_VERSION,
-        "X-BBL-OS-Type": "linux",
-    }
 
 
 class ListingParseError(ValueError):
