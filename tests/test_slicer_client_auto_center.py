@@ -111,11 +111,16 @@ async def test_auto_center_false_when_inspect_has_no_authored_printer():
 
 
 @pytest.mark.asyncio
-async def test_auto_center_false_when_machine_lookup_fails():
-    """Slicer's /profiles/machines/{id} returns non-200 → can't compare
-    target name to authored, so fall through to authored placement.
-    Best-effort probe: a transient 503 must not flip the slice into
-    auto-center mode and silently move the user's model."""
+async def test_auto_center_true_when_target_unresolved_but_authored_known():
+    """Slicer's /profiles/machines/{id} stays non-200 after retries → we
+    can't confirm the target is the SAME printer as the authored one.
+
+    Reverses the earlier "fall through to False" rule: leaving a
+    cross-printer retarget off-plate (a hard, filament-wasting failure)
+    is worse than recentering a model that happened to be on the same
+    printer (a benign shift). When the project's authored printer IS
+    known but the target name can't be resolved, default to centering.
+    Regression for the Flycatraz P2S→A1-mini off-plate preview."""
 
     def _handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/inspect"):
@@ -132,4 +137,29 @@ async def test_auto_center_false_when_machine_lookup_fails():
         filament_profiles=["Bambu PLA Basic @BBL A1M"],
         plate=1,
     )
-    assert body["auto_center"] is False
+    assert body["auto_center"] is True
+
+
+@pytest.mark.asyncio
+async def test_auto_center_retries_transient_machine_lookup_failure():
+    """A single transient 503 on the machine-name probe must not decide
+    the placement: the probe retries and the second attempt resolves the
+    name, so the real authored-vs-target comparison runs (P2S != A1 mini
+    → True) instead of falling through on the blip."""
+
+    attempts = {"n": 0}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/inspect"):
+            return _inspect_response("Bambu Lab P2S 0.4 nozzle")
+        if "/profiles/machines/" in request.url.path:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                return httpx.Response(503)
+            return _machine_response("Bambu Lab A1 mini 0.4 nozzle")
+        return httpx.Response(404)
+
+    client = SlicerClient("http://test", transport=httpx.MockTransport(_handler))
+    name = await client._machine_display_name("GM020")
+    assert name == "Bambu Lab A1 mini 0.4 nozzle"
+    assert attempts["n"] == 2  # failed once, then succeeded

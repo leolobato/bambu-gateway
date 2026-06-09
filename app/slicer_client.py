@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -485,44 +486,91 @@ class SlicerClient:
         input_token: str,
         machine_profile: str,
     ) -> bool:
-        """Return True when the project was authored for a different printer.
+        """Return True when the project should be recentered on the target bed.
 
         Headless-only behaviour: the GUI has no equivalent runtime flag
         because a human visually adjusts placement after a printer
         change. For headless retargets, compare the project's authored
         ``printer_settings_id`` (a display name) to the target machine's
         display name and request auto-centering when they differ.
-        Best-effort — any upstream error falls through to ``False`` so a
-        single bad probe can't break otherwise-valid slices.
+
+        Fallback policy (the decision is logged so it can be audited):
+        - No machine / unreadable project / no authored printer → ``False``.
+          These aren't "retargets" we can reason about, so keep the
+          authored placement.
+        - Authored printer IS known but the target name can't be resolved
+          even after retries → ``True``. We can't confirm it's the SAME
+          printer, and leaving a cross-printer retarget off-plate is a
+          hard, filament-wasting failure; a benign recenter is the safer
+          default. (Earlier this fell through to ``False`` and silently
+          produced off-plate slices — the Flycatraz P2S→A1-mini case.)
         """
         if not machine_profile:
             return False
         try:
             insp = await self.inspect(input_token)
-        except SlicingError:
+        except SlicingError as e:
+            logger.warning(
+                "auto-center: could not inspect %s (%s); keeping authored placement",
+                input_token, e,
+            )
             return False
         authored_name = str(insp.get("printer_settings_id") or "").strip()
         if not authored_name:
+            logger.debug(
+                "auto-center: no authored printer_settings_id for %s; "
+                "keeping authored placement", input_token,
+            )
             return False
         target_name = await self._machine_display_name(machine_profile)
         if not target_name:
-            return False
-        return authored_name != target_name
+            logger.warning(
+                "auto-center: target name for %s unresolved; authored=%r → "
+                "defaulting to recenter so a cross-printer retarget isn't "
+                "left off-plate", machine_profile, authored_name,
+            )
+            return True
+        decision = authored_name != target_name
+        logger.info(
+            "auto-center: authored=%r target=%r (%s) → %s",
+            authored_name, target_name, machine_profile, decision,
+        )
+        return decision
 
-    async def _machine_display_name(self, machine_profile: str) -> str:
-        """Fetch the target machine's display name. Empty on any error."""
+    async def _machine_display_name(
+        self, machine_profile: str, *, attempts: int = 3,
+    ) -> str:
+        """Fetch the target machine's display name. Empty on persistent error.
+
+        Retries transient failures (network error / non-200) with a short
+        backoff: the orcaslicer-headless serializes all slices behind a
+        single semaphore, so this probe can momentarily lose the race
+        against an in-flight slice. A single blip must not be allowed to
+        decide placement — see ``_should_auto_center_for_machine``.
+        """
         url = f"{self._base_url}/profiles/machines/{machine_profile}"
-        try:
-            async with httpx.AsyncClient(timeout=10.0, transport=self._transport) as client:
-                resp = await client.get(url)
-        except httpx.HTTPError:
-            return ""
-        if resp.status_code != 200:
-            return ""
-        try:
-            return str(resp.json().get("name") or "").strip()
-        except (ValueError, TypeError):
-            return ""
+        last = "no attempt made"
+        for attempt in range(attempts):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=10.0, transport=self._transport,
+                ) as client:
+                    resp = await client.get(url)
+                if resp.status_code == 200:
+                    try:
+                        return str(resp.json().get("name") or "").strip()
+                    except (ValueError, TypeError):
+                        return ""
+                last = f"HTTP {resp.status_code}"
+            except httpx.HTTPError as e:
+                last = str(e)
+            if attempt + 1 < attempts:
+                await asyncio.sleep(0.25 * (attempt + 1))
+        logger.warning(
+            "auto-center: machine-name probe for %s failed after %d attempts (%s)",
+            machine_profile, attempts, last,
+        )
+        return ""
 
     async def _resolve_carryover_filaments(
         self,
