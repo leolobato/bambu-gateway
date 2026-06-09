@@ -106,6 +106,22 @@ def build_ams_start_drying_command(
     }
 
 
+def build_light_command(on: bool, node: str = "chamber_light") -> dict:
+    """Return the JSON envelope for toggling an LED node via `system.ledctrl`."""
+    return {
+        "system": {
+            "sequence_id": "0",
+            "command": "ledctrl",
+            "led_node": node,
+            "led_mode": "on" if on else "off",
+            "led_on_time": 500,
+            "led_off_time": 500,
+            "loop_times": 0,
+            "interval_time": 0,
+        }
+    }
+
+
 def build_ams_stop_drying_command(ams_id: int) -> dict:
     """Return the JSON envelope for stopping AMS filament drying."""
     return {
@@ -481,18 +497,7 @@ class BambuMQTTClient:
 
     def send_chamber_light(self, on: bool, node: str = "chamber_light") -> None:
         """Toggle an LED node (chamber light by default) via `system.ledctrl`."""
-        self.publish({
-            "system": {
-                "sequence_id": "0",
-                "command": "ledctrl",
-                "led_node": node,
-                "led_mode": "on" if on else "off",
-                "led_on_time": 500,
-                "led_off_time": 500,
-                "loop_times": 0,
-                "interval_time": 0,
-            }
-        })
+        self.publish(build_light_command(on, node=node))
 
     @property
     def chamber_light_on(self) -> bool | None:

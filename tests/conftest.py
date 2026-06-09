@@ -76,7 +76,8 @@ def cloud_app_factory(monkeypatch, tmp_path):
 
     @contextmanager
     def factory(*, printers: list[dict] | None = None,
-                fake_env: dict[str, str] | None = None):
+                fake_env: dict[str, str] | None = None,
+                download_error: Exception | None = None):
         # Seed printers.json explicitly (an empty file also blocks env-var seeding).
         data_dir = tmp_path / "data"
         data_dir.mkdir(exist_ok=True)
@@ -112,7 +113,9 @@ def cloud_app_factory(monkeypatch, tmp_path):
         with (
             patch(
                 "app.cloud.plugin_downloader.PluginDownloader.ensure_active",
-                new=AsyncMock(return_value=None),
+                new=AsyncMock(
+                    return_value=None, side_effect=download_error,
+                ),
             ),
             patch("app.printer_service.PrinterService.start", new=MagicMock()),
             patch("app.main.PluginHost", _AlreadyOpenHost),

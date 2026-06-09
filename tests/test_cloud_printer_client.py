@@ -97,3 +97,39 @@ async def test_cloud_printer_client_stays_offline_on_garbage_payload():
         "payload": "not json",
     })
     assert client.get_status().online is False
+
+
+async def test_cloud_printer_client_fires_status_change_callback():
+    """Cloud printers must feed the NotificationHub like LAN printers do,
+    or push notifications / Live Activities never fire for them."""
+    client = CloudPrinterClient(dev_id="DEV1", name="Test Printer")
+    calls: list[tuple] = []
+    client.set_status_change_callback(lambda prev, new: calls.append((prev, new)))
+
+    await client.handle_event({
+        "kind": "OnMessage",
+        "dev_id": "DEV1",
+        "payload": json.dumps({"print": {"gcode_state": "RUNNING"}}),
+    })
+
+    assert len(calls) == 1
+    prev, new = calls[0]
+    assert prev.online is False
+    assert new.online is True
+    assert new.state in (PrinterState.printing, PrinterState.preparing)
+
+
+async def test_cloud_printer_client_callback_errors_are_swallowed():
+    client = CloudPrinterClient(dev_id="DEV1")
+
+    def boom(prev, new):
+        raise RuntimeError("hub exploded")
+
+    client.set_status_change_callback(boom)
+    # Must not raise.
+    await client.handle_event({
+        "kind": "OnMessage",
+        "dev_id": "DEV1",
+        "payload": json.dumps({"print": {"gcode_state": "RUNNING"}}),
+    })
+    assert client.get_status().online is True

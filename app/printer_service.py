@@ -101,6 +101,9 @@ class PrinterService:
         """
         self._cloud_clients = cloud_clients
         self._cloud_host = host
+        if self._status_change_callback is not None:
+            for client in cloud_clients.values():
+                client.set_status_change_callback(self._status_change_callback)
 
     def get_cloud_client(self, printer_id: str):
         """Return the CloudPrinterClient for a printer, or None."""
@@ -205,9 +208,14 @@ class PrinterService:
             existing = self._cloud_clients.get(serial)
             if existing is None:
                 logger.info("Adding cloud printer %s", serial)
-                self._cloud_clients[serial] = CloudPrinterClient(
+                client = CloudPrinterClient(
                     dev_id=serial, name=display, host=self._cloud_host,
                 )
+                if self._status_change_callback is not None:
+                    client.set_status_change_callback(
+                        self._status_change_callback
+                    )
+                self._cloud_clients[serial] = client
             else:
                 existing.set_name(display)
 

@@ -39,6 +39,9 @@ class CloudPrinterClient:
         # (lifespan) or via attach_host so call sites don't have to thread
         # (host, client) pairs around.
         self._host = host
+        # Fires (prev, new) snapshots on every applied report — feeds the
+        # NotificationHub exactly like BambuMQTTClient._update_status does.
+        self._status_change_callback = None
 
     @property
     def serial(self) -> str:
@@ -63,6 +66,11 @@ class CloudPrinterClient:
         with self._lock:
             self._status.name = name
 
+    def set_status_change_callback(self, callback) -> None:
+        """Register a ``(prev, new)`` snapshot callback — same contract as
+        :meth:`BambuMQTTClient.set_status_change_callback`."""
+        self._status_change_callback = callback
+
     async def handle_event(self, event: dict) -> None:
         """Dispatch an EventPump event for this device.
 
@@ -86,6 +94,7 @@ class CloudPrinterClient:
             return
 
         with self._lock:
+            prev_snapshot = self._status.model_copy(deep=True)
             # Receiving cloud reports is this transport's notion of liveness —
             # the UI hides all controls for printers with online == False.
             self._status.online = True
@@ -94,6 +103,14 @@ class CloudPrinterClient:
                 print_info,
                 gcode_state=self._gcode_state,
             )
+            new_snapshot = self._status.model_copy(deep=True)
+
+        callback = self._status_change_callback
+        if callback is not None:
+            try:
+                callback(prev_snapshot, new_snapshot)
+            except Exception:
+                logger.exception("Status change callback raised")
 
     async def handle_update_status(self, event: dict) -> None:
         """OnUpdateStatus event handler — dispatched from the EventPump."""

@@ -84,6 +84,7 @@ from app.mqtt_client import (
     build_ams_start_drying_command,
     build_ams_stop_drying_command,
     build_cancel_command,
+    build_light_command,
     build_pause_command,
     build_resume_command,
     build_speed_command,
@@ -232,6 +233,107 @@ def _code_fingerprint() -> str:
     return h.hexdigest()[:12]
 
 
+async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
+    """Download the plugin, start the C++ host, wire events, connect.
+
+    Returns True when the cloud subsystem is fully up. Raises on failure —
+    the lifespan catches and degrades to LAN-only mode.
+    """
+    async with httpx.AsyncClient(
+        base_url=_bambu_cdn_base_url(settings.bambu_cloud_region),
+        timeout=30.0,
+    ) as cdn_client:
+        downloader = PluginDownloader(
+            plugin_dir=settings.bambu_cloud_plugin_dir,
+            client=cdn_client,
+        )
+        await downloader.ensure_active()
+
+    active_dir = settings.bambu_cloud_plugin_dir / "active"
+    host = PluginHost(
+        cmd=[str(settings.bambu_cloud_host_binary)],
+        env={
+            "PJARCZAK_BAMBU_PLUGIN_DIR": str(active_dir),
+            "PJARCZAK_BAMBU_NETWORK_SO": str(
+                active_dir / "libbambu_networking.so"
+            ),
+            "PJARCZAK_BAMBU_SOURCE_SO": str(
+                active_dir / "libBambuSource.so"
+            ),
+            "BAMBU_CLOUD_REGION": settings.bambu_cloud_region,
+        },
+    )
+    await stack.enter_async_context(host)
+    boot = await host.call("init_plugin", {})
+    if boot.get("bootstrap_rc", -1) != 0:
+        raise RuntimeError(f"Bambu plugin bootstrap failed: {boot}")
+    app.state.cloud_host = host
+    logger.info("Bambu plugin host ready")
+
+    # One CloudPrinterClient per configured printer, keyed by serial.
+    cloud_clients: dict[str, CloudPrinterClient] = {
+        cfg.serial: CloudPrinterClient(
+            dev_id=cfg.serial,
+            name=cfg.name or f"Printer {cfg.serial[-4:]}",
+            host=host,
+        )
+        for cfg in configs
+    }
+    app.state.cloud_printers = cloud_clients
+
+    async def _on_message(event: dict) -> None:
+        dev_id = event.get("dev_id")
+        client = cloud_clients.get(dev_id)
+        if client is not None:
+            await client.handle_event(event)
+
+    async def _on_update_status(event: dict) -> None:
+        # The host stamps every OnUpdateStatus frame with the dev_id of the
+        # job that produced it. The in-flight fallback only covers frames
+        # from older host binaries that predate the stamp.
+        dev_id = event.get("dev_id")
+        if dev_id:
+            client = cloud_clients.get(dev_id)
+            if client is not None:
+                await client.handle_update_status(event)
+            return
+        for client in cloud_clients.values():
+            if client._progress is not None:
+                await client.handle_update_status(event)
+                return
+
+    pump = EventPump(host=host, handlers={
+        "OnMessage": _on_message,
+        "OnUpdateStatus": _on_update_status,
+    })
+    await pump.start()
+    app.state.cloud_event_pump = pump
+    stack.push_async_callback(pump.stop)
+
+    # Connect the plugin's cloud MQTT relay and subscribe the printer
+    # serials. Exposed on app.state so the login route can re-run it
+    # the moment a session appears (without it no event ever arrives).
+    async def _cloud_connect() -> bool:
+        # config_store is the durable source of truth, so this picks
+        # up printers added via the settings CRUD since startup.
+        serials = [c.serial for c in config_store.load()]
+        return await establish_session(host=host, dev_ids=serials)
+
+    app.state.cloud_connect = _cloud_connect
+
+    if await cloud_auth.is_signed_in(host=host):
+        if await _cloud_connect():
+            logger.info("Bambu cloud session established")
+        else:
+            logger.warning(
+                "Bambu cloud session could not be established; "
+                "printer status will be unavailable until re-login"
+            )
+    else:
+        logger.info("Bambu cloud: no user signed in — waiting for login")
+    return True
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global printer_service, slicer_client, slice_jobs
@@ -247,107 +349,26 @@ async def lifespan(app: FastAPI):
         # Cloud plugin: download before LAN-mode startup so the plugin is on
         # disk before any printer connection is attempted.  Then start the C++
         # host subprocess and keep it alive for the entire lifespan.
+        #
+        # Any failure here (CDN unreachable on first boot, bad checksum,
+        # plugin bootstrap error) must NOT take the gateway down — we fall
+        # back to LAN mode and cloud endpoints return 503 until restart.
+        app.state.cloud_host = None
+        app.state.cloud_printers = None
+        app.state.cloud_connect = None
+        app.state.cloud_event_pump = None
+        cloud_active = False
         if settings.bambu_cloud_enabled:
-            async with httpx.AsyncClient(
-                base_url=_bambu_cdn_base_url(settings.bambu_cloud_region),
-                timeout=30.0,
-            ) as cdn_client:
-                downloader = PluginDownloader(
-                    plugin_dir=settings.bambu_cloud_plugin_dir,
-                    client=cdn_client,
+            try:
+                cloud_active = await _start_cloud(app, stack, configs)
+            except Exception:
+                logger.exception(
+                    "Bambu cloud startup failed — continuing in LAN-only "
+                    "mode; cloud endpoints will return 503 until restart"
                 )
-                try:
-                    await downloader.ensure_active()
-                except Exception as exc:
-                    logger.error("Bambu cloud plugin startup failed: %s", exc)
-                    raise
-
-            active_dir = settings.bambu_cloud_plugin_dir / "active"
-            host = PluginHost(
-                cmd=[str(settings.bambu_cloud_host_binary)],
-                env={
-                    "PJARCZAK_BAMBU_PLUGIN_DIR": str(active_dir),
-                    "PJARCZAK_BAMBU_NETWORK_SO": str(
-                        active_dir / "libbambu_networking.so"
-                    ),
-                    "PJARCZAK_BAMBU_SOURCE_SO": str(
-                        active_dir / "libBambuSource.so"
-                    ),
-                    "BAMBU_CLOUD_REGION": settings.bambu_cloud_region,
-                },
-            )
-            await stack.enter_async_context(host)
-            boot = await host.call("init_plugin", {})
-            if boot.get("bootstrap_rc", -1) != 0:
-                raise RuntimeError(f"Bambu plugin bootstrap failed: {boot}")
-            app.state.cloud_host = host
-            logger.info("Bambu plugin host ready")
-
-            # One CloudPrinterClient per configured printer, keyed by serial.
-            cloud_clients: dict[str, CloudPrinterClient] = {
-                cfg.serial: CloudPrinterClient(
-                    dev_id=cfg.serial,
-                    name=cfg.name or f"Printer {cfg.serial[-4:]}",
-                    host=host,
-                )
-                for cfg in configs
-            }
-            app.state.cloud_printers = cloud_clients
-
-            async def _on_message(event: dict) -> None:
-                dev_id = event.get("dev_id")
-                client = cloud_clients.get(dev_id)
-                if client is not None:
-                    await client.handle_event(event)
-
-            async def _on_update_status(event: dict) -> None:
-                # OnUpdateStatus is per-printer if events carry dev_id; otherwise
-                # it belongs to whichever printer has an active submit_print. For
-                # v1 we rely on the per-printer single-in-flight invariant: route
-                # to WHICHEVER client currently has self._progress != None.
-                dev_id = event.get("dev_id")
-                if dev_id:
-                    client = cloud_clients.get(dev_id)
-                    if client is not None:
-                        await client.handle_update_status(event)
-                    return
-                for client in cloud_clients.values():
-                    if client._progress is not None:
-                        await client.handle_update_status(event)
-                        return
-
-            pump = EventPump(host=host, handlers={
-                "OnMessage": _on_message,
-                "OnUpdateStatus": _on_update_status,
-            })
-            await pump.start()
-            app.state.cloud_event_pump = pump
-            stack.push_async_callback(pump.stop)
-
-            # Connect the plugin's cloud MQTT relay and subscribe the printer
-            # serials. Exposed on app.state so the login route can re-run it
-            # the moment a session appears (without it no event ever arrives).
-            async def _cloud_connect() -> bool:
-                # config_store is the durable source of truth, so this picks
-                # up printers added via the settings CRUD since startup.
-                serials = [c.serial for c in config_store.load()]
-                return await establish_session(host=host, dev_ids=serials)
-
-            app.state.cloud_connect = _cloud_connect
-
-            if await cloud_auth.is_signed_in(host=host):
-                if await _cloud_connect():
-                    logger.info("Bambu cloud session established")
-                else:
-                    logger.warning(
-                        "Bambu cloud session could not be established; "
-                        "printer status will be unavailable until re-login"
-                    )
-            else:
-                logger.info(
-                    "Bambu cloud: no user signed in — waiting for login"
-                )
-
+                app.state.cloud_host = None
+                app.state.cloud_printers = None
+                app.state.cloud_connect = None
         # Device registry + APNs
         device_store_path = config_store._config_path.parent / "devices.json"
         device_store = DeviceStore(device_store_path)
@@ -387,14 +408,14 @@ async def lifespan(app: FastAPI):
         printer_service = PrinterService(
             configs,
             status_change_callback=status_change_callback,
-            cloud_mode=settings.bambu_cloud_enabled,
+            cloud_mode=cloud_active,
         )
         printer_service.start()
         # Surface cloud printers through the existing list/status API.
-        if settings.bambu_cloud_enabled and hasattr(app.state, "cloud_printers"):
+        if cloud_active and app.state.cloud_printers is not None:
             printer_service.set_cloud_printers(
                 app.state.cloud_printers,
-                host=getattr(app.state, "cloud_host", None),
+                host=app.state.cloud_host,
             )
         if notification_hub is not None:
             notification_hub.set_printer_service(printer_service)
@@ -717,15 +738,13 @@ async def set_print_speed(printer_id: str, body: SpeedRequest):
 
 @app.post("/api/printers/{printer_id}/light", response_model=CommandResponse)
 async def set_printer_light(printer_id: str, body: LightRequest):
-    pid = _resolve_printer_id(printer_id)
-    try:
-        printer_service.set_chamber_light(pid, body.on, node=body.node)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ConnectionError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    return CommandResponse(
-        printer_id=pid, command=f"light:{body.node}:{'on' if body.on else 'off'}",
+    return await _run_control_command(
+        printer_id,
+        f"light:{body.node}:{'on' if body.on else 'off'}",
+        build_light_command(body.on, node=body.node),
+        lan_action=lambda pid: printer_service.set_chamber_light(
+            pid, body.on, node=body.node,
+        ),
     )
 
 
@@ -2239,6 +2258,26 @@ async def list_printer_configs():
     )
 
 
+async def _resubscribe_cloud_printers() -> None:
+    """Refresh the plugin's device subscription after printer CRUD.
+
+    add_subscribe is additive/idempotent on the plugin side, so the full
+    serial list is sent every time. Best-effort: a host hiccup must not
+    fail the settings request — the printer just stays silent until the
+    next (re)connect.
+    """
+    host = getattr(app.state, "cloud_host", None)
+    if host is None:
+        return
+    from app.cloud.session import subscribe_printers
+
+    serials = [c.serial for c in printer_service.get_configs()]
+    try:
+        await subscribe_printers(host=host, dev_ids=serials)
+    except PluginHostError as exc:
+        logger.warning("cloud re-subscribe after printer CRUD failed: %s", exc)
+
+
 @app.post("/api/settings/printers", response_model=PrinterConfigResponse,
           status_code=201)
 async def add_printer_config(body: PrinterConfigInput):
@@ -2260,6 +2299,7 @@ async def add_printer_config(body: PrinterConfigInput):
     configs = printer_service.get_configs() + [cfg]
     config_store.save(configs)
     printer_service.sync_printers(configs)
+    await _resubscribe_cloud_printers()
     return _config_to_response(cfg)
 
 
@@ -2281,6 +2321,7 @@ async def update_printer_config(serial: str, body: PrinterConfigInput):
     new_configs = [updated if c.serial == serial else c for c in configs]
     config_store.save(new_configs)
     printer_service.sync_printers(new_configs)
+    await _resubscribe_cloud_printers()
     return _config_to_response(updated)
 
 
@@ -2292,6 +2333,7 @@ async def delete_printer_config(serial: str):
         raise HTTPException(status_code=404, detail="Printer not found")
     config_store.save(new_configs)
     printer_service.sync_printers(new_configs)
+    await _resubscribe_cloud_printers()
 
 
 # --- Async slice jobs ---
