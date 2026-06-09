@@ -51,6 +51,13 @@ COPY app/ app/
 # Overlay the frontend build output from stage 1
 COPY --from=web-builder /app/static/dist /app/app/static/dist
 
+# Optional: stamp the git SHA at build time so it shows in the startup log
+# (`--build-arg GATEWAY_GIT_SHA=$(git rev-parse --short HEAD)`). When unset,
+# the log still carries a runtime code fingerprint, so the version is always
+# identifiable. Last so it never busts the dependency-install cache layer.
+ARG GATEWAY_GIT_SHA=""
+ENV GATEWAY_GIT_SHA=${GATEWAY_GIT_SHA}
+
 VOLUME /data
 
 EXPOSE 4844

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
+import os
 import re
 from contextlib import asynccontextmanager, AsyncExitStack
 from pathlib import Path
@@ -208,9 +210,35 @@ def _slice_job_to_response(job) -> SliceJobResponse:
 
 
 
+def _code_fingerprint() -> str:
+    """Short hash of the running app source.
+
+    Changes whenever any ``app/**/*.py`` changes, independent of how the
+    image was built — so the startup log always reveals exactly which code
+    is live, even when no git SHA was baked in at build time. Reproduce
+    locally to map it to a commit:
+
+        python -c "from app.main import _code_fingerprint as f; print(f())"
+    """
+    root = Path(__file__).resolve().parent  # the app/ package dir
+    h = hashlib.sha256()
+    for p in sorted(root.rglob("*.py")):
+        h.update(p.relative_to(root).as_posix().encode())
+        h.update(b"\0")
+        h.update(p.read_bytes())
+        h.update(b"\0")
+    return h.hexdigest()[:12]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global printer_service, slicer_client, slice_jobs
+    logger.info(
+        "Bambu Gateway starting — version=%s sha=%s code=%s",
+        app.version,
+        os.getenv("GATEWAY_GIT_SHA", "").strip() or "n/a",
+        _code_fingerprint(),
+    )
     configs = config_store.load()
 
     async with AsyncExitStack() as stack:
