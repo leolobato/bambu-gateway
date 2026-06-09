@@ -197,13 +197,14 @@ json method_start_print(const json& p) {
   pp.task_ext_change_assist    = boo("task_ext_change_assist",    false);
   pp.try_emmc_print            = boo("try_emmc_print",            false);
 
-  // start_print now returns 0 (launched) or -98 (already in flight).
+  // start_print returns 0 (worker launched), -98 (already in flight) or
+  // -1 (agent not bootstrapped).  Any non-zero rc means NO worker was
+  // spawned and no OnUpdateStatus frame will ever arrive — it must reach
+  // the caller verbatim or Python waits on the progress queue forever.
   int rc = loader().start_print(std::move(pp));
-  if (rc == -98) {
-    return {{"rc", -98}, {"in_flight", false},
-            {"error", "another job in flight"}};
+  if (rc != 0) {
+    return {{"rc", rc}, {"in_flight", false}};
   }
-  // rc == 0 means the worker was spawned; the job is now running in the background.
   return {{"rc", 0}, {"in_flight", true}};
 }
 

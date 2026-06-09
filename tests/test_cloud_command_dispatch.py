@@ -78,62 +78,18 @@ async def test_send_command_passes_qos(tmp_path):
 
 
 @pytest.fixture
-def cloud_control_app(monkeypatch, tmp_path):
-    """TestClient with cloud mode enabled and a cloud printer registered."""
-    import app.main as main_mod
+def cloud_control_app(cloud_app_factory):
+    """TestClient with cloud mode enabled and a cloud printer registered.
 
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(main_mod.settings, "bambu_cloud_enabled", True)
-    monkeypatch.setattr(main_mod.settings, "bambu_cloud_plugin_dir", tmp_path)
-    monkeypatch.setattr(main_mod.settings, "bambu_cloud_region", "US")
-    monkeypatch.setattr(
-        main_mod.settings,
-        "bambu_cloud_host_binary",
-        tmp_path / "ignored",
-    )
-
-    from app.cloud.plugin_host import PluginHost
-    from fastapi.testclient import TestClient
-
-    real_host_holder: list = []
-
-    class _AlreadyOpenHost:
-        def __init__(self, *_, **__): pass
-
-        async def __aenter__(self):
-            host = PluginHost(
-                cmd=[sys.executable, str(FAKE_HOST)],
-                env={},
-            )
-            await host.start()
-            real_host_holder.append(host)
-            return self
-
-        async def __aexit__(self, *_):
-            if real_host_holder:
-                await real_host_holder[0].stop()
-
-        async def call(self, method, params):
-            return await real_host_holder[0].call(method, params)
-
-    with (
-        patch(
-            "app.cloud.plugin_downloader.PluginDownloader.ensure_active",
-            new=AsyncMock(return_value=None),
-        ),
-        patch("app.printer_service.PrinterService.start", new=MagicMock()),
-        patch("app.main.PluginHost", _AlreadyOpenHost),
-    ):
-        with TestClient(main_mod.app) as client:
-            # Register a cloud printer so both _get_cloud_client (reads
-            # app.state.cloud_printers) and PrinterService (reads
-            # _cloud_clients) can find DEV1.
-            from app.cloud.cloud_printer import CloudPrinterClient as CPC
-            cloud_client = CPC(dev_id="DEV1", name="Cloud Printer")
-            cloud_map = {"DEV1": cloud_client}
-            main_mod.app.state.cloud_printers = cloud_map
-            main_mod.printer_service.set_cloud_printers(cloud_map)
-            yield client
+    Uses the real lifespan, so DEV1's CloudPrinterClient is created exactly
+    the way production creates it (host attached, registered in both
+    app.state.cloud_printers and PrinterService).
+    """
+    with cloud_app_factory(
+        printers=[{"serial": "DEV1", "ip": "10.0.0.9"}],
+        fake_env={},
+    ) as client:
+        yield client
 
 
 def test_pause_route_dispatches_to_cloud_when_cloud_mode_on(cloud_control_app):

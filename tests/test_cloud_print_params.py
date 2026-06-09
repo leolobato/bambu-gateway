@@ -35,12 +35,15 @@ def test_build_print_params_with_ams_mapping():
         project_name="multi-color",
         plate_index=2,
         gcode_3mf_path="/tmp/job.3mf",
-        ams_mapping={"0": "PLA_BLUE", "1": "PLA_RED"},
+        ams_mapping=[1, 0],
         use_ams=True,
     )
     assert p["task_use_ams"] is True
-    # AMS mapping is JSON-string per Phase 0 spec §7.3.
-    assert json.loads(p["ams_mapping"]) == {"0": "PLA_BLUE", "1": "PLA_RED"}
+    # The plugin expects the same JSON int array OrcaSlicer sends
+    # (SelectMachine.cpp builds `json::array()` of tray ids) and the LAN
+    # MQTT path uses — a dict shape is silently ignored by the printer.
+    assert p["ams_mapping"] == "[1, 0]"
+    assert json.loads(p["ams_mapping"]) == [1, 0]
 
 
 def test_build_print_params_rejects_missing_dev_id():

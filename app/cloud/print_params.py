@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from typing import Mapping
+from typing import Sequence
 
 
 def build_print_params(
@@ -11,7 +11,7 @@ def build_print_params(
     project_name: str,
     plate_index: int,
     gcode_3mf_path: str,
-    ams_mapping: Mapping[str, str] | None,
+    ams_mapping: Sequence[int] | None,
     use_ams: bool,
     preset_name: str = "",
 ) -> dict:
@@ -34,8 +34,10 @@ def build_print_params(
         "filename": gcode_3mf_path,
         "config_filename": "",  # v1: gcode-3MF only
         "plate_index": plate_index,
-        # AMS
-        "ams_mapping": json.dumps(ams_mapping) if ams_mapping else "",
+        # AMS — a JSON int array of tray ids, exactly what OrcaSlicer's cloud
+        # send path produces (SelectMachine.cpp builds json::array()) and what
+        # the LAN MQTT path publishes. Dict shapes are ignored by the printer.
+        "ams_mapping": json.dumps(list(ams_mapping)) if ams_mapping else "",
         "ams_mapping2": "",
         "ams_mapping_info": "",
         "nozzles_info": "",

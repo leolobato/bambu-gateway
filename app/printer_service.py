@@ -71,6 +71,7 @@ class PrinterService:
         self._proxies: dict[str, CameraProxy] = {}
         self._status_change_callback = status_change_callback
         self._cloud_mode = cloud_mode
+        self._cloud_host = None
         # Cloud printer clients keyed by serial. Set via set_cloud_printers()
         # after the EventPump is wired up; None until then.
         self._cloud_clients: dict[str, "CloudPrinterClient"] | None = None  # type: ignore[name-defined]
@@ -87,15 +88,23 @@ class PrinterService:
                 client.set_status_change_callback(status_change_callback)
             self._clients[cfg.serial] = client
 
-    def set_cloud_printers(self, cloud_clients: dict) -> None:
+    def set_cloud_printers(self, cloud_clients: dict, host=None) -> None:
         """Register cloud printer clients so they appear in list/status results.
 
         Called from the lifespan after CloudPrinterClient instances are created.
         ``cloud_clients`` is a ``dict[serial, CloudPrinterClient]``. The dict
         object is shared with ``app.state.cloud_printers`` and the EventPump
         handler closures, so :meth:`sync_printers` mutates it in place.
+
+        ``host`` is the active PluginHost, attached to clients created later
+        by :meth:`_sync_cloud_printers`.
         """
         self._cloud_clients = cloud_clients
+        self._cloud_host = host
+
+    def get_cloud_client(self, printer_id: str):
+        """Return the CloudPrinterClient for a printer, or None."""
+        return (self._cloud_clients or {}).get(printer_id)
 
     def start(self) -> None:
         """Initialize printer service without opening MQTT connections."""
@@ -197,7 +206,7 @@ class PrinterService:
             if existing is None:
                 logger.info("Adding cloud printer %s", serial)
                 self._cloud_clients[serial] = CloudPrinterClient(
-                    dev_id=serial, name=display,
+                    dev_id=serial, name=display, host=self._cloud_host,
                 )
             else:
                 existing.set_name(display)
@@ -317,35 +326,6 @@ class PrinterService:
         if client is None:
             return None
         return await client.get_ams_info_async(wait_timeout=wait_timeout)
-
-    async def _dispatch_command(
-        self,
-        printer_id: str,
-        envelope: dict,
-        *,
-        host=None,
-    ) -> int:
-        """Send ``envelope`` to the printer over whichever transport applies.
-
-        - Cloud path: calls ``CloudPrinterClient.send_command`` via the plugin host
-          and returns the plugin rc (0 = success, negative = error).
-        - LAN path: calls ``BambuMQTTClient.publish`` and returns 0.
-
-        :param printer_id: Printer serial number.
-        :param envelope: Command dict as returned by a ``build_<command>`` builder.
-        :param host: :class:`~app.cloud.plugin_host.PluginHost` instance.  Required
-            when a cloud client is registered for the printer; ignored on the LAN path.
-        :raises ValueError: if the printer is not found in either client dict.
-        """
-        cloud_client = (self._cloud_clients or {}).get(printer_id)
-        if cloud_client is not None:
-            return await cloud_client.send_command(host=host, envelope=envelope)
-        # LAN path
-        lan_client = self._clients.get(printer_id)
-        if lan_client is None:
-            raise ValueError(f"Printer {printer_id} not found")
-        lan_client.publish(envelope)
-        return 0
 
     def pause_print(self, printer_id: str) -> None:
         """Pause the current print on the given printer."""

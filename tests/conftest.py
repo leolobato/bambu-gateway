@@ -38,6 +38,7 @@ def fake_slicer():
 def fake_printer_service():
     """Return a MagicMock PrinterService with sensible defaults."""
     svc = MagicMock()
+    svc.get_cloud_client.return_value = None
     svc.default_printer_id.return_value = "PRINTER1"
     return svc
 

@@ -332,6 +332,7 @@ async def test_auto_print_uploads_when_printer_idle(tmp_jobs_dir: Path):
 
     submit_calls = []
     printer_service = MagicMock()
+    printer_service.get_cloud_client.return_value = None
 
     def fake_submit(printer_id, file_data, filename, **kwargs):
         submit_calls.append((printer_id, filename, len(file_data), kwargs.get("plate_id")))
@@ -386,6 +387,7 @@ async def test_auto_print_propagates_plate_id_to_submit(tmp_jobs_dir: Path):
 
     submit_kwargs: dict = {}
     printer_service = MagicMock()
+    printer_service.get_cloud_client.return_value = None
 
     def fake_submit(printer_id, file_data, filename, **kwargs):
         submit_kwargs.update(kwargs)
@@ -431,6 +433,7 @@ async def test_auto_print_degrades_to_ready_when_printer_busy(tmp_jobs_dir: Path
     ])
 
     printer_service = MagicMock()
+    printer_service.get_cloud_client.return_value = None
     busy_status = MagicMock()
     busy_status.gcode_state = "RUNNING"
     busy_status.online = True
@@ -469,6 +472,7 @@ async def test_auto_print_degrades_to_ready_when_printer_offline(tmp_jobs_dir: P
     ])
 
     printer_service = MagicMock()
+    printer_service.get_cloud_client.return_value = None
     offline = MagicMock()
     offline.gcode_state = "IDLE"
     offline.online = False
@@ -667,6 +671,7 @@ async def test_upload_exception_marks_job_failed(tmp_jobs_dir: Path):
     ])
 
     printer_service = MagicMock()
+    printer_service.get_cloud_client.return_value = None
     idle = MagicMock()
     idle.gcode_state = "IDLE"
     idle.online = True
@@ -710,6 +715,7 @@ async def test_cancel_during_upload_aborts(tmp_jobs_dir: Path):
     ])
 
     printer_service = MagicMock()
+    printer_service.get_cloud_client.return_value = None
     idle = MagicMock()
     idle.gcode_state = "IDLE"
     idle.online = True

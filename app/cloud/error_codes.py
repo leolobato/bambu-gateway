@@ -4,6 +4,8 @@ Codes per Phase 0 §7.4. Discovery (Phase A.5) may extend this list.
 """
 
 _ERROR_MESSAGES: dict[int, str] = {
+    -1: "Bambu plugin not ready (agent not bootstrapped)",
+    -98: "Another cloud print job is already in flight",
     -2040: "File too large for Bambu cloud upload",
     -2110: "Bambu cloud OSS upload failed",
     -2120: "Bambu cloud rejected the print job",

@@ -62,14 +62,19 @@ def _dispatch(method: str, params: dict) -> dict:
         _PENDING_EVENTS.append(params)
         return {"queued": True}
     if method == "start_print":
+        rc = int(os.environ.get("FAKE_HOST_START_PRINT_RC", "0"))
+        if rc != 0:
+            return {"rc": rc, "in_flight": False}
         # By default, push a happy-path event sequence so the orchestrator's
         # `await` for terminal events completes promptly.
         if os.environ.get("FAKE_HOST_PRINT_SCRIPT") == "happy":
             for stage in (0, 1, 2, 3, 6):  # Create, Upload, Waiting, Sending, Finished
                 _PENDING_EVENTS.append({
-                    "kind": "OnUpdateStatus", "stage": stage, "code": 0, "msg": ""
+                    "kind": "OnUpdateStatus",
+                    "dev_id": params.get("dev_id", ""),
+                    "stage": stage, "code": 0, "msg": "",
                 })
-        return {"rc": 0}
+        return {"rc": 0, "in_flight": True}
     if method == "send_message":
         if not all(k in params for k in ("dev_id", "payload")):
             raise ValueError("send_message requires dev_id + payload")

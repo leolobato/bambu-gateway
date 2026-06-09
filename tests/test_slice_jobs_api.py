@@ -25,6 +25,7 @@ async def app_client(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(main_mod, "_resolve_slice_filament_payload", _fake_resolve)
 
     main_mod.printer_service = MagicMock()
+    main_mod.printer_service.get_cloud_client.return_value = None
     main_mod.printer_service.default_printer_id.return_value = "PRINTER1"
     idle_status = MagicMock()
     idle_status.gcode_state = "IDLE"
@@ -648,6 +649,7 @@ async def test_create_rejects_invalid_filament_payload_with_400(
     monkeypatch.setattr(main_mod, "parse_3mf_via_slicer", _fake_parse_5)
 
     main_mod.printer_service = MagicMock()
+    main_mod.printer_service.get_cloud_client.return_value = None
     main_mod.printer_service.default_printer_id.return_value = "PRINTER1"
 
     slicer = MagicMock()

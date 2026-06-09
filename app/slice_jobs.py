@@ -823,6 +823,41 @@ class SliceJobManager:
             slot_indices=job.slot_indices,
         )
 
+        # Cloud printers: the plugin uploads from the job's output blob on
+        # disk. Running inside the job keeps printed/recovery/notifications
+        # identical to the LAN path (and survives client disconnects).
+        cloud_client = self._printer_service.get_cloud_client(job.printer_id)
+        if cloud_client is not None:
+            from app.cloud.submit import run_cloud_print
+
+            await self._set_status(
+                job, SliceJobStatus.UPLOADING, phase="uploading",
+            )
+            try:
+                error = await run_cloud_print(
+                    cloud_client=cloud_client,
+                    file_path=job.output_path,
+                    filename=job.filename,
+                    plate_index=job.plate_id or 1,
+                    ams_mapping=ams_mapping,
+                    use_ams=use_ams,
+                )
+            except Exception as e:
+                await self._fail(job, f"Cloud submission failed: {e}")
+                return
+            if error is not None:
+                await self._fail(
+                    job,
+                    f"Cloud submission failed: {error.get('msg', 'unknown')}",
+                )
+                return
+            job.progress = 100
+            job.phase = None
+            job.printed = True
+            await self._set_status(job, SliceJobStatus.READY)
+            await self._notify(job, "printing")
+            return
+
         await self._set_status(job, SliceJobStatus.UPLOADING, phase="uploading")
         bytes_total = len(file_data)
         bytes_sent = 0
