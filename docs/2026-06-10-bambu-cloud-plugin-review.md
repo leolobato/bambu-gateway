@@ -1,5 +1,16 @@
 # Code Review — Bambu Cloud Plugin Integration
 
+> **Status (2026-06-10, branch `fixes`):** all 15 correctness findings and
+> recommendations R1 (contract test + shared fixture), R3 (shared submit
+> helper), R4 (timeouts/bounds), R5 (no blocking I/O on the print paths) are
+> addressed in commits `d618a6a..5d03aff`, plus the small cleanups (region
+> map, identity headers, hash loop, auth.py imports, print_error log rule).
+> R2 was applied in reduced form: dispatch still branches at the route/manager
+> level, but through one `_get_cloud_client`/`get_cloud_client` lookup and one
+> `run_cloud_print` helper rather than per-endpoint copies. Not done: a full
+> common transport protocol (R2), EventPump push-instead-of-poll, and the
+> real-binary end-to-end smoke gate (the runbook remains manual).
+
 **Scope:** `c15335f..HEAD` (~50 commits, phases 1–7 of the cloud plugin plan)
 **Date:** 2026-06-10
 **Method:** 7 independent finder passes (3 correctness angles, reuse/simplification/efficiency/altitude) followed by per-finding adversarial verification against the actual source. Every finding below was independently confirmed with file:line evidence.
