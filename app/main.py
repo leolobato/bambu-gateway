@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import zipfile
 from contextlib import asynccontextmanager, AsyncExitStack
 from pathlib import Path
 from urllib.parse import quote
@@ -2596,6 +2597,56 @@ async def get_slice_job_output(job_id: str):
         content=output_bytes,
         media_type="application/octet-stream",
         headers=headers,
+    )
+
+
+@app.get("/api/slice-jobs/{job_id}/preview")
+async def get_slice_job_preview(job_id: str):
+    """Return the sliced 3MF's embedded ``Metadata/preview.bin``.
+
+    The blob is a FlatBuffers ``PreviewData`` (magic ``GCPV``) produced by
+    orcaslicer-headless at slice time and rendered by the iOS GCodePreview
+    v2 package. Artifacts are immutable per job id, hence the aggressive
+    cache headers.
+    """
+    if slice_jobs is None:
+        raise HTTPException(status_code=404, detail="Slice jobs disabled")
+    job = await slice_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status.value != "ready":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is {job.status.value}, no output available",
+        )
+    if not job.output_path or not Path(job.output_path).exists():
+        raise HTTPException(status_code=410, detail="Output blob is gone")
+
+    try:
+        with zipfile.ZipFile(job.output_path) as zf:
+            try:
+                data = zf.read("Metadata/preview.bin")
+            except KeyError:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Preview data not present in this 3MF "
+                           "(sliced by an older orcaslicer-headless?)",
+                )
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=502, detail="Sliced 3MF is unreadable")
+
+    # FlatBuffers file identifier sits at bytes 4-7 (0-3 are the root offset).
+    if len(data) < 8 or data[4:8] != b"GCPV":
+        raise HTTPException(status_code=502, detail="Malformed preview data")
+
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={
+            "X-Preview-Format-Version": "1",
+            "X-Job-Id": job.id,
+            "Cache-Control": "public, max-age=86400, immutable",
+        },
     )
 
 
