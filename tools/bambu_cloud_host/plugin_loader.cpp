@@ -123,6 +123,7 @@ void PluginLoader::load_from_env() {
   p_user_logout_       = must_resolve<fn_user_logout>       (dl_handle_, "bambu_network_user_logout");
   p_get_my_token_      = must_resolve<fn_get_my_token>      (dl_handle_, "bambu_network_get_my_token");
   p_get_user_print_info_ = must_resolve<fn_get_user_print_info>(dl_handle_, "bambu_network_get_user_print_info");
+  p_set_user_selected_machine_ = must_resolve<fn_set_user_selected_machine>(dl_handle_, "bambu_network_set_user_selected_machine");
   p_set_on_message_fn_ = must_resolve<fn_set_on_message_fn> (dl_handle_, "bambu_network_set_on_message_fn");
   p_connect_server_    = must_resolve<fn_connect_server>    (dl_handle_, "bambu_network_connect_server");
   p_start_subscribe_   = must_resolve<fn_start_subscribe>   (dl_handle_, "bambu_network_start_subscribe");
@@ -309,6 +310,17 @@ nlohmann::json PluginLoader::get_my_token(const std::string& ticket) {
   // Surface http_code alongside the token fields so the caller can log it.
   body_j["http_code"] = http_code;
   return body_j;
+}
+
+int PluginLoader::set_user_selected_machine(const std::string& dev_id) {
+  if (!agent_) {
+    throw std::runtime_error("set_user_selected_machine: agent not bootstrapped");
+  }
+  int rc = p_set_user_selected_machine_(agent_, dev_id);
+  std::fprintf(stderr,
+               "bambu_cloud_host: set_user_selected_machine dev_id=%s rc=%d\n",
+               dev_id.c_str(), rc);
+  return rc;
 }
 
 nlohmann::json PluginLoader::get_user_print_info() {

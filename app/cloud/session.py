@@ -9,6 +9,7 @@ app is active). Without these calls no OnMessage event ever arrives.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Sequence
@@ -16,6 +17,9 @@ from typing import Sequence
 from app.cloud.plugin_host import PluginHost, PluginHostError
 
 logger = logging.getLogger("bambu.cloud.session")
+
+# Keep strong refs to fire-and-forget tasks so they aren't GC'd mid-flight.
+_bg_tasks: set[asyncio.Task] = set()
 
 # Full-snapshot + module-version requests, mirroring the LAN client's
 # request_pushall()/request_version(). The plugin subscription only carries
@@ -67,28 +71,59 @@ async def subscribe_printers(
         logger.error("add_subscribe failed rc=%s", rc)
         return False
     logger.info("Subscribed to %d cloud printer(s)", len(dev_ids))
-    await request_full_status(host=host, dev_ids=dev_ids)
+    # Selecting the machine + pushall opens the publish channel and pulls the
+    # full snapshot; the channel readies asynchronously, so run it in the
+    # background rather than blocking the connect/subscribe path.
+    task = asyncio.create_task(
+        request_full_status(host=host, dev_ids=list(dev_ids))
+    )
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
     return True
 
 
 async def request_full_status(
     *, host: PluginHost, dev_ids: Sequence[str],
+    attempts: int = 12, delay: float = 0.5,
 ) -> None:
-    """Ask each subscribed printer for a full status snapshot.
+    """Open each printer's publish channel and pull a full status snapshot.
 
-    Sends get_version (AMS module types) then pushall over the cloud relay,
-    mirroring OrcaSlicer's post-connect sequence. Best-effort: a send failure
-    just means that printer stays sparse until the next (re)subscribe.
+    Mirrors OrcaSlicer's post-connect sequence: set_user_selected_machine
+    (the cloud equivalent of connect_printer) opens the send channel, then
+    get_version + pushall request the full report. The channel readies
+    asynchronously, so send_message returns -2 (CONNECT_FAILED) until it's up;
+    retry until accepted. Best-effort — failures leave the printer sparse
+    until the next (re)subscribe.
     """
     for dev_id in dev_ids:
-        for envelope in (_GET_VERSION, _PUSHALL):
-            try:
-                await host.call("send_message", {
-                    "dev_id": dev_id,
-                    "payload": json.dumps(envelope),
-                    "qos": 0,
-                })
-            except PluginHostError as exc:
+        try:
+            rc = (await host.call(
+                "set_user_selected_machine", {"dev_id": dev_id}
+            )).get("rc", -1)
+            if rc != 0:
                 logger.warning(
-                    "full-status request to %s failed: %s", dev_id, exc
+                    "set_user_selected_machine(%s) rc=%s", dev_id, rc
                 )
+        except PluginHostError as exc:
+            logger.warning("set_user_selected_machine(%s) failed: %s", dev_id, exc)
+            continue
+
+        for attempt in range(attempts):
+            try:
+                ok = True
+                for envelope in (_GET_VERSION, _PUSHALL):
+                    rc = (await host.call("send_message", {
+                        "dev_id": dev_id,
+                        "payload": json.dumps(envelope),
+                        "qos": 0,
+                    })).get("rc", -1)
+                    ok = ok and rc == 0
+                if ok:
+                    logger.info(
+                        "Cloud printer %s full-status requested", dev_id
+                    )
+                    break
+            except PluginHostError as exc:
+                logger.warning("pushall(%s) failed: %s", dev_id, exc)
+                break
+            await asyncio.sleep(delay)

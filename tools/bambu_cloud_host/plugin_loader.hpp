@@ -146,6 +146,11 @@ class PluginLoader {
   // ({"devices":[...], "http_code":N}). Throws on non-zero rc / parse error.
   nlohmann::json get_user_print_info();
 
+  // Calls bambu_network_set_user_selected_machine(agent, dev_id) — the cloud
+  // equivalent of connect_printer. Opens the publish channel to the device so
+  // send_message stops returning -2 (CONNECT_FAILED). Returns the plugin rc.
+  int set_user_selected_machine(const std::string& dev_id);
+
   // Registers a trampoline with the plugin that pushes every incoming cloud
   // MQTT message into the process-global EventQueue.
   //
@@ -262,6 +267,10 @@ class PluginLoader {
   // Source: BBLNetworkPlugin.hpp:92. Uses the plugin's stored session token.
   using fn_get_user_print_info = int(*)(void*, unsigned int*, std::string*);
 
+  // int bambu_network_set_user_selected_machine(void *agent, std::string dev_id)
+  // Source: BBLNetworkPlugin.hpp:76.
+  using fn_set_user_selected_machine = int(*)(void*, std::string);
+
   // OnMessageFn — std::function callback type matching bambu_networking.hpp:120.
   // EXACTLY 2 parameters: dev_id and msg (NO chan).
   using on_message_fn = std::function<void(std::string dev_id, std::string msg)>;
@@ -312,6 +321,7 @@ class PluginLoader {
   fn_user_logout        p_user_logout_        = nullptr;
   fn_get_my_token       p_get_my_token_       = nullptr;
   fn_get_user_print_info p_get_user_print_info_ = nullptr;
+  fn_set_user_selected_machine p_set_user_selected_machine_ = nullptr;
   fn_set_on_message_fn  p_set_on_message_fn_  = nullptr;
   fn_connect_server     p_connect_server_     = nullptr;
   fn_start_subscribe    p_start_subscribe_    = nullptr;

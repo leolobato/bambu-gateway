@@ -84,6 +84,13 @@ json method_get_user_print_info(const json& /*params*/) {
   return loader().get_user_print_info();
 }
 
+// set_user_selected_machine — open the cloud publish channel to a device so
+// pushall/commands can be sent (cloud equivalent of connect_printer).
+json method_set_user_selected_machine(const json& params) {
+  std::string dev_id = params.at("dev_id").get<std::string>();
+  return {{"rc", loader().set_user_selected_machine(dev_id)}};
+}
+
 // bridge.poll_events — drain all queued plugin callback events.
 // Returns: {"events": [...]} where each element is an event JSON object.
 // The queue is cleared atomically; calling again returns only new events.
@@ -244,6 +251,7 @@ json dispatch_method(const std::string& method, const json& params) {
   if (method == "user_logout")         return method_user_logout(params);
   if (method == "get_my_token")        return method_get_my_token(params);
   if (method == "get_user_print_info") return method_get_user_print_info(params);
+  if (method == "set_user_selected_machine") return method_set_user_selected_machine(params);
   if (method == "bridge.poll_events")  return method_bridge_poll_events(params);
   if (method == "_test_push_event")    return method_test_push_event(params);
   if (method == "connect_server")      return method_connect_server(params);
