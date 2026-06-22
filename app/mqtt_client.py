@@ -9,6 +9,7 @@ import ssl
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 import paho.mqtt.client as mqtt
 
@@ -294,6 +295,137 @@ def _bit_enabled(value: object, bit: int) -> bool | None:
     except (TypeError, ValueError):
         return None
     return ((raw >> bit) & 0x1) != 0
+
+
+def _parse_vt_tray_entry(data: dict) -> tuple[dict | None, bool]:
+    """Parse the external spool (``vt_tray``) from a payload dict.
+
+    Returns ``(entry, present)``. ``present`` is False when the key is absent
+    (caller keeps prior state); True with a dict entry when set, or True with
+    ``None`` when explicitly cleared (sent as null/empty).
+    """
+    _missing = object()
+    vt_tray_raw = data.get("vt_tray", _missing)
+    if isinstance(vt_tray_raw, dict) and vt_tray_raw:
+        entry = {"slot": 254, "ams_id": -1, "tray_id": -1}
+        for k, v in vt_tray_raw.items():
+            if k != "id":
+                entry[k] = v
+        try:
+            entry["remain"] = int(entry.get("remain", -1))
+        except (ValueError, TypeError):
+            entry["remain"] = -1
+        return entry, True
+    if vt_tray_raw is not _missing:
+        return None, True
+    return None, False
+
+
+@dataclass
+class AmsReport:
+    """Parsed AMS state from a single print payload. ``*_present`` flags let
+    callers preserve prior state for fields the payload didn't carry."""
+    ams_present: bool = False
+    trays: list[dict] = field(default_factory=list)
+    units: list[dict] = field(default_factory=list)
+    active_tray_present: bool = False
+    active_tray: int | None = None
+    vt_tray_present: bool = False
+    vt_tray: dict | None = None
+
+
+def parse_ams_report(
+    print_info: dict,
+    *,
+    module_types: dict[int, AMSType] | None = None,
+) -> AmsReport:
+    """Parse AMS trays/units/active-tray/vt_tray from a print payload.
+
+    Shared by the LAN and cloud paths so both produce identical AMS state.
+    ``module_types`` maps ams_id -> AMSType (from get_version, LAN only); the
+    cloud path passes none and relies on the per-unit ``hw_ver`` fallback.
+    """
+    module_types = module_types or {}
+    report = AmsReport()
+    ams_data = print_info.get("ams")
+
+    if isinstance(ams_data, dict):
+        report.ams_present = True
+        tray_now = ams_data.get("tray_now")
+        if tray_now is not None:
+            try:
+                tray_now_int = int(tray_now)
+                report.active_tray_present = True
+                # 255 = none, 254 = external spool
+                report.active_tray = None if tray_now_int == 255 else tray_now_int
+            except (ValueError, TypeError):
+                pass
+
+        for unit in ams_data.get("ams", []):
+            ams_id = int(unit.get("id", 0))
+            unit_trays = unit.get("tray", [])
+            humidity = -1
+            try:
+                humidity = int(unit.get("humidity", -1))
+            except (ValueError, TypeError):
+                pass
+            temperature = 0.0
+            try:
+                temperature = float(unit.get("temp", 0.0))
+            except (ValueError, TypeError):
+                pass
+            hw_version = str(unit.get("hw_ver", ""))
+            ams_type = module_types.get(ams_id)
+            if ams_type is None and hw_version:
+                ams_type = AMSType.from_hw_version(hw_version)
+            # AMS Lite has no humidity sensor; firmware emits a placeholder.
+            if ams_type is not None and not ams_type.has_humidity_sensor:
+                humidity = -1
+            dry_time = 0
+            try:
+                dry_time = int(unit.get("dry_time", 0))
+            except (ValueError, TypeError):
+                pass
+            report.units.append({
+                "id": ams_id,
+                "humidity": humidity,
+                "temperature": temperature,
+                "tray_count": len(unit_trays),
+                "hw_version": hw_version,
+                "ams_type": ams_type.value if ams_type else None,
+                "supports_drying": ams_type.supports_drying if ams_type else False,
+                "max_drying_temp": ams_type.max_drying_temp if ams_type else 55,
+                "dry_time_remaining": dry_time,
+            })
+            for tray in unit_trays:
+                tray_id = int(tray.get("id", 0))
+                entry = {
+                    "slot": ams_id * 4 + tray_id,
+                    "ams_id": ams_id,
+                    "tray_id": tray_id,
+                }
+                for k, v in tray.items():
+                    if k != "id":
+                        entry[k] = v
+                try:
+                    entry["remain"] = int(entry.get("remain", -1))
+                except (ValueError, TypeError):
+                    entry["remain"] = -1
+                report.trays.append(entry)
+
+        vt_entry, vt_present = _parse_vt_tray_entry(ams_data)
+        if vt_present:
+            report.vt_tray_present = True
+            report.vt_tray = vt_entry
+
+    # Some printers (e.g. A1 Mini) report vt_tray at the top level of the
+    # print payload, not inside the ams block — it wins if present.
+    vt_entry, vt_present = _parse_vt_tray_entry(print_info)
+    if vt_present:
+        report.vt_tray_present = True
+        report.vt_tray = vt_entry
+
+    return report
 
 
 class BambuMQTTClient:
@@ -738,31 +870,6 @@ class BambuMQTTClient:
                         logger.debug("AMS %d detected as %s (module=%s, hw_ver=%s)",
                                      ams_id, ams_type.value, name, mod.get("hw_ver", ""))
 
-    def _parse_vt_tray(self, data: dict) -> None:
-        """Parse the external spool holder (vt_tray) from an MQTT payload dict.
-
-        Must be called while self._lock is held.
-        """
-        _missing = object()
-        vt_tray_raw = data.get("vt_tray", _missing)
-        if isinstance(vt_tray_raw, dict) and vt_tray_raw:
-            entry = {
-                "slot": 254,
-                "ams_id": -1,
-                "tray_id": -1,
-            }
-            for k, v in vt_tray_raw.items():
-                if k != "id":
-                    entry[k] = v
-            try:
-                entry["remain"] = int(entry.get("remain", -1))
-            except (ValueError, TypeError):
-                entry["remain"] = -1
-            self._vt_tray = entry
-        elif vt_tray_raw is not _missing:
-            # Explicitly sent as null or empty — clear it
-            self._vt_tray = None
-
     def _update_status(self, print_info: dict) -> None:
         """Apply fields from an MQTT print report to the in-memory status."""
         with self._lock:
@@ -832,94 +939,17 @@ class BambuMQTTClient:
                                 # still emits light, and the UI only distinguishes on/off.
                                 self._chamber_light_on = mode.lower() != "off"
 
-            # AMS tray data
-            ams_data = print_info.get("ams")
-            if ams_data is not None:
-                trays = []
-                units = []
-
-                # Active tray
-                tray_now = ams_data.get("tray_now")
-                if tray_now is not None:
-                    try:
-                        tray_now_int = int(tray_now)
-                        # 255 = none, 254 = external spool
-                        if tray_now_int == 255:
-                            self._status.active_tray = None
-                        else:
-                            self._status.active_tray = tray_now_int
-                    except (ValueError, TypeError):
-                        pass
-
-                for unit in ams_data.get("ams", []):
-                    ams_id = int(unit.get("id", 0))
-                    unit_trays = unit.get("tray", [])
-                    # Unit-level info
-                    humidity = -1
-                    try:
-                        humidity = int(unit.get("humidity", -1))
-                    except (ValueError, TypeError):
-                        pass
-                    temperature = 0.0
-                    try:
-                        temperature = float(unit.get("temp", 0.0))
-                    except (ValueError, TypeError):
-                        pass
-                    # Hardware version and AMS type
-                    hw_version = str(unit.get("hw_ver", ""))
-                    # Prefer module type from get_version, fall back to hw_ver
-                    ams_type = self._ams_module_types.get(ams_id)
-                    if ams_type is None and hw_version:
-                        ams_type = AMSType.from_hw_version(hw_version)
-                    # AMS Lite has no humidity sensor; firmware still emits a
-                    # placeholder value in the field. Scrub it so the API and
-                    # UI can detect "no reading available".
-                    if ams_type is not None and not ams_type.has_humidity_sensor:
-                        humidity = -1
-                    # Drying state
-                    dry_time = 0
-                    try:
-                        dry_time = int(unit.get("dry_time", 0))
-                    except (ValueError, TypeError):
-                        pass
-                    units.append({
-                        "id": ams_id,
-                        "humidity": humidity,
-                        "temperature": temperature,
-                        "tray_count": len(unit_trays),
-                        "hw_version": hw_version,
-                        "ams_type": ams_type.value if ams_type else None,
-                        "supports_drying": ams_type.supports_drying if ams_type else False,
-                        "max_drying_temp": ams_type.max_drying_temp if ams_type else 55,
-                        "dry_time_remaining": dry_time,
-                    })
-                    for tray in unit_trays:
-                        tray_id = int(tray.get("id", 0))
-                        slot = ams_id * 4 + tray_id
-                        entry = {
-                            "slot": slot,
-                            "ams_id": ams_id,
-                            "tray_id": tray_id,
-                        }
-                        # Forward all tray fields from the printer
-                        for k, v in tray.items():
-                            if k != "id":
-                                entry[k] = v
-                        # Normalize remain to int
-                        try:
-                            entry["remain"] = int(entry.get("remain", -1))
-                        except (ValueError, TypeError):
-                            entry["remain"] = -1
-                        trays.append(entry)
-                self._ams_trays = trays
-                self._ams_units = units
-
-                self._parse_vt_tray(ams_data)
-
-            # Some printers (e.g. A1 Mini) report vt_tray at the top
-            # level of the print payload, not inside the ams block.
-            if "vt_tray" in print_info:
-                self._parse_vt_tray(print_info)
+            # AMS state — shared parser, identical to the cloud path.
+            ams_report = parse_ams_report(
+                print_info, module_types=self._ams_module_types
+            )
+            if ams_report.active_tray_present:
+                self._status.active_tray = ams_report.active_tray
+            if ams_report.ams_present:
+                self._ams_trays = ams_report.trays
+                self._ams_units = ams_report.units
+            if ams_report.vt_tray_present:
+                self._vt_tray = ams_report.vt_tray
             self._schedule_disconnect_locked()
 
             new_snapshot = self._status.model_copy(deep=True)

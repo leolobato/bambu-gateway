@@ -8,7 +8,7 @@ import threading
 from typing import TYPE_CHECKING, AsyncIterator
 
 from app.models import PrinterStatus
-from app.mqtt_client import apply_print_payload
+from app.mqtt_client import apply_print_payload, parse_ams_report
 
 logger = logging.getLogger("bambu.cloud.printer")
 
@@ -35,6 +35,12 @@ class CloudPrinterClient:
             machine_model=machine_model,
         )
         self._gcode_state: str = "IDLE"
+        # AMS state, parsed from the same `print.ams` block the LAN client
+        # uses (via the shared parse_ams_report). The cloud relay has no
+        # get_version stream, so AMS module type falls back to per-unit hw_ver.
+        self._ams_trays: list[dict] = []
+        self._ams_units: list[dict] = []
+        self._vt_tray: dict | None = None
         self._lock = threading.Lock()
         # Single in-flight print job's progress channel. None = no active job.
         self._progress: asyncio.Queue | None = None
@@ -73,6 +79,26 @@ class CloudPrinterClient:
         with self._lock:
             self._status.machine_model = machine_model
 
+    def get_ams_trays(self) -> list[dict]:
+        with self._lock:
+            return list(self._ams_trays)
+
+    def get_ams_info(self) -> tuple[list[dict], list[dict], dict | None]:
+        """Return (trays, units, vt_tray) — same shape as the LAN client."""
+        with self._lock:
+            return (
+                list(self._ams_trays),
+                list(self._ams_units),
+                dict(self._vt_tray) if self._vt_tray else None,
+            )
+
+    async def get_ams_info_async(
+        self, wait_timeout: float = 2.5,
+    ) -> tuple[list[dict], list[dict], dict | None]:
+        """Cloud reports arrive asynchronously via the EventPump, so there's
+        no cold-start barrier to await — return the current snapshot."""
+        return self.get_ams_info()
+
     def set_status_change_callback(self, callback) -> None:
         """Register a ``(prev, new)`` snapshot callback — same contract as
         :meth:`BambuMQTTClient.set_status_change_callback`."""
@@ -110,6 +136,15 @@ class CloudPrinterClient:
                 print_info,
                 gcode_state=self._gcode_state,
             )
+            # AMS — shared parser, identical to the LAN path.
+            ams_report = parse_ams_report(print_info)
+            if ams_report.active_tray_present:
+                self._status.active_tray = ams_report.active_tray
+            if ams_report.ams_present:
+                self._ams_trays = ams_report.trays
+                self._ams_units = ams_report.units
+            if ams_report.vt_tray_present:
+                self._vt_tray = ams_report.vt_tray
             new_snapshot = self._status.model_copy(deep=True)
 
         callback = self._status_change_callback

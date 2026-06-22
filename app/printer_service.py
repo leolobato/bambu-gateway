@@ -311,16 +311,25 @@ class PrinterService:
         """Return the config for a single printer, or None if not found."""
         return self._configs.get(printer_id)
 
+    def _any_client(self, printer_id: str):
+        """LAN client for this serial, falling back to the cloud client."""
+        client = self._clients.get(printer_id)
+        if client is not None:
+            return client
+        if self._cloud_clients:
+            return self._cloud_clients.get(printer_id)
+        return None
+
     def get_ams_trays(self, printer_id: str) -> list[dict] | None:
         """Return AMS tray data for a printer, or None if not found."""
-        client = self._clients.get(printer_id)
+        client = self._any_client(printer_id)
         if client is None:
             return None
         return client.get_ams_trays()
 
     def get_ams_info(self, printer_id: str) -> tuple[list[dict], list[dict], dict | None] | None:
         """Return (trays, units, vt_tray) for a printer, or None if not found."""
-        client = self._clients.get(printer_id)
+        client = self._any_client(printer_id)
         if client is None:
             return None
         return client.get_ams_info()
@@ -330,9 +339,9 @@ class PrinterService:
     ) -> tuple[list[dict], list[dict], dict | None] | None:
         """Async AMS fetch that waits up to `wait_timeout` for the first
         MQTT report on cold-start, avoiding the empty-cache race without
-        needing client-side retries.
+        needing client-side retries. Cloud clients return immediately.
         """
-        client = self._clients.get(printer_id)
+        client = self._any_client(printer_id)
         if client is None:
             return None
         return await client.get_ams_info_async(wait_timeout=wait_timeout)
