@@ -316,6 +316,10 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
     app.state.cloud_connect = _cloud_connect
 
     if await cloud_auth.is_signed_in(host=host):
+        from app.cloud.profile_store import load_profile
+        app.state.cloud_profile = load_profile(
+            settings.bambu_cloud_plugin_dir / "state" / "gateway_profile.json"
+        )
         if await _cloud_connect():
             logger.info("Bambu cloud session established")
         else:
@@ -351,6 +355,7 @@ async def lifespan(app: FastAPI):
         app.state.cloud_printers = None
         app.state.cloud_connect = None
         app.state.cloud_event_pump = None
+        app.state.cloud_profile = None
         cloud_active = False
         if settings.bambu_cloud_enabled:
             try:
@@ -479,6 +484,7 @@ async def get_capabilities():
     return CapabilitiesResponse(
         push=settings.push_enabled,
         live_activities=settings.push_enabled,
+        cloud=getattr(app.state, "cloud_host", None) is not None,
         version=app.version,
     )
 

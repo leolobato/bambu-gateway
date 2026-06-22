@@ -242,3 +242,9 @@ def test_lifespan_skips_downloader_when_cloud_disabled(monkeypatch, tmp_path):
         with TestClient(app):
             pass
         mock_ensure.assert_not_awaited()
+
+
+def test_capabilities_reports_cloud_true_in_cloud_mode(cloud_app_factory):
+    with cloud_app_factory(fake_env={"FAKE_HOST_USER_LOGGED_IN": "1"}) as client:
+        body = client.get("/api/capabilities").json()
+        assert body["cloud"] is True

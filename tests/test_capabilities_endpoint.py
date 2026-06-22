@@ -24,3 +24,8 @@ def test_getCapabilities_includesVersion(client):
     # a non-empty semver-ish value.
     assert isinstance(body["version"], str)
     assert body["version"]
+
+
+def test_getCapabilities_cloudFalseWithoutCloud(client):
+    body = client.get("/api/capabilities").json()
+    assert body["cloud"] is False

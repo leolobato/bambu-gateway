@@ -497,6 +497,7 @@ class SetAmsFilamentRequest(BaseModel):
 class CapabilitiesResponse(BaseModel):
     push: bool
     live_activities: bool
+    cloud: bool = False
     version: str = ""
 
 
