@@ -99,8 +99,10 @@ class ProfileFetchError(RuntimeError):
     """Raised when the Bambu profile API rejects the access token."""
 
 
-# Confirmed by Phase A.2 discovery (2026-05-27-bambu-auth-discovery.md §A.2).
-_PROFILE_PATH = "/v1/user-service/u/info"
+# Bambu's user-service profile endpoint. The older `/v1/user-service/u/info`
+# path 404s ("404 page not found"); `/my/profile` is the live route (returns
+# 401 unauthenticated, i.e. exists) and carries uid/name/account/avatar.
+_PROFILE_PATH = "/v1/user-service/my/profile"
 
 
 async def fetch_profile(

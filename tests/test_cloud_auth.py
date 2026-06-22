@@ -102,7 +102,7 @@ async def test_fetch_profile_returns_profile_json():
     assert profile["uidStr"] == "42"
     req = seen_requests[0]
     assert req.headers["Authorization"] == "Bearer at_xyz"
-    assert req.url.path == "/v1/user-service/u/info"
+    assert req.url.path == "/v1/user-service/my/profile"
 
 
 async def test_fetch_profile_raises_on_non_200():
