@@ -55,6 +55,7 @@ def test_post_paste_completes_login(cloud_app):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["profile"]["account"] == "a@b"
+    assert set(body["profile"].keys()) == {"name", "account", "avatar", "uid"}
 
 
 def test_post_paste_rejects_malformed_url(cloud_app):
@@ -112,3 +113,16 @@ def test_logout_clears_profile(cloud_app):
     cloud_app.post("/api/cloud/auth/logout")
     resp = cloud_app.get("/api/cloud/auth/status")
     assert resp.json()["profile"] is None
+
+
+def test_status_signed_in_without_cached_profile(cloud_app):
+    """Status returns profile=None when signed in but no cache file was written."""
+    # cloud_app has FAKE_HOST_USER_LOGGED_IN=1 (signed in) but no /paste was
+    # called in this test, so app.state.cloud_profile is unset and no
+    # gateway_profile.json exists in the temp plugin dir.
+    resp = cloud_app.get("/api/cloud/auth/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["signed_in"] is True
+    assert body["profile"] is None
+    assert body["region"] == "US"

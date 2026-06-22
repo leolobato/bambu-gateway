@@ -102,7 +102,7 @@ async def post_paste(request: Request, body: PasteBody) -> dict:
             connected = await connect()
         except PluginHostError as exc:
             logger.warning("cloud connect after login failed: %s", exc)
-    return {"profile": profile, "connected": connected}
+    return {"profile": cached.to_dict(), "connected": connected}
 
 
 @router.post("/logout")
