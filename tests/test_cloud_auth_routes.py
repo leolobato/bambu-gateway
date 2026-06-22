@@ -70,3 +70,45 @@ def test_post_logout(cloud_app):
     resp = cloud_app.post("/api/cloud/auth/logout")
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
+
+
+def test_status_returns_profile_and_region_after_paste(cloud_app):
+    pasted = "http://localhost:13618/?ticket=tk_abc"
+
+    def profile_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"uidStr": "42", "name": "Alice", "account": "a@b"}
+        )
+
+    with patch(
+        "app.cloud.auth_routes._make_http_client",
+        return_value=httpx.AsyncClient(
+            transport=httpx.MockTransport(profile_handler)
+        ),
+    ):
+        cloud_app.post("/api/cloud/auth/paste", json={"pasted_url": pasted})
+
+    resp = cloud_app.get("/api/cloud/auth/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["signed_in"] is True
+    assert body["region"] == "US"
+    assert body["profile"]["name"] == "Alice"
+    assert body["profile"]["account"] == "a@b"
+
+
+def test_logout_clears_profile(cloud_app):
+    pasted = "http://localhost:13618/?ticket=tk_abc"
+
+    def profile_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"uidStr": "42", "name": "Alice", "account": "a@b"})
+
+    with patch(
+        "app.cloud.auth_routes._make_http_client",
+        return_value=httpx.AsyncClient(transport=httpx.MockTransport(profile_handler)),
+    ):
+        cloud_app.post("/api/cloud/auth/paste", json={"pasted_url": pasted})
+
+    cloud_app.post("/api/cloud/auth/logout")
+    resp = cloud_app.get("/api/cloud/auth/status")
+    assert resp.json()["profile"] is None

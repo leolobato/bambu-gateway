@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -9,6 +10,12 @@ from pydantic import BaseModel
 
 from app.cloud import auth
 from app.cloud.plugin_host import PluginHostError
+from app.cloud.profile_store import (
+    CloudProfile,
+    clear_profile,
+    load_profile,
+    save_profile,
+)
 from app.config import settings
 
 logger = logging.getLogger("bambu.cloud.auth.routes")
@@ -31,6 +38,10 @@ def _require_host(request: Request):
     return host
 
 
+def _profile_cache_path() -> Path:
+    return settings.bambu_cloud_plugin_dir / "state" / "gateway_profile.json"
+
+
 @router.get("/url")
 async def get_signin_url() -> dict:
     return {"url": auth.build_signin_url(region=settings.bambu_cloud_region)}
@@ -43,7 +54,16 @@ async def get_status(request: Request) -> dict:
         signed_in = await auth.is_signed_in(host=host)
     except PluginHostError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"signed_in": signed_in}
+
+    profile = getattr(request.app.state, "cloud_profile", None)
+    if profile is None and signed_in:
+        profile = load_profile(_profile_cache_path())
+        request.app.state.cloud_profile = profile
+    return {
+        "signed_in": signed_in,
+        "profile": profile.to_dict() if profile else None,
+        "region": settings.bambu_cloud_region,
+    }
 
 
 class PasteBody(BaseModel):
@@ -68,6 +88,10 @@ async def post_paste(request: Request, body: PasteBody) -> dict:
         except (auth.LoginFailed, PluginHostError) as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    cached = CloudProfile.from_api(profile)
+    save_profile(_profile_cache_path(), cached)
+    request.app.state.cloud_profile = cached
+
     # Login succeeded — connect the cloud MQTT relay and subscribe printers so
     # status starts flowing. A connect failure doesn't invalidate the login;
     # surface it in the response instead of failing the request.
@@ -88,4 +112,6 @@ async def post_logout(request: Request) -> dict:
         await auth.logout(host=host)
     except PluginHostError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    clear_profile(_profile_cache_path())
+    request.app.state.cloud_profile = None
     return {"ok": True}
