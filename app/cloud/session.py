@@ -84,32 +84,26 @@ async def subscribe_printers(
 
 async def request_full_status(
     *, host: PluginHost, dev_ids: Sequence[str],
-    attempts: int = 12, delay: float = 0.5,
+    attempts: int = 30, delay: float = 1.0,
 ) -> None:
     """Open each printer's publish channel and pull a full status snapshot.
 
     Mirrors OrcaSlicer's post-connect sequence: set_user_selected_machine
     (the cloud equivalent of connect_printer) opens the send channel, then
-    get_version + pushall request the full report. The channel readies
-    asynchronously, so send_message returns -2 (CONNECT_FAILED) until it's up;
-    retry until accepted. Best-effort — failures leave the printer sparse
-    until the next (re)subscribe.
+    get_version + pushall request the full report. Both the cloud broker
+    connection and the per-device channel ready asynchronously, so the
+    selection must be (re)asserted once the server is up and send_message
+    returns -2 (CONNECT_FAILED) until the channel is live. Re-select and
+    retry each round until pushall is accepted. Best-effort.
     """
     for dev_id in dev_ids:
-        try:
-            rc = (await host.call(
-                "set_user_selected_machine", {"dev_id": dev_id}
-            )).get("rc", -1)
-            if rc != 0:
-                logger.warning(
-                    "set_user_selected_machine(%s) rc=%s", dev_id, rc
-                )
-        except PluginHostError as exc:
-            logger.warning("set_user_selected_machine(%s) failed: %s", dev_id, exc)
-            continue
-
         for attempt in range(attempts):
             try:
+                # Re-assert selection every round — a select issued before the
+                # broker connection settled is a no-op, so one-shot isn't enough.
+                await host.call(
+                    "set_user_selected_machine", {"dev_id": dev_id}
+                )
                 ok = True
                 for envelope in (_GET_VERSION, _PUSHALL):
                     rc = (await host.call("send_message", {
@@ -120,10 +114,16 @@ async def request_full_status(
                     ok = ok and rc == 0
                 if ok:
                     logger.info(
-                        "Cloud printer %s full-status requested", dev_id
+                        "Cloud printer %s full-status requested (after %ds)",
+                        dev_id, attempt,
                     )
                     break
             except PluginHostError as exc:
-                logger.warning("pushall(%s) failed: %s", dev_id, exc)
+                logger.warning("full-status(%s) failed: %s", dev_id, exc)
                 break
             await asyncio.sleep(delay)
+        else:
+            logger.warning(
+                "Cloud printer %s never accepted pushall (channel not ready)",
+                dev_id,
+            )
