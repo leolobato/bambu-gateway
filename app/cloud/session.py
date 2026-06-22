@@ -9,7 +9,6 @@ app is active). Without these calls no OnMessage event ever arrives.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Sequence
@@ -17,9 +16,6 @@ from typing import Sequence
 from app.cloud.plugin_host import PluginHost, PluginHostError
 
 logger = logging.getLogger("bambu.cloud.session")
-
-# Keep strong refs to fire-and-forget tasks so they aren't GC'd mid-flight.
-_bg_tasks: set[asyncio.Task] = set()
 
 # Full-snapshot + module-version requests, mirroring the LAN client's
 # request_pushall()/request_version(). The plugin subscription only carries
@@ -71,59 +67,50 @@ async def subscribe_printers(
         logger.error("add_subscribe failed rc=%s", rc)
         return False
     logger.info("Subscribed to %d cloud printer(s)", len(dev_ids))
-    # Selecting the machine + pushall opens the publish channel and pulls the
-    # full snapshot; the channel readies asynchronously, so run it in the
-    # background rather than blocking the connect/subscribe path.
-    task = asyncio.create_task(
-        request_full_status(host=host, dev_ids=list(dev_ids))
-    )
-    _bg_tasks.add(task)
-    task.add_done_callback(_bg_tasks.discard)
+    await select_machines(host=host, dev_ids=dev_ids)
     return True
 
 
-async def request_full_status(
+async def select_machines(
     *, host: PluginHost, dev_ids: Sequence[str],
-    attempts: int = 30, delay: float = 1.0,
 ) -> None:
-    """Open each printer's publish channel and pull a full status snapshot.
-
-    Mirrors OrcaSlicer's post-connect sequence: set_user_selected_machine
-    (the cloud equivalent of connect_printer) opens the send channel, then
-    get_version + pushall request the full report. Both the cloud broker
-    connection and the per-device channel ready asynchronously, so the
-    selection must be (re)asserted once the server is up and send_message
-    returns -2 (CONNECT_FAILED) until the channel is live. Re-select and
-    retry each round until pushall is accepted. Best-effort.
+    """Open each printer's cloud publish channel (the cloud equivalent of
+    connect_printer). Call this exactly ONCE per (re)subscribe: the channel
+    readies asynchronously and the plugin fires its printer-connected callback
+    when it's live — that callback is where pushall is sent. Re-selecting in a
+    loop churns the connection (repeated connect/disconnect), so don't.
     """
     for dev_id in dev_ids:
-        for attempt in range(attempts):
-            try:
-                # Re-assert selection every round — a select issued before the
-                # broker connection settled is a no-op, so one-shot isn't enough.
-                await host.call(
-                    "set_user_selected_machine", {"dev_id": dev_id}
+        try:
+            rc = (await host.call(
+                "set_user_selected_machine", {"dev_id": dev_id}
+            )).get("rc", -1)
+            if rc != 0:
+                logger.warning(
+                    "set_user_selected_machine(%s) rc=%s", dev_id, rc
                 )
-                ok = True
-                for envelope in (_GET_VERSION, _PUSHALL):
-                    rc = (await host.call("send_message", {
-                        "dev_id": dev_id,
-                        "payload": json.dumps(envelope),
-                        "qos": 0,
-                    })).get("rc", -1)
-                    ok = ok and rc == 0
-                if ok:
-                    logger.info(
-                        "Cloud printer %s full-status requested (after %ds)",
-                        dev_id, attempt,
-                    )
-                    break
-            except PluginHostError as exc:
-                logger.warning("full-status(%s) failed: %s", dev_id, exc)
-                break
-            await asyncio.sleep(delay)
-        else:
-            logger.warning(
-                "Cloud printer %s never accepted pushall (channel not ready)",
-                dev_id,
-            )
+        except PluginHostError as exc:
+            logger.warning("set_user_selected_machine(%s) failed: %s", dev_id, exc)
+
+
+async def request_pushall(*, host: PluginHost, dev_id: str) -> bool:
+    """Request a full status snapshot (get_version + pushall) for one printer.
+
+    Sent from the printer-connected callback, when the publish channel is live.
+    Returns True when both sends were accepted (rc == 0).
+    """
+    ok = True
+    for envelope in (_GET_VERSION, _PUSHALL):
+        try:
+            rc = (await host.call("send_message", {
+                "dev_id": dev_id,
+                "payload": json.dumps(envelope),
+                "qos": 0,
+            })).get("rc", -1)
+            ok = ok and rc == 0
+            if rc != 0:
+                logger.warning("pushall(%s) rc=%s", dev_id, rc)
+        except PluginHostError as exc:
+            logger.warning("pushall(%s) failed: %s", dev_id, exc)
+            return False
+    return ok

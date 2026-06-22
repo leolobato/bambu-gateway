@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import time
 import zipfile
 from contextlib import asynccontextmanager, AsyncExitStack
 from pathlib import Path
@@ -306,18 +307,24 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
                 await client.handle_update_status(event)
                 return
 
+    pushall_debounce: dict[str, float] = {}
+
     async def _on_printer_connected(event: dict) -> None:
         # The plugin signals a device's publish channel is ready — now pushall
-        # is accepted, so pull the full snapshot (temps, gcode_state, AMS).
+        # is accepted, so pull the full snapshot (temps, gcode_state, AMS). The
+        # callback can fire repeatedly as the connection settles; debounce so
+        # we don't spam pushall (and don't re-select, which churns the channel).
         dev_id = event.get("dev_id")
         if not dev_id:
             return
+        now = time.monotonic()
+        if now - pushall_debounce.get(dev_id, 0.0) < 5.0:
+            return
+        pushall_debounce[dev_id] = now
         logger.info("Cloud printer %s connected — requesting full status", dev_id)
-        from app.cloud.session import request_full_status
+        from app.cloud.session import request_pushall
         try:
-            await request_full_status(
-                host=host, dev_ids=[dev_id], attempts=5, delay=0.5,
-            )
+            await request_pushall(host=host, dev_id=dev_id)
         except Exception:
             logger.exception("full-status request on connect failed")
 
