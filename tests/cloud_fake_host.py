@@ -48,6 +48,15 @@ def _dispatch(method: str, params: dict) -> dict:
             "expires_in": "3600",
             "refresh_expires_in": "86400",
         }
+    if method == "get_user_print_info":
+        # Pretends to return the account's bound device list. Tests can seed
+        # a JSON array via FAKE_HOST_USER_DEVICES; defaults to none.
+        return {
+            "devices": json.loads(
+                os.environ.get("FAKE_HOST_USER_DEVICES", "[]")
+            ),
+            "http_code": 200,
+        }
     if method == "connect_server":
         return {"rc": int(os.environ.get("FAKE_HOST_CONNECT_SERVER_RC", "0"))}
     if method == "start_subscribe":

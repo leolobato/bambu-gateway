@@ -141,6 +141,11 @@ class PluginLoader {
   // error (non-zero rc) or if the response body cannot be parsed.
   nlohmann::json get_my_token(const std::string& ticket);
 
+  // Calls bambu_network_get_user_print_info(agent, &http_code, &http_body)
+  // using the plugin's logged-in session. Returns the parsed JSON object
+  // ({"devices":[...], "http_code":N}). Throws on non-zero rc / parse error.
+  nlohmann::json get_user_print_info();
+
   // Registers a trampoline with the plugin that pushes every incoming cloud
   // MQTT message into the process-global EventQueue.
   //
@@ -252,6 +257,11 @@ class PluginLoader {
   // Source: BBLNetworkPlugin.hpp:109, BBLCloudServiceAgent.cpp:620-629.
   using fn_get_my_token      = int(*)(void*, std::string, unsigned int*, std::string*);
 
+  // int bambu_network_get_user_print_info(void *agent, unsigned int* http_code,
+  //                                       std::string* http_body)
+  // Source: BBLNetworkPlugin.hpp:92. Uses the plugin's stored session token.
+  using fn_get_user_print_info = int(*)(void*, unsigned int*, std::string*);
+
   // OnMessageFn — std::function callback type matching bambu_networking.hpp:120.
   // EXACTLY 2 parameters: dev_id and msg (NO chan).
   using on_message_fn = std::function<void(std::string dev_id, std::string msg)>;
@@ -301,6 +311,7 @@ class PluginLoader {
   fn_is_user_login      p_is_user_login_      = nullptr;
   fn_user_logout        p_user_logout_        = nullptr;
   fn_get_my_token       p_get_my_token_       = nullptr;
+  fn_get_user_print_info p_get_user_print_info_ = nullptr;
   fn_set_on_message_fn  p_set_on_message_fn_  = nullptr;
   fn_connect_server     p_connect_server_     = nullptr;
   fn_start_subscribe    p_start_subscribe_    = nullptr;

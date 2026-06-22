@@ -102,6 +102,16 @@ async def post_paste(request: Request, body: PasteBody) -> dict:
             connected = await connect()
         except PluginHostError as exc:
             logger.warning("cloud connect after login failed: %s", exc)
+
+    # Pull the account's printers (real name + model) so they appear without
+    # a manual add. Best-effort — never fail the login over discovery.
+    discover = getattr(request.app.state, "cloud_discover", None)
+    if discover is not None:
+        try:
+            await discover()
+        except Exception as exc:
+            logger.warning("cloud discovery after login failed: %s", exc)
+
     return {"profile": cached.to_dict(), "connected": connected}
 
 

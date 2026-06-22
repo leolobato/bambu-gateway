@@ -25,11 +25,14 @@ class CloudPrinterClient:
     so the ``PrinterStatus`` shape is identical between the two paths.
     """
 
-    def __init__(self, *, dev_id: str, name: str = "", host=None) -> None:
+    def __init__(
+        self, *, dev_id: str, name: str = "", machine_model: str = "", host=None
+    ) -> None:
         self._dev_id = dev_id
         self._status = PrinterStatus(
             id=dev_id,
             name=name or f"Cloud Printer {dev_id[-4:]}",
+            machine_model=machine_model,
         )
         self._gcode_state: str = "IDLE"
         self._lock = threading.Lock()
@@ -65,6 +68,10 @@ class CloudPrinterClient:
     def set_name(self, name: str) -> None:
         with self._lock:
             self._status.name = name
+
+    def set_machine_model(self, machine_model: str) -> None:
+        with self._lock:
+            self._status.machine_model = machine_model
 
     def set_status_change_callback(self, callback) -> None:
         """Register a ``(prev, new)`` snapshot callback — same contract as

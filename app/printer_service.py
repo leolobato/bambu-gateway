@@ -209,7 +209,8 @@ class PrinterService:
             if existing is None:
                 logger.info("Adding cloud printer %s", serial)
                 client = CloudPrinterClient(
-                    dev_id=serial, name=display, host=self._cloud_host,
+                    dev_id=serial, name=display,
+                    machine_model=cfg.machine_model, host=self._cloud_host,
                 )
                 if self._status_change_callback is not None:
                     client.set_status_change_callback(
@@ -218,6 +219,7 @@ class PrinterService:
                 self._cloud_clients[serial] = client
             else:
                 existing.set_name(display)
+                existing.set_machine_model(cfg.machine_model)
 
     def get_all_statuses(self) -> list[PrinterStatus]:
         """Return status for every configured printer (LAN + cloud)."""

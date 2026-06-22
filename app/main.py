@@ -278,6 +278,7 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
         cfg.serial: CloudPrinterClient(
             dev_id=cfg.serial,
             name=cfg.name or f"Printer {cfg.serial[-4:]}",
+            machine_model=cfg.machine_model,
             host=host,
         )
         for cfg in configs
@@ -365,6 +366,7 @@ async def lifespan(app: FastAPI):
         app.state.cloud_connect = None
         app.state.cloud_event_pump = None
         app.state.cloud_profile = None
+        app.state.cloud_discover = None
         cloud_active = False
         if settings.bambu_cloud_enabled:
             try:
@@ -425,6 +427,16 @@ async def lifespan(app: FastAPI):
                 app.state.cloud_printers,
                 host=app.state.cloud_host,
             )
+            # Auto-discover the account's printers (real name + model) on a
+            # restored session — no manual add, no re-login. Exposed on
+            # app.state so the paste-login route can re-run it after a fresh
+            # sign-in too.
+            app.state.cloud_discover = _discover_cloud_printers
+            try:
+                if await cloud_auth.is_signed_in(host=app.state.cloud_host):
+                    await _discover_cloud_printers()
+            except Exception:
+                logger.exception("startup cloud discovery failed")
         if notification_hub is not None:
             notification_hub.set_printer_service(printer_service)
         if settings.orcaslicer_api_url:
@@ -2285,6 +2297,39 @@ async def _resubscribe_cloud_printers() -> None:
         await subscribe_printers(host=host, dev_ids=serials)
     except PluginHostError as exc:
         logger.warning("cloud re-subscribe after printer CRUD failed: %s", exc)
+
+
+async def _discover_cloud_printers() -> int:
+    """Pull the account's bound devices and upsert real name + model.
+
+    Runs at startup (restored session) and after a paste login, so cloud
+    printers appear automatically — no manual add, no re-login. Best-effort:
+    a host/parse failure leaves the existing config untouched. Returns the
+    number of devices the account reported.
+    """
+    host = getattr(app.state, "cloud_host", None)
+    if host is None:
+        return 0
+    from app.cloud.discovery import (
+        fetch_user_devices,
+        merge_discovered_devices,
+    )
+
+    try:
+        devices = await fetch_user_devices(host=host)
+    except (PluginHostError, Exception) as exc:  # best-effort
+        logger.warning("cloud device discovery failed: %s", exc)
+        return 0
+
+    new_configs, changed = merge_discovered_devices(
+        printer_service.get_configs(), devices
+    )
+    if changed:
+        config_store.save(new_configs)
+        printer_service.sync_printers(new_configs)
+        await _resubscribe_cloud_printers()
+        logger.info("Cloud discovery upserted %d device(s)", len(devices))
+    return len(devices)
 
 
 @app.post("/api/settings/printers", response_model=PrinterConfigResponse,

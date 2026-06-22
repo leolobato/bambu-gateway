@@ -122,6 +122,7 @@ void PluginLoader::load_from_env() {
   p_is_user_login_     = must_resolve<fn_is_user_login>     (dl_handle_, "bambu_network_is_user_login");
   p_user_logout_       = must_resolve<fn_user_logout>       (dl_handle_, "bambu_network_user_logout");
   p_get_my_token_      = must_resolve<fn_get_my_token>      (dl_handle_, "bambu_network_get_my_token");
+  p_get_user_print_info_ = must_resolve<fn_get_user_print_info>(dl_handle_, "bambu_network_get_user_print_info");
   p_set_on_message_fn_ = must_resolve<fn_set_on_message_fn> (dl_handle_, "bambu_network_set_on_message_fn");
   p_connect_server_    = must_resolve<fn_connect_server>    (dl_handle_, "bambu_network_connect_server");
   p_start_subscribe_   = must_resolve<fn_start_subscribe>   (dl_handle_, "bambu_network_start_subscribe");
@@ -306,6 +307,40 @@ nlohmann::json PluginLoader::get_my_token(const std::string& ticket) {
   }
 
   // Surface http_code alongside the token fields so the caller can log it.
+  body_j["http_code"] = http_code;
+  return body_j;
+}
+
+nlohmann::json PluginLoader::get_user_print_info() {
+  if (!agent_) {
+    throw std::runtime_error("get_user_print_info: agent not bootstrapped");
+  }
+
+  unsigned int http_code = 0;
+  std::string  http_body;
+
+  // Synchronous HTTPS round-trip using the plugin's own logged-in session —
+  // no Python-side token needed. Returns {"devices":[{dev_id, dev_name,
+  // dev_online, dev_model_name, dev_product_name, ...}]} (DevManager.cpp:719).
+  int rc = p_get_user_print_info_(agent_, &http_code, &http_body);
+  std::fprintf(stderr,
+               "bambu_cloud_host: get_user_print_info rc=%d http_code=%u body_len=%zu\n",
+               rc, http_code, http_body.size());
+
+  if (rc != 0) {
+    throw std::runtime_error("get_user_print_info rc=" + std::to_string(rc) +
+                             " http_code=" + std::to_string(http_code));
+  }
+
+  nlohmann::json body_j;
+  try {
+    body_j = nlohmann::json::parse(http_body);
+  } catch (const std::exception& e) {
+    throw std::runtime_error(
+        std::string("get_user_print_info: failed to parse response body: ") +
+        e.what() + " body=" + http_body.substr(0, 200));
+  }
+
   body_j["http_code"] = http_code;
   return body_j;
 }
