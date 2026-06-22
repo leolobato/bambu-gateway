@@ -255,6 +255,15 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
                 active_dir / "libBambuSource.so"
             ),
             "BAMBU_CLOUD_REGION": settings.bambu_cloud_region,
+            # libBambuSource.so statically links OpenSSL 3.x whose compiled-in
+            # cert path doesn't resolve in our slim image, so the plugin's TLS
+            # trusts nothing and the token exchange fails with
+            # CURLE_PEER_FAILED_VERIFICATION (get_my_token http_code=60). The
+            # plugin's set_cert_file does not wire curl's CAINFO; point its
+            # OpenSSL at the system CA store via the env vars it honors.
+            "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
+            "SSL_CERT_DIR": "/etc/ssl/certs",
+            "CURL_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
         },
     )
     await stack.enter_async_context(host)
