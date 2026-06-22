@@ -165,6 +165,10 @@ class PluginLoader {
   // plugin returns a non-zero error code.
   void register_message_callback();
 
+  // Installs a trampoline pushing an {"kind":"OnPrinterConnected","dev_id":..}
+  // event when the plugin reports a device's publish channel is ready.
+  void register_printer_connected_callback();
+
   // Calls bambu_network_connect_server(agent).
   // Initiates the cloud MQTT broker handshake asynchronously.
   // Returns 0 = initiated; negative = error.
@@ -280,6 +284,12 @@ class PluginLoader {
   // Source: BBLNetworkPlugin.hpp:39, bambu_networking.hpp:120
   using fn_set_on_message_fn = int(*)(void*, on_message_fn);
 
+  // OnPrinterConnectedFn — fired when a cloud device's publish channel is
+  // ready (the signal that send_message stops returning -2 CONNECT_FAILED).
+  // 1 param: dev_id. Source: BBLNetworkPlugin.hpp set_on_printer_connected_fn.
+  using on_printer_connected_fn = std::function<void(std::string dev_id)>;
+  using fn_set_on_printer_connected_fn = int(*)(void*, on_printer_connected_fn);
+
   // int bambu_network_connect_server(void *agent)
   // Source: BBLNetworkPlugin.hpp:44
   using fn_connect_server    = int(*)(void*);
@@ -323,6 +333,7 @@ class PluginLoader {
   fn_get_user_print_info p_get_user_print_info_ = nullptr;
   fn_set_user_selected_machine p_set_user_selected_machine_ = nullptr;
   fn_set_on_message_fn  p_set_on_message_fn_  = nullptr;
+  fn_set_on_printer_connected_fn p_set_on_printer_connected_fn_ = nullptr;
   fn_connect_server     p_connect_server_     = nullptr;
   fn_start_subscribe    p_start_subscribe_    = nullptr;
   fn_add_subscribe      p_add_subscribe_      = nullptr;

@@ -125,6 +125,7 @@ void PluginLoader::load_from_env() {
   p_get_user_print_info_ = must_resolve<fn_get_user_print_info>(dl_handle_, "bambu_network_get_user_print_info");
   p_set_user_selected_machine_ = must_resolve<fn_set_user_selected_machine>(dl_handle_, "bambu_network_set_user_selected_machine");
   p_set_on_message_fn_ = must_resolve<fn_set_on_message_fn> (dl_handle_, "bambu_network_set_on_message_fn");
+  p_set_on_printer_connected_fn_ = must_resolve<fn_set_on_printer_connected_fn>(dl_handle_, "bambu_network_set_on_printer_connected_fn");
   p_connect_server_    = must_resolve<fn_connect_server>    (dl_handle_, "bambu_network_connect_server");
   p_start_subscribe_   = must_resolve<fn_start_subscribe>   (dl_handle_, "bambu_network_start_subscribe");
   p_add_subscribe_     = must_resolve<fn_add_subscribe>     (dl_handle_, "bambu_network_add_subscribe");
@@ -225,6 +226,16 @@ int PluginLoader::bootstrap() {
                  "bambu_cloud_host: register_message_callback WARN: %s\n",
                  e.what());
     // Non-fatal — continue without the callback.
+  }
+
+  try {
+    register_printer_connected_callback();
+    std::fprintf(stderr,
+                 "bambu_cloud_host: register_printer_connected_callback OK\n");
+  } catch (const std::exception& e) {
+    std::fprintf(stderr,
+                 "bambu_cloud_host: register_printer_connected_callback WARN: %s\n",
+                 e.what());
   }
 
   return 0;
@@ -384,6 +395,28 @@ void PluginLoader::register_message_callback() {
   if (rc != 0) {
     throw std::runtime_error(
         "set_on_message_fn rc=" + std::to_string(rc));
+  }
+}
+
+void PluginLoader::register_printer_connected_callback() {
+  if (!agent_ || !p_set_on_printer_connected_fn_) {
+    throw std::runtime_error(
+        "register_printer_connected_callback: agent not bootstrapped");
+  }
+  on_printer_connected_fn cb = [](std::string dev_id) {
+    std::fprintf(stderr,
+                 "bambu_cloud_host: on_printer_connected dev_id=%s\n",
+                 dev_id.c_str());
+    json event = {
+      {"kind",   "OnPrinterConnected"},
+      {"dev_id", std::move(dev_id)},
+    };
+    global_event_queue().push(std::move(event));
+  };
+  int rc = p_set_on_printer_connected_fn_(agent_, std::move(cb));
+  if (rc != 0) {
+    throw std::runtime_error(
+        "set_on_printer_connected_fn rc=" + std::to_string(rc));
   }
 }
 

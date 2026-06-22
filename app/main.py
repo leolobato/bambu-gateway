@@ -306,9 +306,25 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
                 await client.handle_update_status(event)
                 return
 
+    async def _on_printer_connected(event: dict) -> None:
+        # The plugin signals a device's publish channel is ready — now pushall
+        # is accepted, so pull the full snapshot (temps, gcode_state, AMS).
+        dev_id = event.get("dev_id")
+        if not dev_id:
+            return
+        logger.info("Cloud printer %s connected — requesting full status", dev_id)
+        from app.cloud.session import request_full_status
+        try:
+            await request_full_status(
+                host=host, dev_ids=[dev_id], attempts=5, delay=0.5,
+            )
+        except Exception:
+            logger.exception("full-status request on connect failed")
+
     pump = EventPump(host=host, handlers={
         "OnMessage": _on_message,
         "OnUpdateStatus": _on_update_status,
+        "OnPrinterConnected": _on_printer_connected,
     })
     await pump.start()
     app.state.cloud_event_pump = pump
