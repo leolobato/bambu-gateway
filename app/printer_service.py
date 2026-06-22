@@ -72,16 +72,19 @@ class PrinterService:
         self._status_change_callback = status_change_callback
         self._cloud_mode = cloud_mode
         self._cloud_host = None
+        # Serials promoted to a read-write LAN client (SSDP found the ip and the
+        # cloud bind list gave the access code). Empty until SSDP promotes one,
+        # so cloud printers default to the relay transport.
+        self._lan_promoted: set[str] = set()
         # Cloud printer clients keyed by serial. Set via set_cloud_printers()
         # after the EventPump is wired up; None until then.
         self._cloud_clients: dict[str, "CloudPrinterClient"] | None = None  # type: ignore[name-defined]
         for cfg in printer_configs:
             self._configs[cfg.serial] = cfg
-            if cloud_mode:
+            if cloud_mode and not self._wants_lan(cfg):
                 # Cloud mode: printers are reached via CloudPrinterClient
-                # (registered through set_cloud_printers); creating a LAN
-                # client too would list every printer twice and shadow the
-                # live cloud status with a never-connected LAN one.
+                # (the relay). A printer SSDP has promoted to LAN gets a
+                # read-write LAN client below instead.
                 continue
             client = BambuMQTTClient(cfg)
             if status_change_callback is not None:
@@ -108,6 +111,27 @@ class PrinterService:
     def get_cloud_client(self, printer_id: str):
         """Return the CloudPrinterClient for a printer, or None."""
         return (self._cloud_clients or {}).get(printer_id)
+
+    def _wants_lan(self, cfg: PrinterConfig) -> bool:
+        """Whether this printer should use a read-write LAN client.
+
+        Outside cloud mode every printer is LAN. In cloud mode a printer is LAN
+        only once SSDP has promoted it AND we have its ip + access code.
+        """
+        if not self._cloud_mode:
+            return True
+        return (
+            cfg.serial in self._lan_promoted
+            and bool(cfg.ip and cfg.access_code)
+        )
+
+    def promote_lan(self, serial: str) -> None:
+        """Mark a serial as LAN-reachable (called when SSDP finds its ip).
+
+        Caller should follow with :meth:`sync_printers` so the transport
+        actually switches from the relay to a LAN client.
+        """
+        self._lan_promoted.add(serial)
 
     def start(self) -> None:
         """Initialize printer service without opening MQTT connections."""
@@ -194,16 +218,37 @@ class PrinterService:
             self._clients[serial] = client
 
     def _sync_cloud_printers(self, new_configs: list[PrinterConfig]) -> None:
+        """Cloud-mode hot-reload that routes each printer per-transport.
+
+        A printer with a LAN ip + access_code (SSDP-found ip + cloud-fetched
+        access code) gets a read-write LAN client; one without is reached via
+        the cloud relay. A serial lives in exactly one of the two registries.
+        """
         from app.cloud.cloud_printer import CloudPrinterClient
 
         new_by_serial = {c.serial: c for c in new_configs}
+        old_configs = self._configs
         self._configs = dict(new_by_serial)
-        if self._cloud_clients is None:
-            return
-        for serial in set(self._cloud_clients) - set(new_by_serial):
-            logger.info("Removing cloud printer %s", serial)
-            del self._cloud_clients[serial]
+
+        gone = (
+            set(old_configs) | set(self._clients) | set(self._cloud_clients or {})
+        ) - set(new_by_serial)
+        for serial in gone:
+            self._drop_lan_client(serial)
+            if self._cloud_clients is not None and serial in self._cloud_clients:
+                logger.info("Removing cloud printer %s", serial)
+                del self._cloud_clients[serial]
+
         for serial, cfg in new_by_serial.items():
+            if self._wants_lan(cfg):
+                if self._cloud_clients is not None and serial in self._cloud_clients:
+                    del self._cloud_clients[serial]
+                self._ensure_lan_client(serial, cfg, old_configs.get(serial))
+                continue
+
+            self._drop_lan_client(serial)
+            if self._cloud_clients is None:
+                continue
             display = cfg.name or f"Printer {serial[-4:]}"
             existing = self._cloud_clients.get(serial)
             if existing is None:
@@ -220,6 +265,42 @@ class PrinterService:
             else:
                 existing.set_name(display)
                 existing.set_machine_model(cfg.machine_model)
+
+    def _drop_lan_client(self, serial: str) -> None:
+        client = self._clients.pop(serial, None)
+        if client is not None:
+            logger.info("Removing LAN printer %s", serial)
+            client.stop()
+            proxy = self._proxies.pop(serial, None)
+            if proxy is not None:
+                asyncio.create_task(proxy.stop())
+
+    def _ensure_lan_client(
+        self, serial: str, cfg: PrinterConfig, old_cfg: PrinterConfig | None,
+    ) -> None:
+        existing = self._clients.get(serial)
+        if existing is None:
+            logger.info("Adding LAN printer %s (%s)", serial, cfg.ip)
+            client = BambuMQTTClient(cfg)
+            if self._status_change_callback is not None:
+                client.set_status_change_callback(self._status_change_callback)
+            self._clients[serial] = client
+            return
+        if (old_cfg is None or old_cfg.ip != cfg.ip
+                or old_cfg.access_code != cfg.access_code):
+            logger.info("Resetting LAN printer %s client (config changed)", serial)
+            existing.stop()
+            new_client = BambuMQTTClient(cfg)
+            if self._status_change_callback is not None:
+                new_client.set_status_change_callback(self._status_change_callback)
+            self._clients[serial] = new_client
+            proxy = self._proxies.pop(serial, None)
+            if proxy is not None:
+                asyncio.create_task(proxy.stop())
+        elif old_cfg.name != cfg.name:
+            display = cfg.name or f"Printer {serial[-4:]}"
+            with existing._lock:
+                existing._status.name = display
 
     def get_all_statuses(self) -> list[PrinterStatus]:
         """Return status for every configured printer (LAN + cloud)."""

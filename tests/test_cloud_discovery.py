@@ -6,14 +6,55 @@ from app.cloud.discovery import merge_discovered_devices
 from app.config import PrinterConfig
 
 
-def _dev(dev_id, name="", product="", model=""):
+def _dev(dev_id, name="", product="", model="", access=""):
     return {
         "dev_id": dev_id,
         "dev_name": name,
         "dev_product_name": product,
         "dev_model_name": model,
+        "dev_access_code": access,
         "dev_online": True,
     }
+
+
+def test_merge_captures_cloud_access_code():
+    configs, changed = merge_discovered_devices(
+        [], [_dev("S1", name="A1", access="12345678")]
+    )
+    assert changed is True
+    assert configs[0].access_code == "12345678"
+
+
+def test_merge_updates_existing_access_code():
+    existing = [PrinterConfig(ip="10.0.1.157", access_code="", serial="S1",
+                              name="A1", machine_model="A1 mini")]
+    configs, changed = merge_discovered_devices(
+        existing, [_dev("S1", name="A1", access="87654321")]
+    )
+    assert changed is True
+    assert next(c for c in configs if c.serial == "S1").access_code == "87654321"
+
+
+def test_cloud_printer_uses_relay_until_ssdp_promotes_it():
+    from app.printer_service import PrinterService
+    cfg = PrinterConfig(ip="10.0.1.157", access_code="abc", serial="S1", name="A1")
+    svc = PrinterService([cfg], cloud_mode=True)
+    # Having ip + access_code is not enough on its own — the cloud test model
+    # seeds those too; only an SSDP promotion flips a printer to LAN.
+    assert "S1" not in svc._clients
+
+    svc.promote_lan("S1")
+    svc.sync_printers([cfg])
+    assert "S1" in svc._clients  # now a read-write LAN client
+
+
+def test_promotion_without_lan_coords_stays_on_relay():
+    from app.printer_service import PrinterService
+    cfg = PrinterConfig(ip="", access_code="", serial="S1", name="A1")
+    svc = PrinterService([cfg], cloud_mode=True)
+    svc.promote_lan("S1")
+    svc.sync_printers([cfg])
+    assert "S1" not in svc._clients  # no ip/access_code → can't go LAN
 
 
 def test_merge_adds_unknown_device_with_name_and_model():

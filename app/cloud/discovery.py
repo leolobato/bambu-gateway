@@ -49,19 +49,26 @@ def merge_discovered_devices(
         model = str(
             d.get("dev_product_name") or d.get("dev_model_name") or ""
         ).strip()
+        # The cloud bind list carries the printer's LAN access code, so we can
+        # connect over LAN MQTT (bblp + access code) without the user reading
+        # it off the printer — the IP comes separately from SSDP discovery.
+        access = str(d.get("dev_access_code") or "").strip()
         cur = by_serial.get(serial)
         if cur is None:
             by_serial[serial] = PrinterConfig(
-                ip="", access_code="", serial=serial,
+                ip="", access_code=access, serial=serial,
                 name=name, machine_model=model,
             )
             changed = True
         else:
             new_name = name or cur.name
             new_model = model or cur.machine_model
-            if new_name != cur.name or new_model != cur.machine_model:
+            new_access = access or cur.access_code
+            if (new_name != cur.name or new_model != cur.machine_model
+                    or new_access != cur.access_code):
                 by_serial[serial] = replace(
-                    cur, name=new_name, machine_model=new_model
+                    cur, name=new_name, machine_model=new_model,
+                    access_code=new_access,
                 )
                 changed = True
     return list(by_serial.values()), changed

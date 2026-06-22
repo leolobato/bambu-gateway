@@ -93,6 +93,7 @@ from app.mqtt_client import (
 )
 from app.parse_3mf import parse_3mf_token_via_slicer, parse_3mf_via_slicer
 from app.printer_service import PrinterService
+from app.ssdp import SSDPDiscovery
 from app.slice_jobs import SliceJobManager, SliceJobStatus, SliceJobStore
 from app.slicer_client import SlicerClient, SliceResult, SlicingError
 from app.upload_tracker import UploadCancelledError, tracker as upload_tracker
@@ -274,7 +275,9 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
     app.state.cloud_host = host
     logger.info("Bambu plugin host ready")
 
-    # One CloudPrinterClient per configured printer, keyed by serial.
+    # One CloudPrinterClient per configured printer, keyed by serial. SSDP can
+    # later promote a printer to a read-write LAN client; sync_printers then
+    # moves it out of this relay registry, so a serial is never in both.
     cloud_clients: dict[str, CloudPrinterClient] = {
         cfg.serial: CloudPrinterClient(
             dev_id=cfg.serial,
@@ -390,6 +393,7 @@ async def lifespan(app: FastAPI):
         app.state.cloud_event_pump = None
         app.state.cloud_profile = None
         app.state.cloud_discover = None
+        app.state.cloud_ssdp = None
         cloud_active = False
         if settings.bambu_cloud_enabled:
             try:
@@ -460,6 +464,29 @@ async def lifespan(app: FastAPI):
                     await _discover_cloud_printers()
             except Exception:
                 logger.exception("startup cloud discovery failed")
+
+            # SSDP fills in each cloud-discovered printer's LAN ip so we can
+            # reach it over read-write LAN MQTT (the cloud bind list gave us
+            # the access code). On finding an ip, point the printer's config
+            # at it and resync — that promotes it to a LAN client.
+            async def _on_ssdp_found(serial: str, ip: str) -> None:
+                from dataclasses import replace
+                configs = config_store.load()
+                by_serial = {c.serial: c for c in configs}
+                cfg = by_serial.get(serial)
+                if cfg is None:
+                    return
+                printer_service.promote_lan(serial)
+                if cfg.ip != ip:
+                    by_serial[serial] = replace(cfg, ip=ip)
+                    config_store.save(list(by_serial.values()))
+                printer_service.sync_printers(list(by_serial.values()))
+                logger.info("SSDP: %s -> LAN %s (read-write)", serial, ip)
+
+            ssdp = SSDPDiscovery(_on_ssdp_found)
+            await ssdp.start()
+            app.state.cloud_ssdp = ssdp
+            stack.push_async_callback(ssdp.stop)
         if notification_hub is not None:
             notification_hub.set_printer_service(printer_service)
         if settings.orcaslicer_api_url:
