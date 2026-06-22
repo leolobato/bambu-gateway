@@ -448,6 +448,10 @@ async def lifespan(app: FastAPI):
             cloud_mode=cloud_active,
         )
         printer_service.start()
+        # Create the slicer client up front: cloud discovery (below) uses it to
+        # resolve each printer's product name to a slicer machine setting_id.
+        if settings.orcaslicer_api_url:
+            slicer_client = SlicerClient(settings.orcaslicer_api_url)
         # Surface cloud printers through the existing list/status API.
         if cloud_active and app.state.cloud_printers is not None:
             printer_service.set_cloud_printers(
@@ -489,8 +493,6 @@ async def lifespan(app: FastAPI):
             stack.push_async_callback(ssdp.stop)
         if notification_hub is not None:
             notification_hub.set_printer_service(printer_service)
-        if settings.orcaslicer_api_url:
-            slicer_client = SlicerClient(settings.orcaslicer_api_url)
 
         _sweep_stl_drafts()
 
@@ -2363,6 +2365,7 @@ async def _discover_cloud_printers() -> int:
     from app.cloud.discovery import (
         fetch_user_devices,
         merge_discovered_devices,
+        resolve_machine_setting_id,
     )
 
     try:
@@ -2371,8 +2374,21 @@ async def _discover_cloud_printers() -> int:
         logger.warning("cloud device discovery failed: %s", exc)
         return 0
 
+    # Map each printer's bare product name (e.g. "A1 mini") to a slicer
+    # setting_id (e.g. "GM020") so machine_model matches the manual-add
+    # convention and the UI can filter compatible filaments. Best-effort:
+    # without the slicer the raw product name is kept.
+    resolve_model = None
+    if slicer_client is not None:
+        try:
+            machines = await slicer_client.get_profiles("machines")
+        except Exception:
+            machines = []
+        if machines:
+            resolve_model = lambda raw: resolve_machine_setting_id(raw, machines)
+
     new_configs, changed = merge_discovered_devices(
-        printer_service.get_configs(), devices
+        printer_service.get_configs(), devices, resolve_model=resolve_model
     )
     if changed:
         config_store.save(new_configs)
