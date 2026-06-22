@@ -83,6 +83,70 @@ See **[docs/APNS.md](docs/APNS.md)** for the full walkthrough: creating the
 `.p8` key, choosing sandbox vs. production, installing the key for Docker
 deployments, rotating keys, and troubleshooting.
 
+## Bambu Cloud mode (optional)
+
+By default the gateway talks to printers directly over your LAN, which requires
+**Developer Mode** on each printer. If you'd rather not enable Developer Mode —
+or your printer isn't on the same network — you can instead connect through your
+**Bambu Cloud account**. The gateway logs in to Bambu's cloud and reaches your
+printers through it, so no IP, access code, or Developer Mode is needed.
+
+> Cloud mode is opt-in and experimental. If it fails to start, the gateway falls
+> back to LAN mode automatically and the cloud endpoints return `503`.
+
+### 1. Turn on cloud mode
+
+Add these to your `.env` (or `-e` flags) and restart the container:
+
+```env
+BAMBU_CLOUD_ENABLED=true
+BAMBU_CLOUD_REGION=US      # use CN for the China region
+```
+
+In cloud mode the LAN printer settings (`BAMBU_PRINTER_IP`, access code, serial)
+are ignored — your printers come from your Bambu account instead. The login
+session is saved under `./data/` and survives restarts, so you only do the steps
+below once.
+
+### 2. Log in to your Bambu account
+
+There's no login button in the UI yet, so the first sign-in is done with a couple
+of API calls. Replace `localhost:4844` if your gateway runs elsewhere.
+
+**a. Get the sign-in link:**
+
+```bash
+curl http://localhost:4844/api/cloud/auth/url
+```
+
+This returns a `bambulab.com` sign-in URL.
+
+**b. Open that URL in your browser and log in** with your Bambu email and
+password (including any verification code).
+
+**c. After signing in, your browser will try to open
+`http://localhost:13618/?ticket=…` and show a "this site can't be reached" /
+"connection refused" page. That's expected.** Copy the **full URL from the
+browser's address bar** — it contains your one-time login ticket.
+
+**d. Paste that URL back to the gateway to finish logging in:**
+
+```bash
+curl -X POST http://localhost:4844/api/cloud/auth/paste \
+  -H 'Content-Type: application/json' \
+  -d '{"pasted_url": "http://localhost:13618/?ticket=PASTE_THE_URL_HERE"}'
+```
+
+On success the response shows your account profile and `"connected": true`, and
+your cloud printers start appearing on the dashboard.
+
+### 3. Check status / log out
+
+```bash
+curl http://localhost:4844/api/cloud/auth/status   # {"signed_in": true}
+curl -X POST http://localhost:4844/api/cloud/auth/logout
+```
+
 ## Configuration
 
 ### Printer config
@@ -112,6 +176,8 @@ python -m app -c /data/printers.json
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `MAX_FILE_SIZE_MB` | `200` | Maximum upload file size in MB |
 | `ORCASLICER_API_URL` | | OrcaSlicer Headless API URL (e.g. `http://10.0.1.9:8070`) — required for slicing |
+| `BAMBU_CLOUD_ENABLED` | `false` | Connect through your Bambu Cloud account instead of LAN — see [Bambu Cloud mode](#bambu-cloud-mode-optional) |
+| `BAMBU_CLOUD_REGION` | `US` | Bambu account region: `US` or `CN` |
 | `APNS_KEY_PATH` | | Path to APNs Auth Key `.p8` — see [docs/APNS.md](docs/APNS.md). All four APNS_* vars must be set to enable push |
 | `APNS_KEY_ID` | | 10-character Key ID from the Apple Developer portal |
 | `APNS_TEAM_ID` | | 10-character Team ID from the Apple Developer portal |
