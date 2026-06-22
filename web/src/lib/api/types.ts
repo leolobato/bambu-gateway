@@ -432,7 +432,23 @@ export interface DeviceListResponse {
 export interface Capabilities {
   push: boolean;
   live_activities: boolean;
+  cloud: boolean;
   version: string;
+}
+
+// --- Settings: Bambu Cloud account (mirror app/cloud/profile_store.py) ---
+
+export interface CloudProfile {
+  name: string;
+  account: string;
+  avatar: string;
+  uid: string;
+}
+
+export interface CloudStatus {
+  signed_in: boolean;
+  profile: CloudProfile | null;
+  region: string;
 }
 
 // --- Slice jobs ---
