@@ -95,7 +95,9 @@ class SSDPDiscovery:
             logger.warning("SSDP discovery disabled (socket setup failed): %s", exc)
             return
         loop = asyncio.get_running_loop()
-        self._tasks.append(loop.create_task(self._listen()))
+        # add_reader works under both asyncio and uvloop (uvicorn's default);
+        # loop.sock_recvfrom does not, so don't use it.
+        loop.add_reader(self._sock.fileno(), self._on_readable)
         self._tasks.append(loop.create_task(self._search_loop()))
         logger.info("SSDP discovery started on %s:%d", _MCAST_GRP, _BAMBU_PORT)
 
@@ -104,6 +106,10 @@ class SSDPDiscovery:
             task.cancel()
         self._tasks.clear()
         if self._sock is not None:
+            try:
+                asyncio.get_running_loop().remove_reader(self._sock.fileno())
+            except Exception:
+                pass
             self._sock.close()
             self._sock = None
 
@@ -117,17 +123,17 @@ class SSDPDiscovery:
         sock.setblocking(False)
         return sock
 
-    async def _listen(self) -> None:
-        loop = asyncio.get_running_loop()
-        assert self._sock is not None
+    def _on_readable(self) -> None:
+        """Loop reader callback — drain all buffered datagrams."""
+        if self._sock is None:
+            return
         while True:
             try:
-                data, _addr = await loop.sock_recvfrom(self._sock, 65535)
-            except asyncio.CancelledError:
-                raise
+                data, _addr = self._sock.recvfrom(65535)
+            except (BlockingIOError, InterruptedError):
+                return
             except OSError:
-                await asyncio.sleep(1.0)
-                continue
+                return
             parsed = parse_ssdp(data)
             if parsed is None:
                 continue
@@ -136,10 +142,19 @@ class SSDPDiscovery:
                 continue
             self._by_serial[serial] = ip
             logger.info("SSDP: printer %s at %s", serial, ip)
-            try:
-                await self._on_found(serial, ip)
-            except Exception:
-                logger.exception("SSDP on_found handler failed")
+            task = asyncio.get_running_loop().create_task(
+                self._dispatch(serial, ip)
+            )
+            self._tasks.append(task)
+            task.add_done_callback(
+                lambda t: self._tasks.remove(t) if t in self._tasks else None
+            )
+
+    async def _dispatch(self, serial: str, ip: str) -> None:
+        try:
+            await self._on_found(serial, ip)
+        except Exception:
+            logger.exception("SSDP on_found handler failed")
 
     async def _search_loop(self) -> None:
         assert self._sock is not None
