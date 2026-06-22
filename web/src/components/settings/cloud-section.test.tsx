@@ -7,7 +7,6 @@ import { CloudSection } from './cloud-section';
 vi.mock('@/lib/api/capabilities', () => ({ getCapabilities: vi.fn() }));
 vi.mock('@/lib/api/cloud', () => ({
   getCloudStatus: vi.fn(),
-  getCloudAuthUrl: vi.fn(),
   pasteCloudLogin: vi.fn(),
   cloudLogout: vi.fn(),
 }));
@@ -15,7 +14,6 @@ vi.mock('@/lib/api/cloud', () => ({
 import { getCapabilities } from '@/lib/api/capabilities';
 import {
   cloudLogout,
-  getCloudAuthUrl,
   getCloudStatus,
   pasteCloudLogin,
 } from '@/lib/api/cloud';
