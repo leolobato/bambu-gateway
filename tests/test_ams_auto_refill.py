@@ -55,11 +55,11 @@ def test_send_ams_auto_refill_publishes_orca_print_option_payload():
 
     publish.assert_called_once()
     inner = publish.call_args.args[0]["print"]
-    assert inner == {
-        "sequence_id": "0",
-        "command": "print_option",
-        "auto_switch_filament": True,
-    }
+    assert inner["command"] == "print_option"
+    assert inner["auto_switch_filament"] is True
+    # sequence_id must be a fresh value in the firmware's studio range so the
+    # printer accepts the command over the cloud relay (not the old "0").
+    assert 20000 <= int(inner["sequence_id"]) < 30000
     assert client._status.ams_auto_refill_enabled is True
 
 

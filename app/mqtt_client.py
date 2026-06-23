@@ -70,7 +70,7 @@ def build_pause_command() -> dict:
     """Return the JSON envelope for a pause command."""
     return {
         "print": {
-            "sequence_id": "0",
+            "sequence_id": next_sequence_id(),
             "command": "pause",
         }
     }
@@ -80,7 +80,7 @@ def build_resume_command() -> dict:
     """Return the JSON envelope for a resume command."""
     return {
         "print": {
-            "sequence_id": "0",
+            "sequence_id": next_sequence_id(),
             "command": "resume",
         }
     }
@@ -90,7 +90,7 @@ def build_cancel_command() -> dict:
     """Return the JSON envelope for a cancel/stop command."""
     return {
         "print": {
-            "sequence_id": "0",
+            "sequence_id": next_sequence_id(),
             "command": "stop",
         }
     }
@@ -103,7 +103,7 @@ def build_speed_command(level: int) -> dict:
     """
     return {
         "print": {
-            "sequence_id": "0",
+            "sequence_id": next_sequence_id(),
             "command": "print_speed",
             "param": str(level),
         }
@@ -118,7 +118,7 @@ def build_ams_start_drying_command(
     """Return the JSON envelope for starting AMS filament drying."""
     return {
         "print": {
-            "sequence_id": "0",
+            "sequence_id": next_sequence_id(),
             "command": "ams_filament_drying",
             "ams_id": ams_id,
             "temp": temperature,
@@ -135,7 +135,7 @@ def build_light_command(on: bool, node: str = "chamber_light") -> dict:
     """Return the JSON envelope for toggling an LED node via `system.ledctrl`."""
     return {
         "system": {
-            "sequence_id": "0",
+            "sequence_id": next_sequence_id(),
             "command": "ledctrl",
             "led_node": node,
             "led_mode": "on" if on else "off",
@@ -151,7 +151,7 @@ def build_ams_stop_drying_command(ams_id: int) -> dict:
     """Return the JSON envelope for stopping AMS filament drying."""
     return {
         "print": {
-            "sequence_id": "0",
+            "sequence_id": next_sequence_id(),
             "command": "ams_filament_drying",
             "ams_id": ams_id,
             "temp": 0,
@@ -160,6 +160,21 @@ def build_ams_stop_drying_command(ams_id: int) -> dict:
             "humidity": 0,
             "mode": 0,
             "rotate_tray": False,
+        }
+    }
+
+
+def build_ams_auto_refill_command(enabled: bool) -> dict:
+    """Return the JSON envelope for the printer-level AMS auto-refill toggle.
+
+    Mirrors OrcaSlicer's ``command_ams_switch_filament`` —
+    ``print_option.auto_switch_filament``.
+    """
+    return {
+        "print": {
+            "sequence_id": next_sequence_id(),
+            "command": "print_option",
+            "auto_switch_filament": enabled,
         }
     }
 
@@ -731,7 +746,7 @@ class BambuMQTTClient:
         """Send a pushall command to request a full status report."""
         self.publish({
             "pushing": {
-                "sequence_id": "0",
+                "sequence_id": next_sequence_id(),
                 "command": "pushall",
             }
         })
@@ -740,7 +755,7 @@ class BambuMQTTClient:
         """Send a get_version command to discover module hardware types."""
         self.publish({
             "info": {
-                "sequence_id": "0",
+                "sequence_id": next_sequence_id(),
                 "command": "get_version",
             }
         })
@@ -791,13 +806,7 @@ class BambuMQTTClient:
         which publishes `print_option.auto_switch_filament` instead of adding
         this setting to a `project_file` print payload.
         """
-        self.publish({
-            "print": {
-                "sequence_id": "0",
-                "command": "print_option",
-                "auto_switch_filament": enabled,
-            }
-        })
+        self.publish(build_ams_auto_refill_command(enabled))
         with self._lock:
             self._status.ams_auto_refill_enabled = enabled
             self._ams_auto_refill_hold_until = time.monotonic() + 3.0
@@ -859,7 +868,7 @@ class BambuMQTTClient:
         """Send an MQTT command to start printing an uploaded file."""
         payload = {
             "print": {
-                "sequence_id": "0",
+                "sequence_id": next_sequence_id(),
                 "command": "project_file",
                 "param": f"Metadata/plate_{plate_id}.gcode",
                 "url": f"file:///sdcard/cache/{filename}",

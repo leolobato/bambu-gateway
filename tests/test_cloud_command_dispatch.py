@@ -127,3 +127,19 @@ def test_start_drying_route_dispatches_to_cloud(cloud_control_app):
 def test_stop_drying_route_dispatches_to_cloud(cloud_control_app):
     resp = cloud_control_app.post("/api/printers/DEV1/ams/0/stop-drying")
     assert resp.status_code in (200, 204), resp.text
+
+
+def test_light_route_dispatches_to_cloud(cloud_control_app):
+    resp = cloud_control_app.post(
+        "/api/printers/DEV1/light", json={"on": True},
+    )
+    assert resp.status_code in (200, 204), resp.text
+
+
+def test_auto_refill_route_dispatches_to_cloud(cloud_control_app):
+    """Auto-refill now routes through the cloud relay like the other control
+    commands (previously it only hit the LAN-only printer_service method)."""
+    resp = cloud_control_app.post(
+        "/api/printers/DEV1/ams/auto-refill", json={"enabled": True},
+    )
+    assert resp.status_code in (200, 204), resp.text

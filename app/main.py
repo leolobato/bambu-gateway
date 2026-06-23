@@ -83,6 +83,7 @@ from app.models import (
     TransferredSetting,
 )
 from app.mqtt_client import (
+    build_ams_auto_refill_command,
     build_ams_start_drying_command,
     build_ams_stop_drying_command,
     build_cancel_command,
@@ -1015,16 +1016,11 @@ async def stop_drying(printer_id: str, ams_id: int):
     response_model=CommandResponse,
 )
 async def set_ams_auto_refill(printer_id: str, body: AmsAutoRefillRequest):
-    pid = _resolve_printer_id(printer_id)
-    try:
-        printer_service.set_ams_auto_refill(pid, body.enabled)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ConnectionError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    return CommandResponse(
-        printer_id=pid,
-        command=f"ams_auto_refill:{'on' if body.enabled else 'off'}",
+    return await _run_control_command(
+        printer_id,
+        f"ams_auto_refill:{'on' if body.enabled else 'off'}",
+        build_ams_auto_refill_command(body.enabled),
+        lan_action=lambda pid: printer_service.set_ams_auto_refill(pid, body.enabled),
     )
 
 
