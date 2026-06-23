@@ -136,6 +136,31 @@ def test_getStatus_a1Model_emitsTcpJpegCamera():
     assert status.camera.transport == "tcp_jpeg"
 
 
+def test_getStatus_cloudPrinter_emitsCameraFromConfig():
+    """A cloud-transport printer still advertises a directly-connectable camera:
+    the stream is a direct connection by IP + access code, independent of the
+    control relay. Mirrors LAN exactly when the printer is LAN-reachable."""
+    from app.cloud.cloud_printer import CloudPrinterClient
+
+    service = PrinterService(
+        [PrinterConfig(
+            ip="10.0.1.157", access_code="ac", serial="DEV1",
+            machine_model="GM020", name="A1 Mini",
+        )],
+        cloud_mode=True,
+    )
+    service.set_cloud_printers(
+        {"DEV1": CloudPrinterClient(dev_id="DEV1", name="A1 Mini",
+                                    machine_model="GM020")}
+    )
+    status = service.get_status("DEV1")
+    assert status.camera is not None
+    assert status.camera.ip == "10.0.1.157"
+    assert status.camera.access_code == "ac"
+    assert status.camera.transport == "tcp_jpeg"
+    assert status.camera.chamber_light.supported is True
+
+
 def test_getStatus_unknownModel_omitsCamera():
     service = PrinterService([PrinterConfig(
         ip="10.0.0.5", access_code="abc", serial="P03", machine_model="Future9000",

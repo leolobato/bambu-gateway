@@ -336,7 +336,7 @@ class PrinterService:
         ]
         if self._cloud_clients:
             for cloud_client in self._cloud_clients.values():
-                statuses.append(cloud_client.get_status())
+                statuses.append(self._attach_camera(cloud_client.get_status()))
         return statuses
 
     def get_status(self, printer_id: str) -> PrinterStatus | None:
@@ -347,16 +347,21 @@ class PrinterService:
         if self._cloud_clients:
             cloud_client = self._cloud_clients.get(printer_id)
             if cloud_client is not None:
-                return cloud_client.get_status()
+                return self._attach_camera(cloud_client.get_status())
         return None
 
     def _attach_camera(
-        self, status: PrinterStatus, client: BambuMQTTClient,
+        self, status: PrinterStatus, client: BambuMQTTClient | None = None,
     ) -> PrinterStatus:
         """Populate ``status.camera`` from the printer's config + last-known state.
 
-        Omits the camera entirely when the model isn't classifiable or the
-        config lacks IP/access code — iOS falls back to "not available".
+        Camera access is a direct connection to the printer's IP with the access
+        code — independent of whether control/status flow over LAN MQTT or the
+        cloud relay. So as long as the config has an IP + access code and a
+        classifiable model, it works for cloud printers too (``client`` is the
+        LAN client when present, used only to read the live chamber-light state).
+        Omits the camera when the model isn't classifiable or the config lacks
+        IP/access code — iOS falls back to "not available".
         """
         config = self._configs.get(status.id)
         if config is None or not config.ip or not config.access_code:
@@ -364,13 +369,18 @@ class PrinterService:
         transport = _classify_camera_transport(config.machine_model)
         if transport is None:
             return status
+        # Chamber-light control works on both transports; the live on/off state
+        # comes from the LAN client's lights_report. The cloud relay doesn't
+        # deliver that report, so the state defaults to False there (the toggle
+        # still works — only the readback is approximate).
+        light_on = client.chamber_light_on if client is not None else False
         status.camera = CameraInfo(
             ip=config.ip,
             access_code=config.access_code,
             transport=transport,
             chamber_light=ChamberLightInfo(
                 supported=True,
-                on=client.chamber_light_on,
+                on=light_on,
             ),
         )
         return status
