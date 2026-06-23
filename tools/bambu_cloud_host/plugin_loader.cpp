@@ -725,6 +725,21 @@ int PluginLoader::start_print(PrintParams params) {
                              std::move(cancel_fn),
                              std::move(wait_fn));
       std::fprintf(stderr, "bambu_cloud_host: start_print worker finished rc=%d\n", rc);
+      // The plugin reports most failures by RETURNING a BAMBU_NETWORK_ERR_*
+      // code (e.g. -3070 file-not-exist) without ever calling update_fn with
+      // an ERROR stage. Synthesize the terminal ERROR frame so the Python
+      // progress queue resolves immediately instead of stalling until its
+      // 900s timeout. dev_id stamps the frame so it routes to the right client.
+      if (rc != 0) {
+        json err_event = {
+          {"kind",   "OnUpdateStatus"},
+          {"dev_id", dev_id},
+          {"stage",  7},     // SendingPrintJobStage::PrintingStageERROR
+          {"code",   rc},
+          {"msg",    "start_print failed"},
+        };
+        global_event_queue().push(std::move(err_event));
+      }
     } catch (const std::exception& e) {
       std::fprintf(stderr,
                    "bambu_cloud_host: start_print worker exception: %s\n",
