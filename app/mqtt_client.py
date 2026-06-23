@@ -32,6 +32,30 @@ MQTT_USERNAME = "bblp"
 MQTT_IDLE_TIMEOUT_SECONDS = 20
 
 
+# Sequence-id source for control commands. OrcaSlicer cycles
+# ``MachineObject::m_sequence_id`` strictly within [START_SEQ_ID, END_SEQ_ID) =
+# [20000, 30000) and treats only ids in that window as its own ("studio")
+# commands (``is_studio_cmd``, DeviceManager.cpp). The firmware shares the
+# convention, so a control command must carry a 5-digit id in that range — a
+# value outside it (e.g. a wall-clock seed) is not recognised as a studio
+# command. Each command takes a fresh id, wrapping back to 20000.
+_SEQ_START = 20000
+_SEQ_END = 30000
+_sequence_value = _SEQ_START
+_sequence_lock = threading.Lock()
+
+
+def next_sequence_id() -> str:
+    """Return the next ``sequence_id`` string in OrcaSlicer's [20000, 30000)."""
+    global _sequence_value
+    with _sequence_lock:
+        seq = _sequence_value
+        _sequence_value += 1
+        if _sequence_value >= _SEQ_END:
+            _sequence_value = _SEQ_START
+        return str(seq)
+
+
 # ---------------------------------------------------------------------------
 # Transport-neutral command-JSON builders
 #
@@ -138,6 +162,75 @@ def build_ams_stop_drying_command(ams_id: int) -> dict:
             "rotate_tray": False,
         }
     }
+
+
+# Bambu's reserved ids for the external/virtual spool (no physical AMS bay).
+VIRTUAL_TRAY_MAIN_ID = 255
+VIRTUAL_TRAY_DEPUTY_ID = 254
+
+
+def build_ams_filament_setting(
+    ams_id: int,
+    tray_id: int,
+    tray_info_idx: str,
+    tray_color: str,
+    tray_type: str,
+    nozzle_temp_min: int,
+    nozzle_temp_max: int,
+    setting_id: str,
+    *,
+    tag_uid: str | None = None,
+    bed_temp: int | None = None,
+    tray_weight: int | None = None,
+    remain: int | None = None,
+    k: float | None = None,
+    n: float | None = None,
+    tray_uuid: str | None = None,
+    cali_idx: int | None = None,
+) -> dict:
+    """Return the ``ams_filament_setting`` envelope.
+
+    Mirrors OrcaSlicer's ``MachineObject::command_ams_filament_settings``
+    (DeviceManager.cpp): the per-AMS slot is sent as BOTH ``slot_id`` and
+    ``tray_id`` for a real AMS bay — newer firmware ignores the command when
+    ``slot_id`` is missing. The external/virtual spool (``ams_id`` 255/254)
+    pins ``tray_id`` to ``VIRTUAL_TRAY_DEPUTY_ID``.
+
+    ``tray_id`` here is the per-AMS slot index (0..3), matching the public API.
+    The keyword-only fields are spool-tracking extras forwarded verbatim when
+    not None.
+    """
+    slot_id = tray_id
+    if ams_id in (VIRTUAL_TRAY_MAIN_ID, VIRTUAL_TRAY_DEPUTY_ID):
+        wire_tray_id = VIRTUAL_TRAY_DEPUTY_ID
+    else:
+        wire_tray_id = slot_id
+    payload: dict = {
+        "sequence_id": next_sequence_id(),
+        "command": "ams_filament_setting",
+        "ams_id": ams_id,
+        "slot_id": slot_id,
+        "tray_id": wire_tray_id,
+        "tray_info_idx": tray_info_idx,
+        "setting_id": setting_id,
+        "tray_color": tray_color,
+        "nozzle_temp_min": nozzle_temp_min,
+        "nozzle_temp_max": nozzle_temp_max,
+        "tray_type": tray_type,
+    }
+    for key, value in (
+        ("tag_uid", tag_uid),
+        ("bed_temp", bed_temp),
+        ("tray_weight", tray_weight),
+        ("remain", remain),
+        ("k", k),
+        ("n", n),
+        ("tray_uuid", tray_uuid),
+        ("cali_idx", cali_idx),
+    ):
+        if value is not None:
+            payload[key] = value
+    return {"print": payload}
 
 
 def apply_print_payload(
@@ -334,6 +427,34 @@ class AmsReport:
     vt_tray: dict | None = None
 
 
+# Maps a get_version `module` name prefix to the AMS hardware type. Shared by
+# the LAN and cloud paths via parse_ams_module_types().
+_AMS_MODULE_PREFIX = {
+    "ams/": AMSType.standard,
+    "ams_f1/": AMSType.lite,
+    "n3f/": AMSType.pro,
+    "n3s/": AMSType.ht,
+}
+
+
+def parse_ams_module_types(info: dict) -> dict[int, AMSType]:
+    """Map a get_version response's ``module`` list to AMSType per ams_id.
+
+    Module names look like ``ams/0``, ``ams_f1/0`` (AMS Lite), ``n3f/0``
+    (AMS 2 Pro), ``n3s/0`` (AMS HT). Returns ``{ams_id: AMSType}``.
+    """
+    out: dict[int, AMSType] = {}
+    for mod in info.get("module", []) or []:
+        name = mod.get("name", "") if isinstance(mod, dict) else ""
+        for prefix, ams_type in _AMS_MODULE_PREFIX.items():
+            if name.startswith(prefix):
+                try:
+                    out[int(name[len(prefix):])] = ams_type
+                except (ValueError, TypeError):
+                    pass
+    return out
+
+
 def parse_ams_report(
     print_info: dict,
     *,
@@ -342,15 +463,17 @@ def parse_ams_report(
     """Parse AMS trays/units/active-tray/vt_tray from a print payload.
 
     Shared by the LAN and cloud paths so both produce identical AMS state.
-    ``module_types`` maps ams_id -> AMSType (from get_version, LAN only); the
-    cloud path passes none and relies on the per-unit ``hw_ver`` fallback.
+    ``module_types`` maps ams_id -> AMSType (from the get_version module list —
+    the authoritative source, since the per-unit ``hw_ver`` is often empty,
+    especially over the cloud relay). The AMS type is hardware, NOT model:
+    e.g. an A1 mini can run an AMS Lite OR an AMS 2 Pro, so it must be read
+    from the report, never inferred from the printer.
     """
     module_types = module_types or {}
     report = AmsReport()
     ams_data = print_info.get("ams")
 
     if isinstance(ams_data, dict):
-        report.ams_present = True
         tray_now = ams_data.get("tray_now")
         if tray_now is not None:
             try:
@@ -361,7 +484,18 @@ def parse_ams_report(
             except (ValueError, TypeError):
                 pass
 
-        for unit in ams_data.get("ams", []):
+        # Bambu sends partial `ams` blocks during operations (e.g. just
+        # `tray_now`, version subfields, or status bits) with NO unit array.
+        # Only treat trays/units as "present" when the report actually carries
+        # the unit list — otherwise a partial report parses to empty trays and
+        # callers would wipe the cached AMS to nothing (the dashboard's "AMS
+        # disappeared" after a filament change).
+        unit_array = ams_data.get("ams")
+        if not isinstance(unit_array, list) or not unit_array:
+            unit_array = []
+        else:
+            report.ams_present = True
+        for unit in unit_array:
             ams_id = int(unit.get("id", 0))
             unit_trays = unit.get("tray", [])
             humidity = -1
@@ -708,35 +842,12 @@ class BambuMQTTClient:
         flow-calibration state; `bed_temp`, `tray_weight`, and `remain`
         propagate per-spool defaults that would otherwise reset.
         """
-        payload = {
-            "sequence_id": "0",
-            "command": "ams_filament_setting",
-            "ams_id": ams_id,
-            "tray_id": tray_id,
-            "tray_info_idx": tray_info_idx,
-            "tray_color": tray_color,
-            "tray_type": tray_type,
-            "nozzle_temp_min": nozzle_temp_min,
-            "nozzle_temp_max": nozzle_temp_max,
-            "setting_id": setting_id,
-        }
-        if tag_uid is not None:
-            payload["tag_uid"] = tag_uid
-        if bed_temp is not None:
-            payload["bed_temp"] = bed_temp
-        if tray_weight is not None:
-            payload["tray_weight"] = tray_weight
-        if remain is not None:
-            payload["remain"] = remain
-        if k is not None:
-            payload["k"] = k
-        if n is not None:
-            payload["n"] = n
-        if tray_uuid is not None:
-            payload["tray_uuid"] = tray_uuid
-        if cali_idx is not None:
-            payload["cali_idx"] = cali_idx
-        self.publish({"print": payload})
+        self.publish(build_ams_filament_setting(
+            ams_id, tray_id, tray_info_idx, tray_color, tray_type,
+            nozzle_temp_min, nozzle_temp_max, setting_id,
+            tag_uid=tag_uid, bed_temp=bed_temp, tray_weight=tray_weight,
+            remain=remain, k=k, n=n, tray_uuid=tray_uuid, cali_idx=cali_idx,
+        ))
 
     def send_print_command(
         self,
@@ -845,30 +956,13 @@ class BambuMQTTClient:
         Module names like ``ams/0``, ``ams_f1/0``, ``n3f/0``, ``n3s/0``
         identify the AMS hardware type for each unit index.
         """
-        modules = info.get("module", [])
-        if not modules:
+        detected = parse_ams_module_types(info)
+        if not detected:
             return
-
-        # Map module name prefixes to AMSType
-        prefix_map = {
-            "ams/": AMSType.standard,
-            "ams_f1/": AMSType.lite,
-            "n3f/": AMSType.pro,
-            "n3s/": AMSType.ht,
-        }
-
         with self._lock:
-            for mod in modules:
-                name = mod.get("name", "")
-                for prefix, ams_type in prefix_map.items():
-                    if name.startswith(prefix):
-                        try:
-                            ams_id = int(name[len(prefix):])
-                        except (ValueError, TypeError):
-                            continue
-                        self._ams_module_types[ams_id] = ams_type
-                        logger.debug("AMS %d detected as %s (module=%s, hw_ver=%s)",
-                                     ams_id, ams_type.value, name, mod.get("hw_ver", ""))
+            self._ams_module_types.update(detected)
+        logger.debug("AMS module types detected: %s",
+                     {k: v.value for k, v in detected.items()})
 
     def _update_status(self, print_info: dict) -> None:
         """Apply fields from an MQTT print report to the in-memory status."""

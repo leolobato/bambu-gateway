@@ -114,6 +114,16 @@ json method_connect_server(const json& /*params*/) {
   return {{"rc", loader().connect_server()}};
 }
 
+// is_server_connected — true once the cloud MQTT handshake has completed.
+// ``available`` is false when the plugin build lacks the probe symbol, so the
+// caller can proceed optimistically instead of blocking forever.
+json method_is_server_connected(const json& /*params*/) {
+  return {
+    {"connected", loader().is_server_connected()},
+    {"available", loader().has_server_connected_probe()},
+  };
+}
+
 // start_subscribe — begin subscription for a given module.
 // Params: {"module": "<string>"}  e.g. "printer" or "studio"
 json method_start_subscribe(const json& params) {
@@ -241,6 +251,100 @@ json method_send_message(const json& params) {
   return {{"rc", loader().send_message(dev_id, payload, qos, flag)}};
 }
 
+// connect_printer — open the plugin's authenticated LOCAL (LAN) MQTT
+// connection to a printer. Required before send_message_to_printer works.
+//
+// Params:
+//   dev_id   (string, required) — printer serial
+//   dev_ip   (string, required) — printer LAN IP
+//   username (string, optional, default "bblp")
+//   password (string, required) — LAN access code
+//   use_ssl  (bool,   optional, default true)
+//
+// Returns {"rc": N}. rc==0 means the request was accepted; readiness arrives
+// asynchronously as an OnLocalConnected event (status==0). rc==-2 means the
+// plugin build lacks LAN support.
+json method_connect_printer(const json& params) {
+  std::string dev_id   = params.at("dev_id").get<std::string>();
+  std::string dev_ip   = params.at("dev_ip").get<std::string>();
+  std::string username = params.value("username", std::string("bblp"));
+  std::string password = params.at("password").get<std::string>();
+  bool use_ssl         = params.value("use_ssl", true);
+  return {{"rc", loader().connect_printer(dev_id, dev_ip, username, password,
+                                          use_ssl)}};
+}
+
+// send_message_to_printer — relay a JSON command over the plugin's LAN
+// connection (the authenticated local publish). Same params as send_message.
+json method_send_message_to_printer(const json& params) {
+  std::string dev_id  = params.at("dev_id").get<std::string>();
+  std::string payload = params.at("payload").get<std::string>();
+  int qos             = params.value("qos",  0);
+  int flag            = params.value("flag", 0);
+  return {{"rc", loader().send_message_to_printer(dev_id, payload, qos, flag)}};
+}
+
+// disconnect_printer — tear down the plugin's local connection.
+json method_disconnect_printer(const json& /*params*/) {
+  return {{"rc", loader().disconnect_printer()}};
+}
+
+// install_device_cert — unlock the secure cloud control channel. A
+// sec_link:"secure" printer rejects every "print"-namespace cloud publish with
+// -2 until its certificate is installed; this asks the plugin to install it.
+// Fire-and-forget — success is reported later as a "device_cert_installed"
+// OnMessage string. Params: dev_id (string), lan_only (bool, default false —
+// false for a cloud printer). Returns {"dispatched": bool}.
+json method_install_device_cert(const json& params) {
+  std::string dev_id = params.at("dev_id").get<std::string>();
+  bool lan_only      = params.value("lan_only", false);
+  return {{"dispatched", loader().install_device_cert(dev_id, lan_only)}};
+}
+
+// set_extra_http_header — brand the plugin agent's cloud HTTP requests as a
+// BambuStudio/slicer client. OrcaSlicer issues this once at agent init (before
+// connect_server); without it the relay refuses "print"-namespace writes (-2).
+// Params: headers (object of string->string). Returns {"rc": <plugin rc>}.
+json method_set_extra_http_header(const json& params) {
+  std::map<std::string, std::string> headers;
+  const json& h = params.value("headers", json::object());
+  for (auto it = h.begin(); it != h.end(); ++it) {
+    if (it.value().is_string()) {
+      headers[it.key()] = it.value().get<std::string>();
+    }
+  }
+  return {{"rc", loader().set_extra_http_header(headers)}};
+}
+
+// start_discovery — run the plugin's LAN discovery so connect_printer works.
+// Params: start (bool, default true), sending (bool, default false).
+json method_start_discovery(const json& params) {
+  bool start   = params.value("start",   true);
+  bool sending = params.value("sending", false);
+  return {{"ok", loader().start_discovery(start, sending)}};
+}
+
+// send_burst — relay several JSON commands back-to-back over the cloud relay,
+// with NO RPC round-trip between them. Bambu's cloud publish channel is only
+// open for a few ms around a send; a write issued from Python even ~20ms after
+// a successful pushall (one event-loop hop later) misses the window. Sending
+// the whole burst inside one RPC keeps every message within microseconds of the
+// first, so a write rides the same open window as the pushall ahead of it.
+//
+// Params: dev_id (string), payloads (array of JSON strings), qos/flag (int,
+// optional). Returns {"rcs": [rc, rc, ...]} — one per payload, in order.
+json method_send_burst(const json& params) {
+  std::string dev_id = params.at("dev_id").get<std::string>();
+  auto payloads = params.at("payloads").get<std::vector<std::string>>();
+  int qos  = params.value("qos",  0);
+  int flag = params.value("flag", 0);
+  json rcs = json::array();
+  for (const auto& p : payloads) {
+    rcs.push_back(loader().send_message(dev_id, p, qos, flag));
+  }
+  return {{"rcs", rcs}};
+}
+
 }  // namespace
 
 json dispatch_method(const std::string& method, const json& params) {
@@ -255,10 +359,18 @@ json dispatch_method(const std::string& method, const json& params) {
   if (method == "bridge.poll_events")  return method_bridge_poll_events(params);
   if (method == "_test_push_event")    return method_test_push_event(params);
   if (method == "connect_server")      return method_connect_server(params);
+  if (method == "is_server_connected") return method_is_server_connected(params);
   if (method == "start_subscribe")     return method_start_subscribe(params);
   if (method == "add_subscribe")       return method_add_subscribe(params);
   if (method == "start_print")         return method_start_print(params);
   if (method == "send_message")        return method_send_message(params);
+  if (method == "connect_printer")     return method_connect_printer(params);
+  if (method == "send_message_to_printer") return method_send_message_to_printer(params);
+  if (method == "send_burst")          return method_send_burst(params);
+  if (method == "disconnect_printer")  return method_disconnect_printer(params);
+  if (method == "install_device_cert") return method_install_device_cert(params);
+  if (method == "set_extra_http_header") return method_set_extra_http_header(params);
+  if (method == "start_discovery")     return method_start_discovery(params);
   throw std::runtime_error("unknown method: " + method);
 }
 

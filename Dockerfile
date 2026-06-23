@@ -41,6 +41,15 @@ FROM python:3.13-slim
 
 COPY --from=cloud_host_builder /build/bambu_cloud_host /usr/local/bin/bambu_cloud_host
 
+# Trust BambuLab's printer CA (CN=BBL CA2 RSA) so the network plugin can verify
+# a printer's LOCAL MQTT TLS certificate — it's signed by BBL's private CA,
+# which isn't in any public trust store. Appended to the system bundle that the
+# plugin's set_cert_file points at (/etc/ssl/certs/ca-certificates.crt), so both
+# the cloud (public CA) and local (BBL CA) MQTT connections verify. Sourced from
+# OrcaSlicer's resources/cert/printer.cer.
+COPY tools/bambu_cloud_host/certs/bbl_printer_ca.cer /usr/local/share/ca-certificates/bbl_printer_ca.pem
+RUN cat /usr/local/share/ca-certificates/bbl_printer_ca.pem >> /etc/ssl/certs/ca-certificates.crt
+
 WORKDIR /app
 
 COPY requirements.txt .

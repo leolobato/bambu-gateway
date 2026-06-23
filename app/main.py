@@ -11,7 +11,7 @@ import os
 import re
 import time
 import zipfile
-from contextlib import asynccontextmanager, AsyncExitStack
+from contextlib import asynccontextmanager, AsyncExitStack, suppress
 from pathlib import Path
 from urllib.parse import quote
 
@@ -275,6 +275,32 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
     app.state.cloud_host = host
     logger.info("Bambu plugin host ready")
 
+    # Brand the plugin agent as a BambuStudio/slicer client BEFORE connecting
+    # the cloud session. OrcaSlicer issues set_extra_http_header once at agent
+    # init (trace REQ #11, before connect_server); an unbranded session is
+    # treated as read-only and the relay rejects "print"-namespace writes with
+    # -2 while reads still succeed. The X-BBL-Device-ID must be stable.
+    try:
+        from app.cloud import get_or_create_device_id, plugin_agent_headers
+        device_id = get_or_create_device_id(
+            settings.bambu_cloud_plugin_dir / "state"
+        )
+        rc = (await host.call("set_extra_http_header", {
+            "headers": plugin_agent_headers(device_id),
+        })).get("rc", -1)
+        logger.info("Branded plugin agent (set_extra_http_header rc=%s)", rc)
+    except Exception:
+        logger.exception("set_extra_http_header failed")
+
+    # Kick off the plugin's own LAN discovery so it builds the local-device
+    # registry that connect_printer needs (control writes go over the plugin's
+    # authenticated LOCAL connection — the cloud relay rejects them). Mirrors
+    # OrcaSlicer calling start_discovery(true, false) right after login.
+    try:
+        await host.call("start_discovery", {"start": True, "sending": False})
+    except Exception:
+        logger.exception("start_discovery failed")
+
     # One CloudPrinterClient per configured printer, keyed by serial. SSDP can
     # later promote a printer to a read-write LAN client; sync_printers then
     # moves it out of this relay registry, so a serial is never in both.
@@ -289,8 +315,30 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
     }
     app.state.cloud_printers = cloud_clients
 
+    # Plain-string control messages the plugin delivers through OnMessage
+    # (alongside JSON reports), mapping to the device-cert state that gates
+    # cloud print writes. Mirrors OrcaSlicer's process_network_msg, which
+    # handles these before attempting JSON parsing.
+    _CERT_READY_MSGS = {"device_cert_installed"}
+    _CERT_CLEAR_MSGS = {"device_cert_uninstalled", "cert_expired", "cert_revoked"}
+
     async def _on_message(event: dict) -> None:
         dev_id = event.get("dev_id")
+        raw = event.get("payload", "")
+        if _os.environ.get("BAMBU_LOG_RAW_MSGS") == "1":
+            logger.info("RAWMSG dev=%s %s", dev_id, str(raw)[:2500])
+        if isinstance(raw, str) and not raw.lstrip().startswith("{"):
+            text = raw.strip()
+            if printer_service is not None and dev_id:
+                if text in _CERT_READY_MSGS:
+                    printer_service.mark_security_control_ready(dev_id, True)
+                elif text in _CERT_CLEAR_MSGS:
+                    printer_service.mark_security_control_ready(dev_id, False)
+                elif text == "wait_info":
+                    # Plugin asks for a fresh cert install before control works.
+                    printer_service.mark_security_control_ready(dev_id, False)
+                    await printer_service.request_device_cert(dev_id)
+            return
         client = cloud_clients.get(dev_id)
         if client is not None:
             await client.handle_event(event)
@@ -320,6 +368,14 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
         dev_id = event.get("dev_id")
         if not dev_id:
             return
+        # Wake any pending write — the publish channel is open right now, and
+        # the window is brief (this is independent of the pushall debounce).
+        if printer_service is not None:
+            printer_service.mark_cloud_connected(dev_id)
+            # Install the device cert so the secure control channel opens —
+            # without it the relay refuses print writes with -2. OrcaSlicer
+            # issues this in its own OnPrinterConnected handler.
+            await printer_service.request_device_cert(dev_id)
         now = time.monotonic()
         if now - pushall_debounce.get(dev_id, 0.0) < 5.0:
             return
@@ -331,10 +387,20 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
         except Exception:
             logger.exception("full-status request on connect failed")
 
+    async def _on_local_connected(event: dict) -> None:
+        # The plugin reports a LAN connection state change (status 0 == ready,
+        # 1 == failed, 2 == lost). Hand it to the printer service so a pending
+        # write (send_message_to_printer) can proceed or fail fast.
+        dev_id = event.get("dev_id")
+        if not dev_id or printer_service is None:
+            return
+        printer_service.mark_local_connected(dev_id, event.get("status", -1))
+
     pump = EventPump(host=host, handlers={
         "OnMessage": _on_message,
         "OnUpdateStatus": _on_update_status,
         "OnPrinterConnected": _on_printer_connected,
+        "OnLocalConnected": _on_local_connected,
     })
     await pump.start()
     app.state.cloud_event_pump = pump
@@ -351,13 +417,63 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
 
     app.state.cloud_connect = _cloud_connect
 
-    if await cloud_auth.is_signed_in(host=host):
+    import os as _os
+
+    async def _cloud_keepalive() -> None:
+        # Two cadences:
+        #  - Secure-control-channel heartbeat (every `interval`s): re-issue
+        #    install_device_cert. OrcaSlicer sends it ~1×/s for the whole
+        #    session (trace: 232 calls in 4.5 min); that steady cadence keeps
+        #    the per-device secure channel warm so a "print"-namespace write
+        #    lands on the first try. Without it the channel goes cold and writes
+        #    bounce with -2 (CONNECT_FAILED). (This is the REAL keepalive —
+        #    pushall is not; OrcaSlicer sends pushall only a couple of times.)
+        #  - Periodic pushall (every `pushall_secs`): pull a FULL status
+        #    snapshot so the cached AMS/temps self-heal. Incremental reports
+        #    can leave the cache partial (e.g. an AMS block with no unit list
+        #    during a filament change); a full pushall restores it. Kept
+        #    infrequent so it doesn't churn the channel.
+        from app.cloud.session import request_pushall
+        interval = float(_os.environ.get("BAMBU_CLOUD_KEEPALIVE_SECS", "1"))
+        pushall_secs = float(_os.environ.get("BAMBU_CLOUD_PUSHALL_SECS", "30"))
+        pushall_every = max(1, round(pushall_secs / max(interval, 0.1)))
+        tick = 0
+        while True:
+            await asyncio.sleep(interval)
+            if printer_service is None:
+                continue
+            tick += 1
+            do_pushall = tick % pushall_every == 0
+            for dev_id in list(cloud_clients.keys()):
+                try:
+                    await printer_service.request_device_cert(dev_id)
+                    if do_pushall:
+                        await request_pushall(host=host, dev_id=dev_id)
+                except Exception:
+                    pass
+
+    async def _cancel_task(t: asyncio.Task) -> None:
+        t.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await t
+
+    skip_cloud_session = _os.environ.get("BAMBU_SKIP_CLOUD_SESSION") == "1"
+    if skip_cloud_session:
+        logger.warning(
+            "BAMBU_SKIP_CLOUD_SESSION=1 — skipping cloud connect/subscribe so "
+            "the plugin's LOCAL connection isn't shadowed by a cloud claim"
+        )
+    if not skip_cloud_session and await cloud_auth.is_signed_in(host=host):
         from app.cloud.profile_store import load_profile
         app.state.cloud_profile = load_profile(
             settings.bambu_cloud_plugin_dir / "state" / "gateway_profile.json"
         )
         if await _cloud_connect():
             logger.info("Bambu cloud session established")
+            ka_task = asyncio.create_task(
+                _cloud_keepalive(), name="bambu-cloud-keepalive"
+            )
+            stack.push_async_callback(_cancel_task, ka_task)
         else:
             logger.warning(
                 "Bambu cloud session could not be established; "
@@ -993,7 +1109,7 @@ async def set_ams_filament(
         raw_color = "000000FF"
 
     try:
-        printer_service.set_ams_filament(
+        await printer_service.set_ams_filament(
             pid, ams_id, tray_id,
             tray_info_idx=filament_id,
             tray_color=raw_color,

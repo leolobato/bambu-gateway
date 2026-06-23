@@ -9,6 +9,7 @@ app is active). Without these calls no OnMessage event ever arrives.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Sequence
@@ -41,6 +42,13 @@ async def establish_session(
     if rc != 0:
         logger.error("connect_server failed rc=%s", rc)
         return False
+    # connect_server only *initiates* the cloud MQTT handshake. Subscribing or
+    # selecting before it completes leaves the subscription dead (no reports,
+    # no OnPrinterConnected, send_message → -2). Wait for the broker to report
+    # connected, mirroring OrcaSlicer's is_server_connected() gate.
+    if not await _await_server_connected(host=host):
+        logger.error("cloud server did not connect; aborting subscribe")
+        return False
     rc = (
         await host.call("start_subscribe", {"module": _SUBSCRIBE_MODULE})
     ).get("rc", -1)
@@ -48,6 +56,35 @@ async def establish_session(
         logger.error("start_subscribe failed rc=%s", rc)
         return False
     return await subscribe_printers(host=host, dev_ids=dev_ids)
+
+
+async def _await_server_connected(
+    *, host: PluginHost, timeout: float = 20.0, interval: float = 0.5,
+) -> bool:
+    """Poll ``is_server_connected`` until the cloud MQTT broker is up.
+
+    Returns True as soon as it reports connected. If the plugin lacks the
+    symbol (older build), ``connected`` stays False forever — fall back to a
+    short fixed delay so we don't block startup, then proceed optimistically.
+    """
+    waited = 0.0
+    while waited < timeout:
+        try:
+            resp = await host.call("is_server_connected", {})
+        except PluginHostError as exc:
+            logger.warning("is_server_connected failed: %s", exc)
+            return False
+        if not resp.get("available", False):
+            # Older plugin without the probe — proceed optimistically.
+            logger.warning("is_server_connected unavailable; proceeding")
+            return True
+        if resp.get("connected"):
+            logger.info("Cloud server connected after %.1fs", waited)
+            return True
+        await asyncio.sleep(interval)
+        waited += interval
+    logger.error("Cloud server not connected after %.0fs", timeout)
+    return False
 
 
 async def subscribe_printers(
@@ -60,6 +97,13 @@ async def subscribe_printers(
     """
     if not dev_ids:
         return True
+    # Select the machine(s) BEFORE subscribing — OrcaSlicer's order is
+    # set_selected_machine → add_subscribe (DevManager.cpp), and its subscribe
+    # list carries the selected device first. The relay only opens a device's
+    # publish channel (and routes its reports) once it's the selected machine,
+    # so subscribing first leaves the channel closed (send_message → -2, no
+    # OnPrinterConnected, no reports).
+    await select_machines(host=host, dev_ids=dev_ids)
     rc = (
         await host.call("add_subscribe", {"dev_ids": list(dev_ids)})
     ).get("rc", -1)
@@ -67,7 +111,6 @@ async def subscribe_printers(
         logger.error("add_subscribe failed rc=%s", rc)
         return False
     logger.info("Subscribed to %d cloud printer(s)", len(dev_ids))
-    await select_machines(host=host, dev_ids=dev_ids)
     return True
 
 

@@ -6,6 +6,9 @@ constants below in lockstep with the bundled ``.so`` files.
 """
 from __future__ import annotations
 
+import uuid
+from pathlib import Path
+
 #: Bambu network plugin ABI version that we are pinned to.
 #: Used as ``X-BBL-Client-Version`` in CDN requests and as the ``abi_version``
 #: that the manifest entry for ``libbambu_networking.so`` must declare.
@@ -49,4 +52,46 @@ def bambu_studio_headers() -> dict[str, str]:
         "X-BBL-Client-Name": "BambuStudio",
         "X-BBL-Client-Version": BAMBU_NETWORK_AGENT_VERSION,
         "X-BBL-OS-Type": "linux",
+    }
+
+
+def get_or_create_device_id(state_dir: Path) -> str:
+    """Return a stable per-install UUID, persisted under ``state_dir``.
+
+    Used as ``X-BBL-Device-ID`` when branding the plugin agent. It must be
+    stable across restarts (the cloud ties control/session state to it), so we
+    generate it once and reuse it. Mirrors OrcaSlicer's app_config
+    ``slicer_uuid``.
+    """
+    path = state_dir / "device_id"
+    try:
+        existing = path.read_text().strip()
+        if existing:
+            return existing
+    except FileNotFoundError:
+        pass
+    device_id = str(uuid.uuid4())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(device_id)
+    return device_id
+
+
+def plugin_agent_headers(device_id: str) -> dict[str, str]:
+    """X-BBL-* identity pushed into the plugin agent via
+    ``set_extra_http_header`` at bring-up.
+
+    OrcaSlicer issues this once before ``connect_server``; without it the
+    plugin's own cloud session is unbranded and the relay refuses
+    ``print``-namespace writes with -2 (reads still succeed). Mirrors
+    ``GUI_App::get_extra_header()`` on the Linux/bridge path, which always
+    brands as a ``BambuStudio``/``slicer`` client.
+    """
+    return {
+        "X-BBL-Client-Type": "slicer",
+        "X-BBL-Client-Name": "BambuStudio",
+        "X-BBL-Client-Version": BAMBU_NETWORK_AGENT_VERSION,
+        "X-BBL-OS-Type": "linux",
+        "X-BBL-OS-Version": "6.1.0",
+        "X-BBL-Device-ID": device_id,
+        "X-BBL-Language": "en-US",
     }

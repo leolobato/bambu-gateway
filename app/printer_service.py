@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 
 from app.camera_proxy import CameraProxy
 from app.config import PrinterConfig
 from app.models import CameraInfo, ChamberLightInfo, PrinterStatus
-from app.mqtt_client import BambuMQTTClient
+from app.mqtt_client import BambuMQTTClient, build_ams_filament_setting
 from app import ftp_client
 
 # Avoid a circular import at module level — imported locally when needed.
@@ -76,6 +77,24 @@ class PrinterService:
         # cloud bind list gave the access code). Empty until SSDP promotes one,
         # so cloud printers default to the relay transport.
         self._lan_promoted: set[str] = set()
+        # Serials with a live plugin LAN connection (connect_printer succeeded
+        # and OnLocalConnected reported ready). Writes to these go through the
+        # plugin's authenticated local publish (send_message_to_printer).
+        self._local_ready: set[str] = set()
+        self._local_waiters: dict[str, asyncio.Future] = {}
+        # Per-device event set when the plugin fires OnPrinterConnected (the
+        # cloud publish channel just opened). The publish window is brief, so a
+        # write waits on this and sends the instant it fires.
+        self._cloud_ready_events: dict[str, asyncio.Event] = {}
+        # Per-device event set once the plugin confirms the device certificate
+        # is installed (a "device_cert_installed" OnMessage string). The cloud
+        # relay rejects every "print"-namespace publish with -2 until then, so a
+        # cloud write waits on this before send_message. Mirrors OrcaSlicer's
+        # install_device_cert → is_security_control_ready() handshake.
+        self._security_ready: dict[str, asyncio.Event] = {}
+        # Delay between cloud-relay publish retries (overridable so tests don't
+        # actually sleep through the retry loop).
+        self._cloud_retry_delay: float = 0.4
         # Cloud printer clients keyed by serial. Set via set_cloud_printers()
         # after the EventPump is wired up; None until then.
         self._cloud_clients: dict[str, "CloudPrinterClient"] | None = None  # type: ignore[name-defined]
@@ -120,6 +139,13 @@ class PrinterService:
         """
         if not self._cloud_mode:
             return True
+        # A read-only paho LAN connection competes with the plugin's cloud
+        # connection at the printer, destabilising the cloud publish channel.
+        # BAMBU_NO_PAHO keeps cloud printers purely on the relay (reads via
+        # cloud OnMessage, writes via send_message) — what OrcaSlicer does.
+        import os
+        if os.environ.get("BAMBU_NO_PAHO") == "1":
+            return False
         return (
             cfg.serial in self._lan_promoted
             and bool(cfg.ip and cfg.access_code)
@@ -540,7 +566,209 @@ class PrinterService:
             printer_id,
         )
 
-    def set_ams_filament(
+    def mark_local_connected(self, dev_id: str, status: int) -> None:
+        """Record an ``OnLocalConnected`` event from the plugin.
+
+        ``status`` follows Bambu's ConnectStatus enum: 0 == ready, 1 == failed,
+        2 == lost. Readiness flips ``_local_ready`` and wakes any pending
+        :meth:`_ensure_local_link` waiter.
+        """
+        if status == 0:
+            self._local_ready.add(dev_id)
+        else:
+            self._local_ready.discard(dev_id)
+        waiter = self._local_waiters.get(dev_id)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(status)
+
+    def mark_cloud_connected(self, dev_id: str) -> None:
+        """Record an ``OnPrinterConnected`` event — the device's cloud publish
+        channel just opened. Wakes any write waiting to publish."""
+        ev = self._cloud_ready_events.get(dev_id)
+        if ev is None:
+            ev = asyncio.Event()
+            self._cloud_ready_events[dev_id] = ev
+        ev.set()
+
+    def _security_event(self, dev_id: str) -> asyncio.Event:
+        ev = self._security_ready.get(dev_id)
+        if ev is None:
+            ev = asyncio.Event()
+            self._security_ready[dev_id] = ev
+        return ev
+
+    def mark_security_control_ready(self, dev_id: str, ready: bool) -> None:
+        """Record the device-certificate state from a plugin control message.
+
+        ``"device_cert_installed"`` → ready; ``"device_cert_uninstalled"`` /
+        ``"cert_expired"`` / ``"cert_revoked"`` → not ready. Gates cloud
+        ``print``-namespace writes (see :meth:`_await_security_control_ready`).
+        """
+        ev = self._security_event(dev_id)
+        was_ready = ev.is_set()
+        if ready:
+            ev.set()
+            if not was_ready:
+                logger.info("Secure control channel ready for %s", dev_id)
+        else:
+            ev.clear()
+            if was_ready:
+                logger.info("Secure control channel cleared for %s", dev_id)
+
+    async def request_device_cert(self, printer_id: str) -> None:
+        """Ask the plugin to install this device's certificate.
+
+        Mirrors OrcaSlicer issuing ``install_device_cert`` on
+        ``OnPrinterConnected``. Cloud printers pass ``lan_only=False``. The
+        plugin confirms asynchronously via a ``device_cert_installed`` OnMessage
+        string, handled by :meth:`mark_security_control_ready`.
+        """
+        host = self._cloud_host
+        if host is None:
+            return
+        try:
+            await host.call(
+                "install_device_cert",
+                {"dev_id": printer_id, "lan_only": False},
+            )
+        except Exception:
+            logger.exception("install_device_cert(%s) failed", printer_id)
+
+    async def _cloud_relay_publish(
+        self, printer_id: str, envelope: dict, qos: int,
+        *, attempts: int = 4,
+    ) -> int:
+        """Publish a command over the cloud relay, retrying transient -2s.
+
+        A branded session accepts the write on the first try (rc 0). The bounded
+        retry only covers the brief window where the device's publish channel is
+        still settling right after connect. Returns the last rc.
+        """
+        host = self._cloud_host
+        if host is None:
+            raise ConnectionError(
+                f"Printer {printer_id}: cloud network plugin unavailable"
+            )
+        payload = json.dumps(envelope)
+        rc = -1
+        for attempt in range(attempts):
+            rc = (await host.call("send_message", {
+                "dev_id": printer_id,
+                "payload": payload,
+                "qos": qos,
+            })).get("rc", -1)
+            if rc == 0:
+                return 0
+            logger.warning(
+                "cloud publish to %s rc=%s (attempt %d/%d)",
+                printer_id, rc, attempt + 1, attempts,
+            )
+            if attempt + 1 < attempts:
+                await asyncio.sleep(self._cloud_retry_delay)
+        return rc
+
+    async def send_command_envelope(
+        self, printer_id: str, envelope: dict, *, qos: int = 0,
+    ) -> None:
+        """Route a write-command envelope to the printer's command transport.
+
+        In cloud mode writes go through the authenticated network plugin's
+        cloud relay (``send_message``) — exactly as OrcaSlicer publishes a
+        cloud-bound printer (``dev_connection_type`` empty → ``cloud_publish_json``).
+        The relay refuses every ``print``-namespace command with -2 until the
+        device certificate is installed, so we wait for that secure-control
+        handshake first (:meth:`_await_security_control_ready`). In pure LAN
+        mode (dev-mode printers, no plugin) the local MQTT publish is used.
+        """
+        if self._cloud_mode:
+            cfg = self._configs.get(printer_id)
+            if cfg is None:
+                raise ValueError(f"Printer {printer_id} not found")
+            host = self._cloud_host
+            if host is None:
+                raise ConnectionError(
+                    f"Printer {printer_id}: cloud network plugin unavailable"
+                )
+            # The relay accepts print writes once the agent is branded (done at
+            # bring-up via set_extra_http_header) AND the per-device secure
+            # channel is warm — kept so by the ~1Hz install_device_cert
+            # heartbeat (see _cloud_keepalive). We deliberately do NOT re-issue
+            # the cert here: a fresh install briefly drops the channel (-2), so
+            # touching it per-write would fight the heartbeat. The bounded retry
+            # below covers the rare cold-channel race right after connect.
+            rc = await self._cloud_relay_publish(printer_id, envelope, qos)
+            if rc != 0:
+                raise ConnectionError(
+                    f"Printer {printer_id}: cloud relay rejected command "
+                    f"(rc={rc})"
+                )
+            return
+
+        client = self._clients.get(printer_id)
+        if client is None:
+            raise ValueError(f"Printer {printer_id} not found")
+        client.ensure_connected()
+        if not client.get_status().online:
+            raise ConnectionError(f"Printer {printer_id} is offline")
+        client.publish(envelope)
+
+    async def _ensure_local_link(
+        self, printer_id: str, cfg: PrinterConfig, *, timeout: float = 12.0,
+    ) -> None:
+        """Open (once) the plugin's authenticated LAN connection to a printer.
+
+        Mirrors OrcaSlicer's ``MachineObject::connect()``: ``connect_printer``
+        with ``bblp`` + the access code, then wait for the async
+        ``OnLocalConnected`` callback to report ready. Requires the plugin's
+        ``start_discovery`` to have populated its local-device registry first
+        (otherwise connect_printer fails before opening a socket).
+        """
+        if printer_id in self._local_ready:
+            return
+        host = self._cloud_host
+        if host is None:
+            raise ConnectionError(
+                f"Printer {printer_id}: network plugin unavailable"
+            )
+        if not (cfg.ip and cfg.access_code):
+            raise ConnectionError(
+                f"Printer {printer_id}: no LAN ip/access code for local connect"
+            )
+        import os
+        use_ssl = os.environ.get("BAMBU_LAN_USE_SSL", "1") == "1"
+        waiter: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._local_waiters[printer_id] = waiter
+        try:
+            rc = (await host.call("connect_printer", {
+                "dev_id": printer_id, "dev_ip": cfg.ip,
+                "username": "bblp", "password": cfg.access_code,
+                "use_ssl": use_ssl,
+            })).get("rc", -1)
+            if rc != 0:
+                raise ConnectionError(
+                    f"Printer {printer_id}: connect_printer rejected (rc={rc})"
+                )
+            if printer_id in self._local_ready:
+                return
+            try:
+                status = await asyncio.wait_for(
+                    asyncio.shield(waiter), timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                raise ConnectionError(
+                    f"Printer {printer_id}: timed out establishing the LAN "
+                    "connection through the network plugin"
+                )
+            if status != 0:
+                raise ConnectionError(
+                    f"Printer {printer_id}: LAN connection failed "
+                    f"(status={status})"
+                )
+            self._local_ready.add(printer_id)
+        finally:
+            self._local_waiters.pop(printer_id, None)
+
+    async def set_ams_filament(
         self,
         printer_id: str,
         ams_id: int,
@@ -561,38 +789,24 @@ class PrinterService:
         tray_uuid: str | None = None,
         cali_idx: int | None = None,
     ) -> None:
-        """Assign a filament profile to one AMS tray via MQTT.
+        """Assign a filament profile to one AMS tray.
 
-        Pre-validates the printer is connected, then publishes
-        `ams_filament_setting`. The printer echoes the new tray state back
-        over MQTT and `_apply_ams_status` propagates it into the cached
-        PrinterStatus, so the dashboard reflects the change on its next poll.
+        Publishes ``ams_filament_setting`` through the printer's command
+        transport (the network plugin in cloud mode — see
+        :meth:`send_command_envelope`). The printer echoes the new tray state
+        back over its status report and `_apply_ams_status` propagates it into
+        the cached PrinterStatus, so the dashboard reflects the change on its
+        next poll.
         """
-        client = self._clients.get(printer_id)
-        if client is None:
+        if printer_id not in self._configs:
             raise ValueError(f"Printer {printer_id} not found")
-        client.ensure_connected()
-        status = client.get_status()
-        if not status.online:
-            raise ConnectionError(f"Printer {printer_id} is offline")
-        client.send_ams_filament_setting(
-            ams_id=ams_id,
-            tray_id=tray_id,
-            tray_info_idx=tray_info_idx,
-            tray_color=tray_color,
-            tray_type=tray_type,
-            nozzle_temp_min=nozzle_temp_min,
-            nozzle_temp_max=nozzle_temp_max,
-            setting_id=setting_id,
-            tag_uid=tag_uid,
-            bed_temp=bed_temp,
-            tray_weight=tray_weight,
-            remain=remain,
-            k=k,
-            n=n,
-            tray_uuid=tray_uuid,
-            cali_idx=cali_idx,
+        envelope = build_ams_filament_setting(
+            ams_id, tray_id, tray_info_idx, tray_color, tray_type,
+            nozzle_temp_min, nozzle_temp_max, setting_id,
+            tag_uid=tag_uid, bed_temp=bed_temp, tray_weight=tray_weight,
+            remain=remain, k=k, n=n, tray_uuid=tray_uuid, cali_idx=cali_idx,
         )
+        await self.send_command_envelope(printer_id, envelope)
         logger.info(
             "AMS filament set on printer %s AMS %d tray %d: %s (%s)",
             printer_id, ams_id, tray_id, tray_info_idx, setting_id,

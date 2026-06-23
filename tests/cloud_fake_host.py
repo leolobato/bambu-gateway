@@ -63,6 +63,11 @@ def _dispatch(method: str, params: dict) -> dict:
         return {"rc": int(os.environ.get("FAKE_HOST_SELECT_MACHINE_RC", "0"))}
     if method == "connect_server":
         return {"rc": int(os.environ.get("FAKE_HOST_CONNECT_SERVER_RC", "0"))}
+    if method == "is_server_connected":
+        return {
+            "connected": os.environ.get("FAKE_HOST_SERVER_CONNECTED", "1") == "1",
+            "available": True,
+        }
     if method == "start_subscribe":
         return {"rc": 0}
     if method == "add_subscribe":
@@ -93,6 +98,40 @@ def _dispatch(method: str, params: dict) -> dict:
             raise ValueError("send_message requires dev_id + payload")
         rc = int(os.environ.get("FAKE_HOST_SEND_MESSAGE_RC", "0"))
         return {"rc": rc}
+    if method == "connect_printer":
+        if not all(k in params for k in ("dev_id", "dev_ip", "password")):
+            raise ValueError("connect_printer requires dev_id + dev_ip + password")
+        rc = int(os.environ.get("FAKE_HOST_CONNECT_PRINTER_RC", "0"))
+        # Mirror the real plugin's async handshake: on acceptance, emit the
+        # OnLocalConnected(status=0) event the EventPump waits on.
+        if rc == 0:
+            _PENDING_EVENTS.append({
+                "kind": "OnLocalConnected",
+                "dev_id": params["dev_id"],
+                "status": int(os.environ.get("FAKE_HOST_LOCAL_CONNECT_STATUS", "0")),
+                "msg": "",
+            })
+        return {"rc": rc}
+    if method == "send_message_to_printer":
+        if not all(k in params for k in ("dev_id", "payload")):
+            raise ValueError("send_message_to_printer requires dev_id + payload")
+        rc = int(os.environ.get("FAKE_HOST_SEND_MESSAGE_RC", "0"))
+        return {"rc": rc}
+    if method == "send_burst":
+        if not all(k in params for k in ("dev_id", "payloads")):
+            raise ValueError("send_burst requires dev_id + payloads")
+        rc = int(os.environ.get("FAKE_HOST_SEND_MESSAGE_RC", "0"))
+        return {"rcs": [rc for _ in params["payloads"]]}
+    if method == "disconnect_printer":
+        return {"rc": 0}
+    if method == "install_device_cert":
+        if "dev_id" not in params:
+            raise ValueError("install_device_cert requires dev_id")
+        return {"dispatched": True}
+    if method == "set_extra_http_header":
+        return {"rc": int(os.environ.get("FAKE_HOST_SET_HEADER_RC", "0"))}
+    if method == "start_discovery":
+        return {"ok": True}
     raise ValueError(f"unknown method: {method}")
 
 

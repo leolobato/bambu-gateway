@@ -55,6 +55,19 @@ FnT must_resolve(void* h, const char* name) {
   return fn;
 }
 
+// Resolve a symbol or return nullptr (for optional ABI functions that older
+// plugin builds may not export). Unlike must_resolve, never throws.
+template <typename FnT>
+FnT try_resolve(void* h, const char* name) {
+  void* raw = dlsym(h, name);
+  if (!raw) return nullptr;
+  FnT fn{};
+  static_assert(sizeof(void*) == sizeof(FnT),
+                "function pointer size mismatch");
+  std::memcpy(&fn, &raw, sizeof(FnT));
+  return fn;
+}
+
 // Return env var or a default string (never null).
 const char* env_or(const char* name, const char* fallback) {
   const char* v = std::getenv(name);
@@ -127,10 +140,32 @@ void PluginLoader::load_from_env() {
   p_set_on_message_fn_ = must_resolve<fn_set_on_message_fn> (dl_handle_, "bambu_network_set_on_message_fn");
   p_set_on_printer_connected_fn_ = must_resolve<fn_set_on_printer_connected_fn>(dl_handle_, "bambu_network_set_on_printer_connected_fn");
   p_connect_server_    = must_resolve<fn_connect_server>    (dl_handle_, "bambu_network_connect_server");
+  p_is_server_connected_ = try_resolve<fn_is_server_connected>(dl_handle_, "bambu_network_is_server_connected");
   p_start_subscribe_   = must_resolve<fn_start_subscribe>   (dl_handle_, "bambu_network_start_subscribe");
   p_add_subscribe_     = must_resolve<fn_add_subscribe>     (dl_handle_, "bambu_network_add_subscribe");
   p_start_print_       = must_resolve<fn_start_print>       (dl_handle_, "bambu_network_start_print");
   p_send_message_      = must_resolve<fn_send_message>      (dl_handle_, "bambu_network_send_message");
+
+  // LAN-mode publishing (optional — soft-resolve so a plugin without these
+  // symbols still boots with the cloud path intact).
+  p_set_on_local_connect_fn_ = try_resolve<fn_set_on_local_connect_fn>(dl_handle_, "bambu_network_set_on_local_connect_fn");
+  p_set_on_local_message_fn_ = try_resolve<fn_set_on_local_message_fn>(dl_handle_, "bambu_network_set_on_local_message_fn");
+  p_set_on_ssdp_msg_fn_      = try_resolve<fn_set_on_ssdp_msg_fn>     (dl_handle_, "bambu_network_set_on_ssdp_msg_fn");
+  p_connect_printer_         = try_resolve<fn_connect_printer>        (dl_handle_, "bambu_network_connect_printer");
+  p_send_message_to_printer_ = try_resolve<fn_send_message_to_printer>(dl_handle_, "bambu_network_send_message_to_printer");
+  p_disconnect_printer_      = try_resolve<fn_disconnect_printer>     (dl_handle_, "bambu_network_disconnect_printer");
+  p_start_discovery_         = try_resolve<fn_start_discovery>        (dl_handle_, "bambu_network_start_discovery");
+  p_install_device_cert_     = try_resolve<fn_install_device_cert>   (dl_handle_, "bambu_network_install_device_cert");
+  p_set_extra_http_header_   = try_resolve<fn_set_extra_http_header> (dl_handle_, "bambu_network_set_extra_http_header");
+  std::fprintf(stderr,
+               "bambu_cloud_host: LAN symbols: connect_printer=%s "
+               "send_message_to_printer=%s on_local_connect=%s disconnect=%s "
+               "install_device_cert=%s\n",
+               p_connect_printer_         ? "ok" : "MISSING",
+               p_send_message_to_printer_ ? "ok" : "MISSING",
+               p_set_on_local_connect_fn_ ? "ok" : "MISSING",
+               p_disconnect_printer_      ? "ok" : "MISSING",
+               p_install_device_cert_     ? "ok" : "MISSING");
 }
 
 int PluginLoader::bootstrap() {
@@ -236,6 +271,34 @@ int PluginLoader::bootstrap() {
     std::fprintf(stderr,
                  "bambu_cloud_host: register_printer_connected_callback WARN: %s\n",
                  e.what());
+  }
+
+  try {
+    register_local_connect_callback();
+    std::fprintf(stderr,
+                 "bambu_cloud_host: register_local_connect_callback OK\n");
+  } catch (const std::exception& e) {
+    std::fprintf(stderr,
+                 "bambu_cloud_host: register_local_connect_callback WARN: %s\n",
+                 e.what());
+  }
+
+  try {
+    register_local_message_callback();
+    std::fprintf(stderr,
+                 "bambu_cloud_host: register_local_message_callback OK\n");
+  } catch (const std::exception& e) {
+    std::fprintf(stderr,
+                 "bambu_cloud_host: register_local_message_callback WARN: %s\n",
+                 e.what());
+  }
+
+  try {
+    register_ssdp_callback();
+    std::fprintf(stderr, "bambu_cloud_host: register_ssdp_callback OK\n");
+  } catch (const std::exception& e) {
+    std::fprintf(stderr,
+                 "bambu_cloud_host: register_ssdp_callback WARN: %s\n", e.what());
   }
 
   return 0;
@@ -420,11 +483,158 @@ void PluginLoader::register_printer_connected_callback() {
   }
 }
 
+void PluginLoader::register_local_connect_callback() {
+  if (!agent_ || !p_set_on_local_connect_fn_) {
+    // Optional symbol — absent on older plugin builds. Not fatal.
+    throw std::runtime_error(
+        "register_local_connect_callback: symbol unavailable");
+  }
+  on_local_connect_fn cb =
+      [](int status, std::string dev_id, std::string msg) {
+    std::fprintf(stderr,
+                 "bambu_cloud_host: on_local_connect dev_id=%s status=%d msg=%s\n",
+                 dev_id.c_str(), status, msg.c_str());
+    json event = {
+      {"kind",   "OnLocalConnected"},
+      {"dev_id", std::move(dev_id)},
+      {"status", status},
+      {"msg",    std::move(msg)},
+    };
+    global_event_queue().push(std::move(event));
+  };
+  int rc = p_set_on_local_connect_fn_(agent_, std::move(cb));
+  if (rc != 0) {
+    throw std::runtime_error(
+        "set_on_local_connect_fn rc=" + std::to_string(rc));
+  }
+}
+
+void PluginLoader::register_local_message_callback() {
+  if (!agent_ || !p_set_on_local_message_fn_) {
+    throw std::runtime_error(
+        "register_local_message_callback: symbol unavailable");
+  }
+  // Emit the SAME "OnMessage" kind as the cloud path so the existing handler
+  // routes LAN reports into the printer's status identically.
+  on_message_fn cb = [](std::string dev_id, std::string msg) {
+    json event = {
+      {"kind",    "OnMessage"},
+      {"dev_id",  std::move(dev_id)},
+      {"payload", std::move(msg)},
+    };
+    global_event_queue().push(std::move(event));
+  };
+  int rc = p_set_on_local_message_fn_(agent_, std::move(cb));
+  if (rc != 0) {
+    throw std::runtime_error(
+        "set_on_local_message_fn rc=" + std::to_string(rc));
+  }
+}
+
+void PluginLoader::register_ssdp_callback() {
+  if (!agent_ || !p_set_on_ssdp_msg_fn_) {
+    throw std::runtime_error("register_ssdp_callback: symbol unavailable");
+  }
+  on_ssdp_msg_fn cb = [](std::string dev_info) {
+    std::fprintf(stderr, "bambu_cloud_host: on_ssdp_msg %s\n", dev_info.c_str());
+    json event = {
+      {"kind",     "OnSsdpMsg"},
+      {"dev_info", std::move(dev_info)},
+    };
+    global_event_queue().push(std::move(event));
+  };
+  int rc = p_set_on_ssdp_msg_fn_(agent_, std::move(cb));
+  if (rc != 0) {
+    throw std::runtime_error(
+        "set_on_ssdp_msg_fn rc=" + std::to_string(rc));
+  }
+}
+
+int PluginLoader::connect_printer(const std::string& dev_id,
+                                  const std::string& dev_ip,
+                                  const std::string& username,
+                                  const std::string& password,
+                                  bool use_ssl) {
+  if (!agent_) return -1;
+  if (!p_connect_printer_) return -2;  // plugin lacks LAN support
+  int rc = p_connect_printer_(agent_, dev_id, dev_ip, username, password,
+                              use_ssl);
+  std::fprintf(stderr,
+               "bambu_cloud_host: connect_printer dev_id=%s ip=%s ssl=%d rc=%d\n",
+               dev_id.c_str(), dev_ip.c_str(), use_ssl ? 1 : 0, rc);
+  return rc;
+}
+
+int PluginLoader::send_message_to_printer(const std::string& dev_id,
+                                          const std::string& payload,
+                                          int qos,
+                                          int flag) {
+  if (!agent_) return -1;
+  if (!p_send_message_to_printer_) return -2;
+  int rc = p_send_message_to_printer_(agent_, dev_id, payload, qos, flag);
+  std::fprintf(stderr,
+               "bambu_cloud_host: send_message_to_printer dev_id=%s qos=%d "
+               "flag=%d rc=%d\n",
+               dev_id.c_str(), qos, flag, rc);
+  return rc;
+}
+
+int PluginLoader::disconnect_printer() {
+  if (!agent_) return -1;
+  if (!p_disconnect_printer_) return -2;
+  int rc = p_disconnect_printer_(agent_);
+  std::fprintf(stderr, "bambu_cloud_host: disconnect_printer rc=%d\n", rc);
+  return rc;
+}
+
+bool PluginLoader::install_device_cert(const std::string& dev_id,
+                                       bool lan_only) {
+  if (!agent_ || !p_install_device_cert_) {
+    std::fprintf(stderr,
+                 "bambu_cloud_host: install_device_cert dev_id=%s SKIPPED "
+                 "(symbol %s)\n",
+                 dev_id.c_str(), p_install_device_cert_ ? "present, no agent"
+                                                        : "MISSING");
+    return false;
+  }
+  // void return — the plugin installs the cert asynchronously and confirms by
+  // delivering a "device_cert_installed" string through the OnMessage callback.
+  p_install_device_cert_(agent_, dev_id, lan_only);
+  std::fprintf(stderr,
+               "bambu_cloud_host: install_device_cert dev_id=%s lan_only=%d\n",
+               dev_id.c_str(), lan_only ? 1 : 0);
+  return true;
+}
+
+int PluginLoader::set_extra_http_header(
+    const std::map<std::string, std::string>& headers) {
+  if (!agent_) return -1;
+  if (!p_set_extra_http_header_) return -2;
+  int rc = p_set_extra_http_header_(agent_, headers);
+  std::fprintf(stderr,
+               "bambu_cloud_host: set_extra_http_header (%zu headers) rc=%d\n",
+               headers.size(), rc);
+  return rc;
+}
+
+bool PluginLoader::start_discovery(bool start, bool sending) {
+  if (!agent_ || !p_start_discovery_) return false;
+  bool ok = p_start_discovery_(agent_, start, sending);
+  std::fprintf(stderr, "bambu_cloud_host: start_discovery start=%d sending=%d ok=%d\n",
+               start ? 1 : 0, sending ? 1 : 0, ok ? 1 : 0);
+  return ok;
+}
+
 int PluginLoader::connect_server() {
   if (!agent_) return -1;
   int rc = p_connect_server_(agent_);
   std::fprintf(stderr, "bambu_cloud_host: connect_server rc=%d\n", rc);
   return rc;
+}
+
+bool PluginLoader::is_server_connected() {
+  if (!agent_ || !p_is_server_connected_) return false;
+  return p_is_server_connected_(agent_);
 }
 
 int PluginLoader::start_subscribe(const std::string& module) {

@@ -7,8 +7,12 @@ import logging
 import threading
 from typing import TYPE_CHECKING, AsyncIterator
 
-from app.models import PrinterStatus
-from app.mqtt_client import apply_print_payload, parse_ams_report
+from app.models import AMSType, PrinterStatus
+from app.mqtt_client import (
+    apply_print_payload,
+    parse_ams_module_types,
+    parse_ams_report,
+)
 
 logger = logging.getLogger("bambu.cloud.printer")
 
@@ -41,6 +45,11 @@ class CloudPrinterClient:
         self._ams_trays: list[dict] = []
         self._ams_units: list[dict] = []
         self._vt_tray: dict | None = None
+        # ams_id -> AMSType, parsed from the get_version module list (the
+        # authoritative hardware source). Empty until the first get_version
+        # report arrives; feeds parse_ams_report so AMS Lite is recognised as
+        # sensor-less (otherwise it shows a phantom humidity reading).
+        self._ams_module_types: dict[int, AMSType] = {}
         self._lock = threading.Lock()
         # Single in-flight print job's progress channel. None = no active job.
         self._progress: asyncio.Queue | None = None
@@ -122,6 +131,21 @@ class CloudPrinterClient:
             logger.warning("dev=%s: cloud payload is not valid JSON", self._dev_id)
             return
 
+        # get_version carries the AMS module list (ams_f1/0 = Lite, n3f/0 =
+        # 2 Pro, …) — the authoritative AMS hardware type. Parse it before the
+        # print early-return so the type is known when AMS reports arrive.
+        info = msg.get("info")
+        if isinstance(info, dict) and info.get("command") == "get_version":
+            detected = parse_ams_module_types(info)
+            if detected:
+                with self._lock:
+                    self._ams_module_types.update(detected)
+                logger.info(
+                    "dev=%s AMS module types: %s", self._dev_id,
+                    {k: v.value for k, v in detected.items()},
+                )
+            return
+
         print_info = msg.get("print", {})
         if not print_info:
             return
@@ -136,8 +160,11 @@ class CloudPrinterClient:
                 print_info,
                 gcode_state=self._gcode_state,
             )
-            # AMS — shared parser, identical to the LAN path.
-            ams_report = parse_ams_report(print_info)
+            # AMS — shared parser, identical to the LAN path. Pass the
+            # get_version-derived module types so AMS Lite is recognised.
+            ams_report = parse_ams_report(
+                print_info, module_types=self._ams_module_types
+            )
             if ams_report.active_tray_present:
                 self._status.active_tray = ams_report.active_tray
             if ams_report.ams_present:

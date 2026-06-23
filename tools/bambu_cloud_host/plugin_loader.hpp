@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -174,6 +175,17 @@ class PluginLoader {
   // Returns 0 = initiated; negative = error.
   int connect_server();
 
+  // Calls bambu_network_is_server_connected(agent). connect_server() only
+  // *initiates* the cloud MQTT handshake; subscribing/selecting before it
+  // actually completes leaves the subscription dead. Poll this until true.
+  // Returns false if the symbol is unavailable or the agent isn't up.
+  bool is_server_connected();
+
+  // Whether the is_server_connected probe symbol is available in this plugin.
+  bool has_server_connected_probe() const {
+    return p_is_server_connected_ != nullptr;
+  }
+
   // Calls bambu_network_start_subscribe(agent, module).
   // module — e.g. "printer" or "studio".
   // Returns 0 = ok; negative = error.
@@ -215,6 +227,78 @@ class PluginLoader {
                    const std::string& payload,
                    int qos  = 0,
                    int flag = 0);
+
+  // -----------------------------------------------------------------------
+  // LAN / local-mode publishing (the authenticated path for printers reached
+  // over the local network). Newer Bambu firmware ignores writes published
+  // straight onto the printer's local MQTT socket — only the plugin's
+  // authenticated local connection is honoured. Mirrors OrcaSlicer's
+  // MachineObject::connect() → local_publish_json() path.
+  // -----------------------------------------------------------------------
+
+  // Installs the OnLocalConnected trampoline, pushing an
+  // {"kind":"OnLocalConnected","dev_id":..,"status":N,"msg":..} event when the
+  // plugin reports a local connection state change. status 0 == ready.
+  // No-op (logged) if the plugin lacks the symbol.
+  void register_local_connect_callback();
+
+  // Installs the SSDP-message trampoline, pushing each discovered-device JSON
+  // as an {"kind":"OnSsdpMsg","dev_info":..} event. OrcaSlicer registers this
+  // before start_discovery; the plugin's local-device registry (which
+  // connect_printer needs) is populated as these arrive. No-op if absent.
+  void register_ssdp_callback();
+
+  // Installs the OnLocalMessage trampoline, pushing each LAN MQTT report as an
+  // {"kind":"OnMessage","dev_id":..,"payload":..} event — the SAME kind the
+  // cloud path emits, so the existing handler updates status identically.
+  // OrcaSlicer registers this before connect_printer; the plugin may refuse a
+  // local connection with no message sink. No-op if the symbol is absent.
+  void register_local_message_callback();
+
+  // Calls bambu_network_connect_printer(agent, dev_id, dev_ip, username,
+  // password, use_ssl). Initiates the local MQTT handshake asynchronously —
+  // returns 0 when the request was accepted; readiness arrives via the
+  // OnLocalConnected callback. Returns -2 if the plugin lacks the symbol.
+  int connect_printer(const std::string& dev_id,
+                      const std::string& dev_ip,
+                      const std::string& username,
+                      const std::string& password,
+                      bool use_ssl);
+
+  // Calls bambu_network_send_message_to_printer(agent, dev_id, payload, qos,
+  // flag) — the LAN equivalent of send_message. Returns -2 if unavailable.
+  int send_message_to_printer(const std::string& dev_id,
+                              const std::string& payload,
+                              int qos  = 0,
+                              int flag = 0);
+
+  // Calls bambu_network_disconnect_printer(agent). Tears down the local
+  // connection. Returns -2 if the plugin lacks the symbol.
+  int disconnect_printer();
+
+  // Calls bambu_network_install_device_cert(agent, dev_id, lan_only). For a
+  // sec_link:"secure" printer the plugin refuses every "print"-namespace cloud
+  // publish with -2 (CONNECT_FAILED) until this device's certificate is
+  // installed; OrcaSlicer issues it on OnPrinterConnected. Fire-and-forget
+  // (returns void) — the plugin confirms by delivering a plain-string
+  // "device_cert_installed" through the OnMessage callback. No-op if the symbol
+  // is unavailable. Returns true if the call was dispatched.
+  bool install_device_cert(const std::string& dev_id, bool lan_only);
+
+  // Calls bambu_network_set_extra_http_header(agent, headers). Brands the
+  // plugin agent's own cloud HTTP requests as a BambuStudio/slicer client
+  // (X-BBL-* identity). OrcaSlicer issues this once at agent init, before
+  // connect_server; without it the cloud session is unbranded and the relay
+  // refuses "print"-namespace writes with -2. Returns the plugin rc, or -2 if
+  // the symbol is unavailable.
+  int set_extra_http_header(const std::map<std::string, std::string>& headers);
+
+  // Calls bambu_network_start_discovery(agent, start, sending). The plugin's
+  // own LAN discovery — populates its internal local-device registry, WITHOUT
+  // which connect_printer fails before opening a socket. OrcaSlicer calls
+  // start_discovery(true, false) right after login. Returns the plugin's bool;
+  // false if the symbol is unavailable.
+  bool start_discovery(bool start, bool sending);
 
   // True while a start_print worker thread is running.
   bool print_in_flight() const { return print_in_flight_.load(); }
@@ -294,6 +378,10 @@ class PluginLoader {
   // Source: BBLNetworkPlugin.hpp:44
   using fn_connect_server    = int(*)(void*);
 
+  // bool bambu_network_is_server_connected(void *agent)
+  // Source: BBLNetworkPlugin.hpp:45
+  using fn_is_server_connected = bool(*)(void*);
+
   // int bambu_network_start_subscribe(void *agent, std::string module)
   // Source: BBLNetworkPlugin.hpp:47
   using fn_start_subscribe   = int(*)(void*, std::string);
@@ -320,6 +408,52 @@ class PluginLoader {
   // Source: BBLNetworkPlugin.hpp:52, BBLPrinterAgent.cpp:163-176
   using fn_send_message = int(*)(void*, std::string, std::string, int, int);
 
+  // OnLocalConnectedFn — fired when a LAN device's local connection changes
+  // state: (status, dev_id, msg). status 0 == ready (ConnectStatusOk).
+  // Source: bambu_networking.hpp:118, BBLNetworkPlugin.hpp:41
+  using on_local_connect_fn =
+      std::function<void(int, std::string, std::string)>;
+  using fn_set_on_local_connect_fn = int(*)(void*, on_local_connect_fn);
+
+  // int bambu_network_set_on_local_message_fn(void* agent, OnMessageFn fn) —
+  // same OnMessageFn (dev_id, msg) as the cloud path. Source: BBLNetworkPlugin.hpp:42
+  using fn_set_on_local_message_fn = int(*)(void*, on_message_fn);
+
+  // OnMsgArrivedFn — one arg: discovered-device info JSON.
+  // int bambu_network_set_on_ssdp_msg_fn(void* agent, OnMsgArrivedFn fn).
+  // Source: bambu_networking.hpp:127, BBLNetworkPlugin.hpp:32
+  using on_ssdp_msg_fn = std::function<void(std::string)>;
+  using fn_set_on_ssdp_msg_fn = int(*)(void*, on_ssdp_msg_fn);
+
+  // int bambu_network_connect_printer(void* agent, std::string dev_id,
+  //     std::string dev_ip, std::string username, std::string password,
+  //     bool use_ssl). Source: BBLNetworkPlugin.hpp:53
+  using fn_connect_printer =
+      int(*)(void*, std::string, std::string, std::string, std::string, bool);
+
+  // int bambu_network_send_message_to_printer(void* agent, std::string dev_id,
+  //     std::string json_str, int qos, int flag). Source: BBLNetworkPlugin.hpp:55
+  using fn_send_message_to_printer =
+      int(*)(void*, std::string, std::string, int, int);
+
+  // int bambu_network_disconnect_printer(void* agent).
+  // Source: BBLNetworkPlugin.hpp:54
+  using fn_disconnect_printer = int(*)(void*);
+
+  // void bambu_network_install_device_cert(void* agent, std::string dev_id,
+  //     bool lan_only). Source: BBLNetworkPlugin.hpp:57
+  using fn_install_device_cert = void(*)(void*, std::string, bool);
+
+  // int bambu_network_set_extra_http_header(void* agent,
+  //     std::map<std::string,std::string> extra_headers).
+  // Source: BBLNetworkPlugin.hpp:89
+  using fn_set_extra_http_header =
+      int(*)(void*, std::map<std::string, std::string>);
+
+  // bool bambu_network_start_discovery(void* agent, bool start, bool sending).
+  // Source: BBLNetworkPlugin.hpp:58
+  using fn_start_discovery = bool(*)(void*, bool, bool);
+
   fn_create_agent       p_create_agent_       = nullptr;
   fn_init_log           p_init_log_           = nullptr;
   fn_set_config_dir     p_set_config_dir_     = nullptr;
@@ -335,10 +469,22 @@ class PluginLoader {
   fn_set_on_message_fn  p_set_on_message_fn_  = nullptr;
   fn_set_on_printer_connected_fn p_set_on_printer_connected_fn_ = nullptr;
   fn_connect_server     p_connect_server_     = nullptr;
+  fn_is_server_connected p_is_server_connected_ = nullptr;
   fn_start_subscribe    p_start_subscribe_    = nullptr;
   fn_add_subscribe      p_add_subscribe_      = nullptr;
   fn_start_print        p_start_print_        = nullptr;
   fn_send_message       p_send_message_       = nullptr;
+  // LAN-mode symbols are soft-resolved: older plugin builds may lack them, in
+  // which case the cloud path still works and these stay null.
+  fn_set_on_local_connect_fn   p_set_on_local_connect_fn_   = nullptr;
+  fn_set_on_local_message_fn   p_set_on_local_message_fn_   = nullptr;
+  fn_set_on_ssdp_msg_fn        p_set_on_ssdp_msg_fn_        = nullptr;
+  fn_connect_printer           p_connect_printer_           = nullptr;
+  fn_send_message_to_printer   p_send_message_to_printer_   = nullptr;
+  fn_disconnect_printer        p_disconnect_printer_        = nullptr;
+  fn_install_device_cert       p_install_device_cert_       = nullptr;
+  fn_set_extra_http_header     p_set_extra_http_header_     = nullptr;
+  fn_start_discovery           p_start_discovery_           = nullptr;
 
   // True while a start_print worker thread is executing.
   // compare_exchange ensures only one thread can own the "in-flight" slot.

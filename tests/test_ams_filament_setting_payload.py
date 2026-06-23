@@ -5,7 +5,32 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from app.config import PrinterConfig
-from app.mqtt_client import BambuMQTTClient
+from app.mqtt_client import (
+    BambuMQTTClient,
+    VIRTUAL_TRAY_DEPUTY_ID,
+    VIRTUAL_TRAY_MAIN_ID,
+    build_ams_filament_setting,
+)
+
+
+def test_build_ams_filament_setting_real_bay_sets_slot_and_tray():
+    inner = build_ams_filament_setting(
+        0, 2, "GFA00", "FFFFFFFF", "PLA", 190, 240, "GFSA00_02",
+    )["print"]
+    assert inner["ams_id"] == 0
+    assert inner["slot_id"] == 2
+    assert inner["tray_id"] == 2
+
+
+def test_build_ams_filament_setting_virtual_spool_pins_tray_id():
+    # External/virtual spool: tray_id pins to the deputy id (mirrors
+    # OrcaSlicer's command_ams_filament_settings virtual-tray branch).
+    inner = build_ams_filament_setting(
+        VIRTUAL_TRAY_MAIN_ID, VIRTUAL_TRAY_DEPUTY_ID,
+        "GFL99", "FFFFFFFF", "PLA", 190, 240, "GFL99_00",
+    )["print"]
+    assert inner["ams_id"] == VIRTUAL_TRAY_MAIN_ID
+    assert inner["tray_id"] == VIRTUAL_TRAY_DEPUTY_ID
 
 
 def _make_client() -> BambuMQTTClient:
@@ -32,6 +57,8 @@ def test_send_ams_filament_setting_minimal_omits_optionals():
     inner = payload["print"]
     assert inner["command"] == "ams_filament_setting"
     assert inner["ams_id"] == 0
+    # Reference parity: a real AMS bay sends slot_id == tray_id (both the slot).
+    assert inner["slot_id"] == 1
     assert inner["tray_id"] == 1
     assert inner["tray_info_idx"] == "GFA00"
     assert inner["tray_color"] == "00FF00FF"
