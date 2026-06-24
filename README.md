@@ -4,7 +4,7 @@ A self-hosted web application for managing Bambu Lab 3D printers over your local
 network. Provides a REST API and web dashboard for monitoring printer status and
 submitting print jobs.
 
-Works with any Bambu Lab printer in **developer/LAN mode**
+Works with any Bambu Lab printer in **developer/LAN mode** (or in Bambu Cloud mode with experimental support).
 
 An iOS client is also available: **[BambuGateway iOS](https://github.com/leolobato/bambu-gateway-ios)** — print 3MF files from MakerWorld directly from your phone.
 
@@ -91,8 +91,23 @@ or your printer isn't on the same network — you can instead connect through yo
 **Bambu Cloud account**. The gateway logs in to Bambu's cloud and reaches your
 printers through it, so no IP, access code, or Developer Mode is needed.
 
-> Cloud mode is opt-in and experimental. If it fails to start, the gateway falls
-> back to LAN mode automatically and the cloud endpoints return `503`.
+> **Experimental, but working.** Cloud mode is opt-in. Printer status, AMS,
+> control commands (pause/resume/cancel/speed), camera, and cloud printing all
+> function today, but the feature is newer and less battle-tested than LAN mode.
+> If it fails to start, the gateway falls back to LAN mode automatically and the
+> cloud endpoints return `503`.
+
+Cloud mode works by loading Bambu's official closed-source network plugin
+(`libbambu_networking.so`) in an isolated subprocess. The approach — and the
+Linux bridge that makes the plugin usable outside Bambu's own apps — is based on
+**Jarczak's fork of OrcaSlicer** ([OrcaSlicer-bambulab](https://github.com/jarczakpawel/OrcaSlicer-bambulab)),
+which first demonstrated authenticating and driving cloud printers through that
+plugin on Linux. The plugin binary is downloaded from Bambu's CDN and verified (ELF magic
++ SHA-256 manifest + pinned ABI version) before use.
+
+> **x86_64 hosts only.** Bambu ships `libbambu_networking.so` for x86_64 (amd64)
+> only — there is no ARM build, so cloud mode does not work on ARM hosts (Apple
+> Silicon, ARM64 Linux, Raspberry Pi)
 
 ### 1. Turn on cloud mode
 
@@ -110,42 +125,19 @@ below once.
 
 ### 2. Log in to your Bambu account
 
-There's no login button in the UI yet, so the first sign-in is done with a couple
-of API calls. Replace `localhost:4844` if your gateway runs elsewhere.
+Open the **Settings** page and use the **Cloud Account** section:
 
-**a. Get the sign-in link:**
+1. Click **Open Bambu sign-in** and log in with your Bambu email and password
+   (including any verification code) in the browser tab that opens.
+2. After signing in, your browser will try to open `http://localhost:13618/?ticket=…`
+   and show a "this site can't be reached" / "connection refused" page. **That's
+   expected.** Copy the **full URL from the browser's address bar** — it contains
+   your one-time login ticket.
+3. Paste that URL into the field and click **Complete sign-in**.
 
-```bash
-curl http://localhost:4844/api/cloud/auth/url
-```
-
-This returns a `bambulab.com` sign-in URL.
-
-**b. Open that URL in your browser and log in** with your Bambu email and
-password (including any verification code).
-
-**c. After signing in, your browser will try to open
-`http://localhost:13618/?ticket=…` and show a "this site can't be reached" /
-"connection refused" page. That's expected.** Copy the **full URL from the
-browser's address bar** — it contains your one-time login ticket.
-
-**d. Paste that URL back to the gateway to finish logging in:**
-
-```bash
-curl -X POST http://localhost:4844/api/cloud/auth/paste \
-  -H 'Content-Type: application/json' \
-  -d '{"pasted_url": "http://localhost:13618/?ticket=PASTE_THE_URL_HERE"}'
-```
-
-On success the response shows your account profile and `"connected": true`, and
-your cloud printers start appearing on the dashboard.
-
-### 3. Check status / log out
-
-```bash
-curl http://localhost:4844/api/cloud/auth/status   # {"signed_in": true}
-curl -X POST http://localhost:4844/api/cloud/auth/logout
-```
+Once signed in, the Cloud Account section shows your profile and region, and your
+cloud printers start appearing on the dashboard. The login session is saved under
+`./data/`, so you only do this once.
 
 ## Configuration
 
@@ -298,16 +290,6 @@ prepared input so it matches the settings used for the slice.
 V1 supports preset actions only — there is no freehand drag/rotate/scale
 in the browser; orcaslicer-headless remains the authority for STL
 orientation, arrange, and 3MF generation.
-
-## How It Works
-
-The app communicates with Bambu Lab printers using their LAN protocol:
-
-1. **MQTT over TLS** (port 8883) for real-time status updates and print commands
-2. **FTPS** (port 990, implicit TLS) for uploading 3MF files
-
-When you submit a print, the file is uploaded to the printer via FTPS, then an
-MQTT command triggers the print. Status updates flow back continuously over MQTT.
 
 ## Related Projects
 
