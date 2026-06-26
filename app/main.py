@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from app.apns_client import ApnsClient
 from app.apns_jwt import ApnsJwtSigner
 from app.cloud import auth as cloud_auth, region_api_base
-from app.cloud.cloud_printer import CloudPrinterClient
+from app.cloud.cloud_printer import CloudPrinterClient, PRINT_IN_FLIGHT_CODE
 from app.cloud.event_pump import EventPump
 from app.cloud.plugin_downloader import PluginDownloader
 from app.cloud.plugin_host import PluginHost, PluginHostError
@@ -1889,8 +1889,9 @@ async def print_file(
                 use_ams=use_ams,
             )
             if error is not None:
+                status = 409 if error.get("code") == PRINT_IN_FLIGHT_CODE else 502
                 raise HTTPException(
-                    status_code=502,
+                    status_code=status,
                     detail=error.get("msg", "Cloud print submission failed"),
                 )
             job.status = SliceJobStatus.READY
@@ -2114,8 +2115,9 @@ async def print_file(
             use_ams=use_ams,
         )
         if error is not None:
+            status = 409 if error.get("code") == PRINT_IN_FLIGHT_CODE else 502
             raise HTTPException(
-                status_code=502,
+                status_code=status,
                 detail=error.get("msg", "Cloud print submission failed"),
             )
         return PrintResponse(

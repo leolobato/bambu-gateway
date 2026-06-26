@@ -120,6 +120,32 @@ async def test_submit_print_yields_error_when_start_print_rc_nonzero():
     assert client._progress is None
 
 
+async def test_submit_print_rejects_concurrent_submission_with_error_frame():
+    """A second submission while one is in flight yields an in-flight error
+    frame (not a raise), so the HTTP layer can return 409 instead of 500, and
+    the running job's queue is left untouched."""
+    from app.cloud.cloud_printer import PRINT_IN_FLIGHT_CODE
+
+    client = CloudPrinterClient(dev_id="DEV6")
+    inflight = asyncio.Queue()
+    client._progress = inflight  # simulate a print already in flight
+
+    frames = []
+    async for frame in client.submit_print(
+        print_params={"dev_id": "DEV6", "task_name": "t"},
+    ):
+        frames.append(frame)
+
+    assert frames == [{
+        "event": "error",
+        "code": PRINT_IN_FLIGHT_CODE,
+        "msg": frames[0]["msg"],
+    }]
+    assert "already" in frames[0]["msg"].lower()
+    # The in-flight job's queue must not be cleared by the rejected attempt.
+    assert client._progress is inflight
+
+
 async def test_submit_print_times_out_when_no_events_arrive():
     """If the host accepts the job but no progress event ever arrives
     (host died, event dropped), the generator must yield an error frame

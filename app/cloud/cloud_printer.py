@@ -16,6 +16,11 @@ from app.mqtt_client import (
 
 logger = logging.getLogger("bambu.cloud.printer")
 
+# Gateway-internal sentinel (not a Bambu firmware code): a print submission was
+# attempted while one is already in flight for this printer. The HTTP layer maps
+# it to 409 Conflict so a double-click doesn't surface as a 500.
+PRINT_IN_FLIGHT_CODE = -1009
+
 
 class CloudPrinterClient:
     """Mirrors the read surface of ``BambuMQTTClient`` for cloud printers.
@@ -234,11 +239,17 @@ class CloudPrinterClient:
         """
         from app.cloud.error_codes import error_message
 
-        host = self._require_host(host)
         if self._progress is not None:
-            raise RuntimeError(
-                "a print job is already in flight for this printer"
-            )
+            # A submission is already running; reject without disturbing it so
+            # the HTTP layer returns 409 (a double-click, typically) instead of
+            # crashing with a 500.
+            yield {
+                "event": "error",
+                "code": PRINT_IN_FLIGHT_CODE,
+                "msg": "A print is already starting on this printer",
+            }
+            return
+        host = self._require_host(host)
         self._progress = asyncio.Queue()
         try:
             result = await host.call("start_print", print_params)
