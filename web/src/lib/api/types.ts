@@ -178,6 +178,27 @@ export interface ThreeMFInfo {
   process_modifications?: ProcessModifications | null;
 }
 
+export type FilamentProfileEntry =
+  | { profile_setting_id: string; tray_slot: number }
+  | string;
+
+export interface SliceJobReprintConfig {
+  job_id: string;
+  filename: string;
+  machine_profile: string;
+  process_profile: string;
+  // Position-keyed (object) or positional (array), as stored server-side.
+  filament_profiles: Record<string, FilamentProfileEntry> | FilamentProfileEntry[];
+  plate_id: number;
+  plate_type: string;
+  copies: number;
+  process_overrides: Record<string, string> | null;
+  slot_indices: number[] | null;
+  estimate: PrintEstimate | null;
+  settings_transfer: SettingsTransferInfo | null;
+  has_output: boolean;
+}
+
 export interface StlMaterializedProject {
   input_token: string;
   filename: string;

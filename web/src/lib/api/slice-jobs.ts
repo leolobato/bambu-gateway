@@ -1,5 +1,5 @@
 import { ApiError, fetchJson } from './client';
-import type { SliceJob, SliceJobListResponse, SliceJobStatus } from './types';
+import type { SliceJob, SliceJobListResponse, SliceJobReprintConfig, SliceJobStatus } from './types';
 
 export async function listSliceJobs(): Promise<SliceJob[]> {
   const res = await fetchJson<SliceJobListResponse>('/api/slice-jobs');
@@ -8,6 +8,12 @@ export async function listSliceJobs(): Promise<SliceJob[]> {
 
 export async function fetchSliceJob(jobId: string): Promise<SliceJob> {
   return fetchJson<SliceJob>(`/api/slice-jobs/${encodeURIComponent(jobId)}`);
+}
+
+export async function fetchReprintConfig(jobId: string): Promise<SliceJobReprintConfig> {
+  return fetchJson<SliceJobReprintConfig>(
+    `/api/slice-jobs/${encodeURIComponent(jobId)}/reprint-config`,
+  );
 }
 
 export interface SubmitSliceJobArgs {
