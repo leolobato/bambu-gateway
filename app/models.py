@@ -567,5 +567,32 @@ class SliceJobResponse(BaseModel):
     printed: bool = False
 
 
+class SliceJobReprintConfig(BaseModel):
+    """Stored config for rehydrating the Print UI to reprint a past job.
+
+    Kept separate from `SliceJobResponse` (which the jobs list serializes per
+    row) so the list stays lean; this is fetched only when the user opens one
+    job for reprint.
+    """
+
+    job_id: str
+    filename: str
+    machine_profile: str
+    process_profile: str
+    # Position-keyed (dense position in the project's filament list), exactly
+    # as stored — not slot-keyed. The UI maps it back to slot indices.
+    filament_profiles: list | dict
+    plate_id: int
+    plate_type: str
+    copies: int
+    process_overrides: dict[str, str] | None = None
+    slot_indices: list[int] | None = None
+    estimate: dict | None = None
+    settings_transfer: dict | None = None
+    # True when the sliced output blob still exists on disk and can be
+    # reprinted as-is (no re-slice). False once it has been cleared.
+    has_output: bool
+
+
 class SliceJobListResponse(BaseModel):
     jobs: list[SliceJobResponse]

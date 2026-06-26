@@ -76,6 +76,7 @@ from app.models import (
     SettingsTransferInfo,
     SlicerFilament,
     SliceJobListResponse,
+    SliceJobReprintConfig,
     SliceJobResponse,
     SpeedRequest,
     StartDryingRequest,
@@ -2733,6 +2734,33 @@ async def get_slice_job(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return _slice_job_to_response(job)
+
+
+@app.get("/api/slice-jobs/{job_id}/reprint-config", response_model=SliceJobReprintConfig)
+async def get_slice_job_reprint_config(job_id: str):
+    """Return a past job's stored config so the Print UI can be rehydrated for
+    a reprint (reusing the already-sliced output)."""
+    if slice_jobs is None:
+        raise HTTPException(status_code=404, detail="Slice jobs disabled")
+    job = await slice_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    has_output = bool(job.output_path and Path(job.output_path).exists())
+    return SliceJobReprintConfig(
+        job_id=job.id,
+        filename=job.filename,
+        machine_profile=job.machine_profile,
+        process_profile=job.process_profile,
+        filament_profiles=job.filament_profiles,
+        plate_id=job.plate_id,
+        plate_type=job.plate_type,
+        copies=job.copies,
+        process_overrides=job.process_overrides,
+        slot_indices=job.slot_indices,
+        estimate=job.estimate,
+        settings_transfer=job.settings_transfer,
+        has_output=has_output,
+    )
 
 
 @app.get("/api/slice-jobs/{job_id}/thumbnail")

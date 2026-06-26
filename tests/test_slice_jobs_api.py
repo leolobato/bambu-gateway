@@ -779,3 +779,63 @@ async def test_slice_job_from_uploaded_file_prepares_and_stores_original(app_cli
     job_id = resp.json()["job_id"]
     input_resp = await app_client.get(f"/api/slice-jobs/{job_id}/input")
     assert input_resp.content == b"prepared-upload"
+
+
+async def test_reprint_config_returns_stored_config(app_client):
+    import app.main as main_mod
+    from app.slice_jobs import SliceJob, SliceJobStatus
+
+    out = main_mod.slice_jobs._store.output_path("reprintjob")
+    Path(out).write_bytes(b"sliced")
+    seed = SliceJob.new(
+        filename="cube.3mf", machine_profile="GM014", process_profile="0.20mm",
+        filament_profiles={"0": {"profile_setting_id": "GFL99", "tray_slot": 2}},
+        plate_id=3, plate_type="textured_pei_plate",
+        project_filament_count=1, printer_id="PRINTER1", auto_print=False,
+        input_path=main_mod.slice_jobs._store.input_path("reprintjob"),
+        copies=2, process_overrides={"sparse_infill_density": "15%"},
+        slot_indices=[1],
+    )
+    seed.id = "reprintjob"
+    seed.status = SliceJobStatus.READY
+    seed.output_path = str(out)
+    await main_mod.slice_jobs._store.upsert(seed)
+
+    resp = await app_client.get(f"/api/slice-jobs/{seed.id}/reprint-config")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["filename"] == "cube.3mf"
+    assert body["machine_profile"] == "GM014"
+    assert body["process_profile"] == "0.20mm"
+    assert body["plate_id"] == 3
+    assert body["plate_type"] == "textured_pei_plate"
+    assert body["copies"] == 2
+    assert body["process_overrides"] == {"sparse_infill_density": "15%"}
+    assert body["slot_indices"] == [1]
+    assert body["filament_profiles"] == {"0": {"profile_setting_id": "GFL99", "tray_slot": 2}}
+    assert body["has_output"] is True
+
+
+async def test_reprint_config_has_output_false_when_blob_missing(app_client):
+    import app.main as main_mod
+    from app.slice_jobs import SliceJob, SliceJobStatus
+
+    seed = SliceJob.new(
+        filename="x.3mf", machine_profile="GM014", process_profile="0.20mm",
+        filament_profiles={}, plate_id=1, plate_type="",
+        project_filament_count=0, printer_id=None, auto_print=False,
+        input_path=main_mod.slice_jobs._store.input_path("nooutputjob"),
+    )
+    seed.id = "nooutputjob"
+    seed.status = SliceJobStatus.READY
+    seed.output_path = None
+    await main_mod.slice_jobs._store.upsert(seed)
+
+    resp = await app_client.get(f"/api/slice-jobs/{seed.id}/reprint-config")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["has_output"] is False
+
+
+async def test_reprint_config_404_unknown_job(app_client):
+    resp = await app_client.get("/api/slice-jobs/deadbeef/reprint-config")
+    assert resp.status_code == 404
