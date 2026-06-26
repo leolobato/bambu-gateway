@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
@@ -41,9 +42,7 @@ import {
   sliceJobOutputUrl,
   sliceJobThumbnailUrl,
 } from '@/lib/api/slice-jobs';
-import { printFromJob } from '@/lib/api/print';
 import { listPrinters } from '@/lib/api/printers';
-import { usePrinterContext } from '@/lib/printer-context';
 import type { SliceJob, SliceJobStatus } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
 
@@ -88,7 +87,7 @@ function formatRelativeTime(iso: string): string {
 
 export function SliceJobsList() {
   const queryClient = useQueryClient();
-  const { activePrinterId } = usePrinterContext();
+  const navigate = useNavigate();
   // Collapsed by default. A project (filename bucket) is expanded only when
   // its filename appears in this set; toggle via the section header.
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
@@ -132,16 +131,6 @@ export function SliceJobsList() {
     mutationFn: (jobId: string) => deleteSliceJob(jobId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['slice-jobs'] }),
     onError: (e: Error) => toast.error(`Couldn't delete job: ${e.message}`),
-  });
-
-  const printMut = useMutation({
-    mutationFn: ({ jobId, printerId }: { jobId: string; printerId?: string }) =>
-      printFromJob(jobId, printerId),
-    onSuccess: (res) => {
-      toast.success(`Print started: ${res.file_name}`);
-      queryClient.invalidateQueries({ queryKey: ['slice-jobs'] });
-    },
-    onError: (e: Error) => toast.error(`Couldn't start print: ${e.message}`),
   });
 
   const clearMut = useMutation({
@@ -295,15 +284,10 @@ export function SliceJobsList() {
                         }
                         onCancel={() => cancelMut.mutate(job.job_id)}
                         onDelete={() => deleteMut.mutate(job.job_id)}
-                        onPrint={() =>
-                          printMut.mutate({
-                            jobId: job.job_id,
-                            printerId: job.printer_id ?? activePrinterId ?? undefined,
-                          })
-                        }
+                        onPrint={() => navigate(`/print?reprint=${encodeURIComponent(job.job_id)}`)}
                         isCancelling={cancelMut.isPending && cancelMut.variables === job.job_id}
                         isDeleting={deleteMut.isPending && deleteMut.variables === job.job_id}
-                        isPrinting={printMut.isPending && printMut.variables?.jobId === job.job_id}
+                        isPrinting={false}
                       />
                     ))}
                   </ul>
@@ -440,8 +424,8 @@ function SliceJobRow({
               variant="ghost"
               onClick={onPrint}
               disabled={rowBusy}
-              aria-label={`${isReprintable ? 'Reprint' : 'Print'} ${job.filename}`}
-              title={isReprintable ? 'Reprint' : 'Print'}
+              aria-label={`Open ${job.filename} to reprint`}
+              title="Open to reprint"
               className="h-10 w-10 text-accent hover:text-accent"
             >
               {isPrinting ? (
