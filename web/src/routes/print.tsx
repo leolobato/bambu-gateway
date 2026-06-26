@@ -365,6 +365,7 @@ export default function PrintRoute() {
       setState({ kind: 'importing', file: new File([], 'reprint.3mf'), importId });
       try {
         const config = await fetchReprintConfig(jobId);
+        if (config.printer_id) setActivePrinterId(config.printer_id);
         const res = await fetch(sliceJobInputUrl(jobId));
         if (!res.ok) throw new Error(`couldn't load the original file (${res.status})`);
         const blob = await res.blob();
@@ -379,7 +380,7 @@ export default function PrintRoute() {
           machine: config.machine_profile || prev.machine,
           process: config.process_profile || prev.process,
           plateType: config.plate_type || prev.plateType,
-          copies: config.copies || 1,
+          copies: config.copies ?? 1,
         }));
         // Suppress the one-time resolve-for-machine auto-apply so entering the
         // editable state later doesn't clobber the restored process/plate-type.
@@ -418,6 +419,7 @@ export default function PrintRoute() {
       }
     },
     [
+      setActivePrinterId,
       setProcessSheetOpen,
       setSelectedPlateId,
       setSettings,

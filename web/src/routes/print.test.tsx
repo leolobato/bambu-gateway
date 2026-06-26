@@ -69,6 +69,17 @@ vi.mock('@/lib/api/slice-jobs', async (importOriginal) => {
   return { ...actual, fetchReprintConfig: vi.fn() };
 });
 
+vi.mock('@/lib/api/print', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/print')>();
+  return {
+    ...actual,
+    printFromJob: vi.fn(async () => ({
+      status: 'printing', file_name: 'cube.3mf', printer_id: 'printer-1',
+      was_sliced: false, upload_id: null, estimate: null,
+    })),
+  };
+});
+
 import { toast } from 'sonner';
 import { getAms } from '@/lib/api/ams';
 import { listPrinters } from '@/lib/api/printers';
@@ -80,6 +91,7 @@ import {
 import { createStlDraft } from '@/lib/api/stl-drafts';
 import { parse3mf } from '@/lib/api/3mf';
 import { fetchReprintConfig } from '@/lib/api/slice-jobs';
+import { printFromJob } from '@/lib/api/print';
 import type { ThreeMFInfo } from '@/lib/api/types';
 
 function installLocalStorageStub() {
@@ -284,7 +296,7 @@ describe('PrintRoute reprint rehydration', () => {
       process_modifications: null,
     } as unknown as ThreeMFInfo);
     vi.mocked(fetchReprintConfig).mockResolvedValue({
-      job_id: 'job123', filename: 'cube.3mf', machine_profile: 'GM020',
+      job_id: 'job123', filename: 'cube.3mf', printer_id: 'printer-1', machine_profile: 'GM020',
       process_profile: 'GP000', filament_profiles: { '0': { profile_setting_id: 'GFA00', tray_slot: 0 } },
       plate_id: 1, plate_type: 'textured_pei_plate', copies: 1,
       process_overrides: null, slot_indices: [0], estimate: null,
@@ -313,5 +325,12 @@ describe('PrintRoute reprint rehydration', () => {
     const editBtn = await screen.findByRole('button', { name: /edit settings/i });
     fireEvent.click(editBtn);
     expect(await screen.findByRole('button', { name: /preview/i })).toBeInTheDocument();
+  });
+
+  test("Confirm Print reuses the stored slice on the job's printer", async () => {
+    renderPrintRouteAt('/print?reprint=job123');
+    const confirm = await screen.findByRole('button', { name: /confirm print/i });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(printFromJob).toHaveBeenCalledWith('job123', 'printer-1'));
   });
 });

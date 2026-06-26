@@ -814,6 +814,7 @@ async def test_reprint_config_returns_stored_config(app_client):
     assert body["slot_indices"] == [1]
     assert body["filament_profiles"] == {"0": {"profile_setting_id": "GFL99", "tray_slot": 2}}
     assert body["has_output"] is True
+    assert body["printer_id"] == "PRINTER1"
 
 
 async def test_reprint_config_has_output_false_when_blob_missing(app_client):

@@ -185,6 +185,7 @@ export type FilamentProfileEntry =
 export interface SliceJobReprintConfig {
   job_id: string;
   filename: string;
+  printer_id: string | null;
   machine_profile: string;
   process_profile: string;
   // Position-keyed (object) or positional (array), as stored server-side.

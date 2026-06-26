@@ -2749,6 +2749,7 @@ async def get_slice_job_reprint_config(job_id: str):
     return SliceJobReprintConfig(
         job_id=job.id,
         filename=job.filename,
+        printer_id=job.printer_id,
         machine_profile=job.machine_profile,
         process_profile=job.process_profile,
         filament_profiles=job.filament_profiles,

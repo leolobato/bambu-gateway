@@ -577,6 +577,7 @@ class SliceJobReprintConfig(BaseModel):
 
     job_id: str
     filename: str
+    printer_id: str | None = None
     machine_profile: str
     process_profile: str
     # Position-keyed (dense position in the project's filament list), exactly
