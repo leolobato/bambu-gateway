@@ -73,10 +73,6 @@ class PrinterService:
         self._status_change_callback = status_change_callback
         self._cloud_mode = cloud_mode
         self._cloud_host = None
-        # Serials promoted to a read-write LAN client (SSDP found the ip and the
-        # cloud bind list gave the access code). Empty until SSDP promotes one,
-        # so cloud printers default to the relay transport.
-        self._lan_promoted: set[str] = set()
         # Serials with a live plugin LAN connection (connect_printer succeeded
         # and OnLocalConnected reported ready). Writes to these go through the
         # plugin's authenticated local publish (send_message_to_printer).
@@ -100,10 +96,9 @@ class PrinterService:
         self._cloud_clients: dict[str, "CloudPrinterClient"] | None = None  # type: ignore[name-defined]
         for cfg in printer_configs:
             self._configs[cfg.serial] = cfg
-            if cloud_mode and not self._wants_lan(cfg):
-                # Cloud mode: printers are reached via CloudPrinterClient
-                # (the relay). A printer SSDP has promoted to LAN gets a
-                # read-write LAN client below instead.
+            if not self._wants_lan(cfg):
+                # Cloud mode: printers are reached via the cloud relay
+                # (CloudPrinterClient), not a local MQTT client.
                 continue
             client = BambuMQTTClient(cfg)
             if status_change_callback is not None:
@@ -134,30 +129,14 @@ class PrinterService:
     def _wants_lan(self, cfg: PrinterConfig) -> bool:
         """Whether this printer should use a read-write LAN client.
 
-        Outside cloud mode every printer is LAN. In cloud mode a printer is LAN
-        only once SSDP has promoted it AND we have its ip + access code.
+        LAN only outside cloud mode. When cloud is enabled every printer stays
+        on the cloud relay (reads via cloud OnMessage, writes via send_message)
+        — exactly what OrcaSlicer does for a cloud-bound printer. Opening a
+        competing local MQTT (paho) session destabilises the cloud publish
+        channel, and a cloud-bound printer ignores LAN print commands anyway,
+        so the gateway never promotes a cloud printer to LAN.
         """
-        if not self._cloud_mode:
-            return True
-        # A read-only paho LAN connection competes with the plugin's cloud
-        # connection at the printer, destabilising the cloud publish channel.
-        # BAMBU_NO_PAHO keeps cloud printers purely on the relay (reads via
-        # cloud OnMessage, writes via send_message) — what OrcaSlicer does.
-        import os
-        if os.environ.get("BAMBU_NO_PAHO") == "1":
-            return False
-        return (
-            cfg.serial in self._lan_promoted
-            and bool(cfg.ip and cfg.access_code)
-        )
-
-    def promote_lan(self, serial: str) -> None:
-        """Mark a serial as LAN-reachable (called when SSDP finds its ip).
-
-        Caller should follow with :meth:`sync_printers` so the transport
-        actually switches from the relay to a LAN client.
-        """
-        self._lan_promoted.add(serial)
+        return not self._cloud_mode
 
     def start(self) -> None:
         """Initialize printer service without opening MQTT connections."""

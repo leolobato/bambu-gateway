@@ -587,23 +587,21 @@ async def lifespan(app: FastAPI):
             except Exception:
                 logger.exception("startup cloud discovery failed")
 
-            # SSDP fills in each cloud-discovered printer's LAN ip so we can
-            # reach it over read-write LAN MQTT (the cloud bind list gave us
-            # the access code). On finding an ip, point the printer's config
-            # at it and resync — that promotes it to a LAN client.
+            # SSDP records each cloud-discovered printer's LAN ip (used for the
+            # camera stream and shown in the UI). Cloud printers always talk
+            # over the cloud relay — the gateway never opens a competing local
+            # MQTT session — so finding an ip just updates the stored config.
             async def _on_ssdp_found(serial: str, ip: str) -> None:
                 from dataclasses import replace
                 configs = config_store.load()
                 by_serial = {c.serial: c for c in configs}
                 cfg = by_serial.get(serial)
-                if cfg is None:
+                if cfg is None or cfg.ip == ip:
                     return
-                printer_service.promote_lan(serial)
-                if cfg.ip != ip:
-                    by_serial[serial] = replace(cfg, ip=ip)
-                    config_store.save(list(by_serial.values()))
+                by_serial[serial] = replace(cfg, ip=ip)
+                config_store.save(list(by_serial.values()))
                 printer_service.sync_printers(list(by_serial.values()))
-                logger.info("SSDP: %s -> LAN %s (read-write)", serial, ip)
+                logger.info("SSDP: %s -> %s (ip recorded for camera/UI)", serial, ip)
 
             ssdp = SSDPDiscovery(_on_ssdp_found)
             await ssdp.start()

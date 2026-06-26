@@ -104,26 +104,22 @@ def test_merge_updates_existing_access_code():
     assert next(c for c in configs if c.serial == "S1").access_code == "87654321"
 
 
-def test_cloud_printer_uses_relay_until_ssdp_promotes_it():
+def test_cloud_printer_always_uses_relay_even_with_lan_coords():
     from app.printer_service import PrinterService
     cfg = PrinterConfig(ip="10.0.1.157", access_code="abc", serial="S1", name="A1")
     svc = PrinterService([cfg], cloud_mode=True)
-    # Having ip + access_code is not enough on its own — the cloud test model
-    # seeds those too; only an SSDP promotion flips a printer to LAN.
+    # Cloud mode never opens a competing local MQTT client, even when the
+    # printer has a LAN ip + access code — writes go over the cloud relay.
+    assert "S1" not in svc._clients
+    svc.sync_printers([cfg])  # an SSDP ip update must not flip it to LAN
     assert "S1" not in svc._clients
 
-    svc.promote_lan("S1")
-    svc.sync_printers([cfg])
-    assert "S1" in svc._clients  # now a read-write LAN client
 
-
-def test_promotion_without_lan_coords_stays_on_relay():
+def test_non_cloud_printer_uses_lan_client():
     from app.printer_service import PrinterService
-    cfg = PrinterConfig(ip="", access_code="", serial="S1", name="A1")
-    svc = PrinterService([cfg], cloud_mode=True)
-    svc.promote_lan("S1")
-    svc.sync_printers([cfg])
-    assert "S1" not in svc._clients  # no ip/access_code → can't go LAN
+    cfg = PrinterConfig(ip="10.0.1.157", access_code="abc", serial="S1", name="A1")
+    svc = PrinterService([cfg], cloud_mode=False)
+    assert "S1" in svc._clients  # LAN mode: direct MQTT client
 
 
 def test_merge_adds_unknown_device_with_name_and_model():
