@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
@@ -30,8 +30,10 @@ import { cancelUpload, getUploadState } from '@/lib/api/uploads';
 import { printFromJob, printGcodeFile } from '@/lib/api/print';
 import {
   cancelSliceJob,
+  fetchReprintConfig,
   fetchSliceJob,
   submitSliceJob,
+  sliceJobInputUrl,
   sliceJobOutputUrl,
   sliceJobThumbnailUrl,
 } from '@/lib/api/slice-jobs';
@@ -57,6 +59,7 @@ import type {
 } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
 import { hasPrintEstimate } from '@/lib/print-estimate';
+import { buildReprintMapping } from '@/lib/print/reprint-mapping';
 
 // PrintState and BannerData live in `lib/print-context.tsx` so the state
 // machine and any in-flight slice/upload polling survive navigation away
@@ -93,6 +96,7 @@ export default function PrintRoute() {
     sliceAbortRef,
     processOverrides,
     resetAllProcessOverrides,
+    setProcessOverride,
     setProcessBaseline,
     setProcessSheetOpen,
   } = usePrintContext();
@@ -352,6 +356,96 @@ export default function PrintRoute() {
       setState({ kind: 'empty' });
     }
   }, [requestPrinterId, plateTypesQuery.data, resetAllProcessOverrides, setProcessSheetOpen]);
+
+  const rehydrateFromJob = useCallback(
+    async (jobId: string) => {
+      setProcessSheetOpen(false);
+      const importId = `reprint-${jobId}`;
+      importIdRef.current = importId;
+      setState({ kind: 'importing', file: new File([], 'reprint.3mf'), importId });
+      try {
+        const config = await fetchReprintConfig(jobId);
+        const res = await fetch(sliceJobInputUrl(jobId));
+        if (!res.ok) throw new Error(`couldn't load the original file (${res.status})`);
+        const blob = await res.blob();
+        const file = new File([blob], config.filename || 'reprint.3mf', {
+          type: 'application/octet-stream',
+        });
+        const info = await parse3mf(file);
+        if (importIdRef.current !== importId) return;
+
+        setSelectedPlateId(config.plate_id);
+        setSettings((prev) => ({
+          machine: config.machine_profile || prev.machine,
+          process: config.process_profile || prev.process,
+          plateType: config.plate_type || prev.plateType,
+          copies: config.copies || 1,
+        }));
+        // Suppress the one-time resolve-for-machine auto-apply so entering the
+        // editable state later doesn't clobber the restored process/plate-type.
+        appliedForMachineRef.current = config.machine_profile;
+        resetAllProcessOverrides();
+        for (const [key, value] of Object.entries(config.process_overrides ?? {})) {
+          setProcessOverride(key, value);
+        }
+        setFilamentMapping(buildReprintMapping(config.filament_profiles, info));
+
+        if (config.has_output) {
+          setState({
+            kind: 'previewReady',
+            file,
+            info,
+            jobId,
+            transfer: config.settings_transfer ?? null,
+            estimate: config.estimate ?? null,
+          });
+        } else {
+          setState({
+            kind: 'imported',
+            file,
+            info,
+            banner: {
+              variant: 'warn',
+              title: 'Previous slice is no longer available.',
+              message: 'Settings were restored — Preview or Print to slice again.',
+            },
+          });
+        }
+      } catch (err) {
+        if (importIdRef.current !== importId) return;
+        toast.error(`Couldn't open job for reprint: ${(err as Error).message}`);
+        setState({ kind: 'empty' });
+      }
+    },
+    [
+      setProcessSheetOpen,
+      setSelectedPlateId,
+      setSettings,
+      resetAllProcessOverrides,
+      setProcessOverride,
+      setFilamentMapping,
+      setState,
+    ],
+  );
+
+  const [searchParams, setSearchParams] = useSearchParams();
+  const reprintJobId = searchParams.get('reprint');
+  const reprintHandledRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!reprintJobId) return;
+    if (reprintHandledRef.current === reprintJobId) return;
+    reprintHandledRef.current = reprintJobId;
+    void rehydrateFromJob(reprintJobId);
+    // Strip the param so a refresh/back doesn't re-trigger the rehydrate.
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('reprint');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [reprintJobId, rehydrateFromJob, setSearchParams]);
 
   const importStl = useCallback(
     async (file: File) => {
@@ -1078,6 +1172,10 @@ export default function PrintRoute() {
             onReslice={() => startSlicing(state.file, state.info, true, stateSourceFields(state))}
             onConfirmPrint={confirmPrint}
             onDownload={downloadPreview}
+            onEdit={() =>
+              state.kind === 'previewReady' &&
+              setState({ kind: 'imported', file: state.file, info: state.info })
+            }
           />
           <ProcessAllSheet modifications={state.info.process_modifications ?? null} />
         </div>
@@ -1172,6 +1270,7 @@ function ActionButtons({
   onReslice,
   onConfirmPrint,
   onDownload,
+  onEdit,
 }: {
   kind: 'imported' | 'previewReady';
   onPreview: () => void;
@@ -1179,6 +1278,7 @@ function ActionButtons({
   onReslice: () => void;
   onConfirmPrint: () => void;
   onDownload: () => void;
+  onEdit: () => void;
 }) {
   if (kind === 'imported') {
     return (
@@ -1200,23 +1300,32 @@ function ActionButtons({
       </div>
     );
   }
-  // previewReady — three buttons: Re-slice | Download 3MF | Confirm Print
+  // previewReady — Edit settings | Re-slice | Download 3MF, then Confirm Print.
   return (
-    <div className="grid grid-cols-3 gap-2.5">
-      <Button
-        type="button"
-        onClick={onReslice}
-        className="rounded-full bg-surface-1 hover:bg-surface-2 text-accent border-0 h-11 text-[14px] font-semibold"
-      >
-        <RotateCcw className="w-4 h-4 mr-1.5" aria-hidden /> Re-slice
-      </Button>
-      <Button
-        type="button"
-        onClick={onDownload}
-        className="rounded-full bg-surface-1 hover:bg-surface-2 text-accent border-0 h-11 text-[14px] font-semibold"
-      >
-        Download 3MF
-      </Button>
+    <div className="flex flex-col gap-2.5">
+      <div className="grid grid-cols-3 gap-2.5">
+        <Button
+          type="button"
+          onClick={onEdit}
+          className="rounded-full bg-surface-1 hover:bg-surface-2 text-accent border-0 h-11 text-[14px] font-semibold"
+        >
+          Edit settings
+        </Button>
+        <Button
+          type="button"
+          onClick={onReslice}
+          className="rounded-full bg-surface-1 hover:bg-surface-2 text-accent border-0 h-11 text-[14px] font-semibold"
+        >
+          <RotateCcw className="w-4 h-4 mr-1.5" aria-hidden /> Re-slice
+        </Button>
+        <Button
+          type="button"
+          onClick={onDownload}
+          className="rounded-full bg-surface-1 hover:bg-surface-2 text-accent border-0 h-11 text-[14px] font-semibold"
+        >
+          Download 3MF
+        </Button>
+      </div>
       <Button
         type="button"
         onClick={onConfirmPrint}
