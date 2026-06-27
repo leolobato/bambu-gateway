@@ -1,5 +1,28 @@
 import { toast } from 'sonner';
 import type { ProcessOverrideApplied } from './types';
+import type { FilamentOverrideApplied } from '@/lib/api/types';
+
+/**
+ * Toast a non-blocking notice when the slicer dropped any per-slot filament overrides.
+ * Silent when nothing was sent or every (slot, key) was applied.
+ */
+export function notifyDroppedFilamentOverrides(
+  requested: Record<number, Record<string, string>>,
+  applied: FilamentOverrideApplied[] | undefined,
+): void {
+  const appliedSet = new Set((applied ?? []).map((a) => `${a.slot}:${a.key}`));
+  const dropped: string[] = [];
+  for (const [slot, keys] of Object.entries(requested)) {
+    for (const key of Object.keys(keys)) {
+      if (!appliedSet.has(`${slot}:${key}`)) dropped.push(`slot ${slot} · ${key}`);
+    }
+  }
+  if (dropped.length > 0) {
+    toast.warning(
+      `Some filament settings weren't applied: ${dropped.join(', ')}`,
+    );
+  }
+}
 
 /**
  * Toast a non-blocking notice when the slicer dropped a subset of submitted overrides.

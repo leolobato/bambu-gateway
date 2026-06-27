@@ -391,12 +391,21 @@ export interface FilamentTransferEntry {
   discarded: string[];
 }
 
+export interface FilamentOverrideApplied {
+  slot: number;
+  key: string;
+  value: string;
+  previous: string | null;
+}
+
 export interface SettingsTransferInfo {
   status: string;
   transferred: TransferredSetting[];
   filaments: FilamentTransferEntry[];
   /** Per-key result of `process_overrides` resolution, present when overrides were submitted. */
   process_overrides_applied?: ProcessOverrideApplied[];
+  /** Per-slot, per-key result of `filament_overrides` resolution, present when overrides were submitted. */
+  filament_overrides_applied?: FilamentOverrideApplied[];
 }
 
 // --- Print estimate (returned by slicing/printing responses when available) ---
