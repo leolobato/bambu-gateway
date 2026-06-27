@@ -752,6 +752,39 @@ class SlicerClient:
             )
         return resp.json()
 
+    async def get_filament_options(self) -> dict:
+        """GET /options/filament — filament-option metadata catalogue.
+
+        Same shape as ``/options/process`` but for filament-domain keys.
+        Raises ``SlicingError`` on non-200 (the 503 ``options_not_loaded``
+        case is meaningful so we surface it).
+        """
+        url = f"{self._base_url}/options/filament"
+        try:
+            async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
+                resp = await client.get(url)
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        if resp.status_code != 200:
+            raise SlicingError(
+                f"Slicer returned {resp.status_code}: {resp.text[:500]}",
+            )
+        return resp.json()
+
+    async def get_filament_layout(self) -> dict:
+        """GET /options/filament/layout — filament editor page layout."""
+        url = f"{self._base_url}/options/filament/layout"
+        try:
+            async with httpx.AsyncClient(timeout=30, transport=self._transport) as client:
+                resp = await client.get(url)
+        except httpx.HTTPError as e:
+            raise SlicingError(f"Slicer unreachable: {e}")
+        if resp.status_code != 200:
+            raise SlicingError(
+                f"Slicer returned {resp.status_code}: {resp.text[:500]}",
+            )
+        return resp.json()
+
     async def get_process_profile(self, setting_id: str) -> dict:
         """GET /profiles/processes/{setting_id} — resolved profile values.
 
