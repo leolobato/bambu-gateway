@@ -28,12 +28,12 @@ interface RawProcessOption {
   readonly: boolean;
 }
 
-interface RawCatalogue {
+export interface RawCatalogue {
   version: string;
   options: Record<string, RawProcessOption>;
 }
 
-interface RawLayout {
+export interface RawLayout {
   version: string;
   allowlist_revision: string;
   pages: { label: string; optgroups: { label: string; options: string[] }[] }[];
@@ -59,13 +59,13 @@ function adaptOption(raw: RawProcessOption): ProcessOption {
   };
 }
 
-function adaptCatalogue(raw: RawCatalogue): ProcessOptionsCatalogue {
+export function adaptCatalogue(raw: RawCatalogue): ProcessOptionsCatalogue {
   const options: Record<string, ProcessOption> = {};
   for (const [k, v] of Object.entries(raw.options)) options[k] = adaptOption(v);
   return { version: raw.version, options };
 }
 
-function adaptLayout(raw: RawLayout): ProcessLayout {
+export function adaptLayout(raw: RawLayout): ProcessLayout {
   return {
     version: raw.version,
     allowlistRevision: raw.allowlist_revision,
