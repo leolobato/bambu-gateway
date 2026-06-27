@@ -258,6 +258,7 @@ class _SlicerLike(Protocol):
         plate_type: str = "",
         plate: int = 1,
         process_overrides: dict[str, str] | None = None,
+        filament_overrides: dict[str, dict[str, str]] | None = None,
         copies: int = 1,
     ): ...
 
