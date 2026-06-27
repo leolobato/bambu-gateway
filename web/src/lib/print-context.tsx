@@ -124,6 +124,11 @@ type Ctx = {
   setProcessOverride(key: string, value: string): void;
   revertProcessOverride(key: string): void;
   resetAllProcessOverrides(): void;
+  /** Per-slot filament overrides, keyed by slot index then option key. */
+  filamentOverrides: Record<number, Record<string, string>>;
+  setFilamentOverride(slot: number, key: string, value: string): void;
+  revertFilamentOverride(slot: number, key: string): void;
+  resetAllFilamentOverrides(): void;
   /** Resolved system baseline for the active process profile, fetched on 3MF import. */
   processBaseline: Record<string, string>;
   setProcessBaseline: Dispatch<SetStateAction<Record<string, string>>>;
@@ -146,6 +151,8 @@ export function PrintProvider({ children }: { children: ReactNode }) {
   const [filamentMapping, setFilamentMapping] = useState<FilamentMapping>({});
   const sliceAbortRef = useRef<AbortController | null>(null);
   const [processOverrides, setProcessOverrides] = useState<Record<string, string>>({});
+  const [filamentOverrides, setFilamentOverrides] =
+    useState<Record<number, Record<string, string>>>({});
   const [processBaseline, setProcessBaseline] = useState<Record<string, string>>({});
   const [processSheetOpen, setProcessSheetOpen] = useState(false);
 
@@ -166,6 +173,28 @@ export function PrintProvider({ children }: { children: ReactNode }) {
     setProcessOverrides({});
   }, []);
 
+  const setFilamentOverride = useCallback((slot: number, key: string, value: string) => {
+    setFilamentOverrides((prev) => ({
+      ...prev,
+      [slot]: { ...(prev[slot] ?? {}), [key]: value },
+    }));
+  }, []);
+
+  const revertFilamentOverride = useCallback((slot: number, key: string) => {
+    setFilamentOverrides((prev) => {
+      const slotKeys = { ...(prev[slot] ?? {}) };
+      delete slotKeys[key];
+      const next = { ...prev };
+      if (Object.keys(slotKeys).length === 0) delete next[slot];
+      else next[slot] = slotKeys;
+      return next;
+    });
+  }, []);
+
+  const resetAllFilamentOverrides = useCallback(() => {
+    setFilamentOverrides({});
+  }, []);
+
   const value = useMemo<Ctx>(
     () => ({
       state,
@@ -181,12 +210,16 @@ export function PrintProvider({ children }: { children: ReactNode }) {
       setProcessOverride,
       revertProcessOverride,
       resetAllProcessOverrides,
+      filamentOverrides,
+      setFilamentOverride,
+      revertFilamentOverride,
+      resetAllFilamentOverrides,
       processBaseline,
       setProcessBaseline,
       processSheetOpen,
       setProcessSheetOpen,
     }),
-    [state, settings, selectedPlateId, filamentMapping, processOverrides, processBaseline, processSheetOpen],
+    [state, settings, selectedPlateId, filamentMapping, processOverrides, filamentOverrides, processBaseline, processSheetOpen],
   );
 
   return <PrintContext.Provider value={value}>{children}</PrintContext.Provider>;
