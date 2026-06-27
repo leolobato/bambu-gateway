@@ -11,6 +11,7 @@ import type { SettingOption } from '@/components/print/setting-row';
 import { FilamentsGroup, type FilamentMapping } from '@/components/print/filaments-group';
 import { ProcessParametersCard } from '@/components/print/process-parameters-card';
 import { ProcessAllSheet } from '@/components/print/process-all-sheet';
+import { FilamentParametersCard } from '@/components/print/filament-parameters-card';
 import { InfoBanner } from '@/components/print/info-banner';
 import { SlicingProgressCard } from '@/components/print/slicing-progress-card';
 import { ImportingCard } from '@/components/print/importing-card';
@@ -38,7 +39,7 @@ import {
   sliceJobThumbnailUrl,
 } from '@/lib/api/slice-jobs';
 import { fetchProcessProfile } from '@/lib/api/process-options';
-import { notifyDroppedOverrides } from '@/lib/process/drop-notice';
+import { notifyDroppedOverrides, notifyDroppedFilamentOverrides } from '@/lib/process/drop-notice';
 import { useDropZone } from '@/lib/use-drop-zone';
 import { usePrinterContext } from '@/lib/printer-context';
 import { usePrintContext, type BannerData, type PrintState } from '@/lib/print-context';
@@ -53,6 +54,7 @@ const StlPreviewCard = lazy(() =>
 import type {
   AMSTray,
   PrintEstimate,
+  ResolvedFilament,
   SlicerProcess,
   StlLayoutAction,
   ThreeMFInfo,
@@ -80,6 +82,70 @@ function pickDefaultProcess(processes: SlicerProcess[] | undefined): string {
     ?? '';
 }
 
+/**
+ * Predicate for "this filament position prints on the selected plate". Shared
+ * by `buildFilamentProfilesPayload` and `computeFilamentSlots` so the override
+ * slot keys, the submitted payload keys, and the slicer's positional
+ * `filament_settings_ids` always line up. `position` is the index in the dense
+ * `info.filaments` list, NOT the authored `filament.index` (which is sparse).
+ */
+function makeIsPositionUsed(info: ThreeMFInfo, selectedPlateId: number) {
+  const platUsed = info.plates.find((p) => p.id === selectedPlateId)?.used_filament_indices;
+  return (filament: { index: number; used: boolean }) => {
+    if (platUsed) return platUsed.includes(filament.index);
+    if (info.filaments.some((f) => f.used)) return filament.used;
+    return true;
+  };
+}
+
+/**
+ * One `{ slot, label, settingId }` per USED filament position, mirroring the
+ * per-position resolution in `buildFilamentProfilesPayload`: the matched tray's
+ * filament wins, then the cross-machine resolver fallback (unless the user
+ * explicitly mapped the slot), else the 3MF's authored filament. `slot` is the
+ * dense position so it keys overrides identically to the slice payload.
+ */
+function computeFilamentSlots(
+  info: ThreeMFInfo,
+  filamentMapping: FilamentMapping,
+  trays: AMSTray[],
+  resolvedFilaments: ResolvedFilament[],
+  selectedPlateId: number,
+): Array<{ slot: number; label: string; settingId: string }> {
+  const isPositionUsed = makeIsPositionUsed(info, selectedPlateId);
+  const slots: Array<{ slot: number; label: string; settingId: string }> = [];
+  info.filaments.forEach((filament, position) => {
+    if (!isPositionUsed(filament)) return;
+    const authoredLabel = filament.setting_id || `Filament ${filament.index + 1}`;
+
+    // 1. Matched tray filament (the user's explicit slot mapping).
+    const traySlot = filamentMapping[filament.index];
+    const userMapped = traySlot != null && traySlot >= 0;
+    if (userMapped) {
+      const matched = trays.find((t) => t.slot === traySlot)?.matched_filament;
+      if (matched?.setting_id) {
+        slots.push({ slot: position, label: matched.name || matched.setting_id, settingId: matched.setting_id });
+        return;
+      }
+    }
+
+    // 2. Cross-machine resolver fallback — skipped when the user mapped this
+    // slot to a tray (their choice means don't auto-substitute), matching
+    // `buildFilamentProfilesPayload`.
+    if (!userMapped) {
+      const r = resolvedFilaments.find((x) => x.slot === position);
+      if (r && r.setting_id && r.match !== 'unchanged' && r.match !== 'none') {
+        slots.push({ slot: position, label: r.name || r.setting_id, settingId: r.setting_id });
+        return;
+      }
+    }
+
+    // 3. The 3MF's authored filament.
+    slots.push({ slot: position, label: authoredLabel, settingId: filament.setting_id });
+  });
+  return slots;
+}
+
 export default function PrintRoute() {
   const { activePrinterId, setActivePrinterId } = usePrinterContext();
   const navigate = useNavigate();
@@ -99,6 +165,7 @@ export default function PrintRoute() {
     setProcessOverride,
     setProcessBaseline,
     setProcessSheetOpen,
+    filamentOverrides,
   } = usePrintContext();
 
   // Slicer catalogs — load once, don't refetch automatically.
@@ -262,6 +329,25 @@ export default function PrintRoute() {
     });
     appliedForMachineRef.current = settings.machine;
   }, [resolveQuery.data, settings.machine, setSettings]);
+
+  // Used filament slots for the "Filament settings" card. `slot` is the dense
+  // position that keys overrides and the slice payload alike — see
+  // `computeFilamentSlots`/`buildFilamentProfilesPayload`.
+  const infoForFilamentSlots =
+    state.kind === 'imported' || state.kind === 'previewReady' ? state.info : null;
+  const filamentSlots = useMemo(
+    () =>
+      infoForFilamentSlots
+        ? computeFilamentSlots(
+            infoForFilamentSlots,
+            filamentMapping,
+            trays,
+            resolveQuery.data?.filaments ?? [],
+            selectedPlateId,
+          )
+        : [],
+    [infoForFilamentSlots, filamentMapping, trays, resolveQuery.data, selectedPlateId],
+  );
 
   // Drag-and-drop is active in every state EXCEPT slicing/uploading/importing
   // (replacing the file mid-stream would be confusing).
@@ -522,12 +608,7 @@ export default function PrintRoute() {
     // single-filament 3MF authored on AMS slot 1 has `info.filaments=[{index:1}]`,
     // and a slot-keyed payload `{"1": ...}` would be rejected against the
     // length-1 project list.
-    const platUsed = info.plates.find((p) => p.id === selectedPlateId)?.used_filament_indices;
-    const isPositionUsed = (filament: { index: number; used: boolean }) => {
-      if (platUsed) return platUsed.includes(filament.index);
-      if (info.filaments.some((f) => f.used)) return filament.used;
-      return true;
-    };
+    const isPositionUsed = makeIsPositionUsed(info, selectedPlateId);
     info.filaments.forEach((filament, position) => {
       if (!isPositionUsed(filament)) return;
       const traySlot = filamentMapping[filament.index];
@@ -592,6 +673,7 @@ export default function PrintRoute() {
         plateType: settings.plateType || undefined,
         autoPrint: false,
         processOverrides,
+        filamentOverrides,
         copies: settings.copies,
       });
     } catch (err) {
@@ -677,6 +759,10 @@ export default function PrintRoute() {
       }
       if (current.status === 'ready') {
         notifyDroppedOverrides(processOverrides, current.settings_transfer?.process_overrides_applied ?? undefined);
+        notifyDroppedFilamentOverrides(
+          filamentOverrides,
+          current.settings_transfer?.filament_overrides_applied ?? undefined,
+        );
         if (preview) {
           setState({
             kind: 'previewReady',
@@ -1133,6 +1219,7 @@ export default function PrintRoute() {
             disabled={state.kind === 'previewReady'}
           />
           <ProcessParametersCard modifications={state.info.process_modifications ?? null} />
+          {filamentSlots.length > 0 && <FilamentParametersCard slots={filamentSlots} />}
           <FilamentsGroup
             projectFilaments={state.info.filaments}
             usedFilamentIndices={

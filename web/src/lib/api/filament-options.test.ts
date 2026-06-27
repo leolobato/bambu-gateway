@@ -24,6 +24,21 @@ describe('filament-options api', () => {
     expect(cat.options.nozzle_temperature.label).toBe('Nozzle temp');
   });
 
+  it('adapts the filament layout', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        version: 'v',
+        allowlist_revision: 'r1',
+        pages: [
+          { label: 'Filament', optgroups: [{ label: 'Basic', options: ['nozzle_temperature'] }] },
+        ],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    const layout = await fetchFilamentLayout();
+    expect(layout.pages[0].label).toBe('Filament');
+    expect(layout.pages[0].optgroups[0].options).toContain('nozzle_temperature');
+  });
+
   it('fetches a resolved baseline', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ nozzle_temperature: '220' }), {
