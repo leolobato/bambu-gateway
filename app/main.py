@@ -2264,6 +2264,7 @@ async def print_preview(
     filament_profiles: str = Form(""),
     plate_type: str = Form(""),
     process_overrides: str = Form(""),
+    filament_overrides: str = Form(""),
     copies: int = Form(1),
 ):
     """Slice synchronously via the job manager and return the sliced bytes.
@@ -2294,6 +2295,7 @@ async def print_preview(
             detail=f"copies must be between 1 and 100 (got {copies})",
         )
     process_overrides_dict = _parse_process_overrides_form(process_overrides)
+    filament_overrides_dict = _parse_filament_overrides_form(filament_overrides)
     try:
         info = await parse_3mf_via_slicer(
             file_data, slicer_client, plate_id=plate_id or 1,
@@ -2323,6 +2325,7 @@ async def print_preview(
         printer_id=printer_id or None,
         auto_print=False,
         process_overrides=process_overrides_dict,
+        filament_overrides=filament_overrides_dict,
         copies=copies,
     )
 
@@ -2391,6 +2394,7 @@ async def print_file_stream(
     slice_only: bool = Form(False),
     preview: bool = Form(False),
     process_overrides: str = Form(""),
+    filament_overrides: str = Form(""),
     copies: int = Form(1),
 ):
     """Slice and optionally print a 3MF, streaming progress via SSE.
@@ -2422,6 +2426,7 @@ async def print_file_stream(
             detail=f"copies must be between 1 and 100 (got {copies})",
         )
     process_overrides_dict = _parse_process_overrides_form(process_overrides)
+    filament_overrides_dict = _parse_filament_overrides_form(filament_overrides)
     try:
         info = await parse_3mf_via_slicer(
             file_data, slicer_client, plate_id=plate_id or 1,
@@ -2456,6 +2461,7 @@ async def print_file_stream(
         printer_id=pid or None,
         auto_print=auto_print,
         process_overrides=process_overrides_dict,
+        filament_overrides=filament_overrides_dict,
         copies=copies,
     )
 
@@ -2773,6 +2779,7 @@ async def create_slice_job(
             process_profile=process_profile,
             plate_type=plate_type.strip(),
             process_overrides=process_overrides_dict,
+            filament_overrides=filament_overrides_dict,
             thumbnail_png_data_url=thumbnail_png_data_url or None,
         )
     except SlicingError as e:

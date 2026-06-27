@@ -736,6 +736,7 @@ async def test_slice_job_from_input_token_prepares_and_stores_original(app_clien
                 "process_profile": "GP000",
                 "plate_type": "",
                 "process_overrides": {"layer_height": "0.16"},
+                "filament_overrides": None,
                 "thumbnail_png_data_url": "data:image/png;base64,UE5H",
             },
         ),

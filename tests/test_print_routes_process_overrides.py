@@ -257,3 +257,80 @@ def test_print_preview_rejects_invalid_overrides_json(configured_app_with_jobs):
         },
     )
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# filament_overrides parity tests
+# ---------------------------------------------------------------------------
+
+
+def test_print_stream_passes_filament_overrides_to_jobs_submit(
+    configured_app_with_jobs,
+):
+    client, fake_jobs = configured_app_with_jobs
+    resp = client.post(
+        "/api/print-stream",
+        files={"file": ("test.3mf", io.BytesIO(_FAKE_3MF), "application/octet-stream")},
+        data={
+            "machine_profile": "GM004",
+            "process_profile": "GP004",
+            "filament_overrides": json.dumps({"0": {"nozzle_temperature": "230"}}),
+            "preview": "true",
+        },
+    )
+    assert resp.status_code == 200
+    _, kwargs = fake_jobs.submit.call_args
+    assert kwargs["filament_overrides"] == {"0": {"nozzle_temperature": "230"}}
+
+
+def test_print_stream_rejects_invalid_filament_overrides_json(configured_app_with_jobs):
+    client, _ = configured_app_with_jobs
+    resp = client.post(
+        "/api/print-stream",
+        files={"file": ("test.3mf", io.BytesIO(_FAKE_3MF), "application/octet-stream")},
+        data={
+            "machine_profile": "GM004",
+            "process_profile": "GP004",
+            "filament_overrides": "{not json",
+        },
+    )
+    assert resp.status_code == 400
+    assert "Invalid filament_overrides JSON" in resp.json()["detail"]
+
+
+def test_print_preview_passes_filament_overrides_to_jobs_submit(
+    configured_app_with_jobs,
+):
+    """print-preview waits for terminal state — fixture's default `get`
+    returns a clean-failed terminal job so the loop exits immediately
+    and we can verify the submit call args."""
+    client, fake_jobs = configured_app_with_jobs
+
+    resp = client.post(
+        "/api/print-preview",
+        files={"file": ("test.3mf", io.BytesIO(_FAKE_3MF), "application/octet-stream")},
+        data={
+            "machine_profile": "GM004",
+            "process_profile": "GP004",
+            "filament_overrides": json.dumps({"1": {"nozzle_temperature": "215"}}),
+        },
+    )
+    # Forced-failure short-circuit returns 502; we only care about call args.
+    assert resp.status_code == 502
+    _, kwargs = fake_jobs.submit.call_args
+    assert kwargs["filament_overrides"] == {"1": {"nozzle_temperature": "215"}}
+
+
+def test_print_preview_rejects_invalid_filament_overrides_json(configured_app_with_jobs):
+    client, _ = configured_app_with_jobs
+    resp = client.post(
+        "/api/print-preview",
+        files={"file": ("test.3mf", io.BytesIO(_FAKE_3MF), "application/octet-stream")},
+        data={
+            "machine_profile": "GM004",
+            "process_profile": "GP004",
+            "filament_overrides": "{not json",
+        },
+    )
+    assert resp.status_code == 400
+    assert "Invalid filament_overrides JSON" in resp.json()["detail"]
