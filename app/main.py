@@ -71,6 +71,7 @@ from app.models import (
     PrinterListResponse,
     PrintEstimate,
     PrintResponse,
+    FilamentOverrideApplied,
     ProcessOverrideApplied,
     SetAmsFilamentRequest,
     SettingsTransferInfo,
@@ -1359,6 +1360,44 @@ def _parse_process_overrides_form(raw: str) -> dict[str, str] | None:
     return parsed
 
 
+def _parse_filament_overrides_form(
+    raw: str,
+) -> dict[str, dict[str, str]] | None:
+    """Validate and decode the filament_overrides form field.
+
+    Shape: ``{ "<slot>": { "<key>": "<string value>" } }``. Returns
+    ``None`` for empty input. Raises ``HTTPException(400)`` on malformed
+    input — slot indices and key validity are left to the permissive
+    slicer, but client-side shape mistakes are surfaced early.
+
+    The ``isinstance(raw, str)`` guard mirrors
+    ``_parse_process_overrides_form`` for direct in-process route calls.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid filament_overrides JSON")
+    if not isinstance(parsed, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="filament_overrides must be a JSON object",
+        )
+    for slot, keys in parsed.items():
+        if not isinstance(keys, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"filament_overrides[{slot}] must be a JSON object",
+            )
+        if any(not isinstance(v, str) for v in keys.values()):
+            raise HTTPException(
+                status_code=400,
+                detail=f"filament_overrides[{slot}] values must be strings",
+            )
+    return parsed
+
+
 async def _resolve_slice_filament_payload(
     project_filament_ids: list[str],
     filament_profiles: str,
@@ -1552,6 +1591,52 @@ async def slicer_options_process_layout():
         return await slicer_client.get_process_layout()
     except SlicingError as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/slicer/options/filament")
+async def slicer_options_filament():
+    """Filament-option metadata catalogue. Pass-through to the slicer."""
+    if slicer_client is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Slicer not configured: ORCASLICER_API_URL not set",
+        )
+    try:
+        return await slicer_client.get_filament_options()
+    except SlicingError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/slicer/options/filament/layout")
+async def slicer_options_filament_layout():
+    """Filament editor layout. Pass-through to the slicer."""
+    if slicer_client is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Slicer not configured: ORCASLICER_API_URL not set",
+        )
+    try:
+        return await slicer_client.get_filament_layout()
+    except SlicingError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/slicer/filaments/{setting_id}")
+async def slicer_filament_profile(setting_id: str):
+    """Resolved filament values for one profile — the filamentBaseline rung.
+
+    Returns the slicer's ``resolved`` flat dict for the named filament
+    profile. 404 when the profile is unknown.
+    """
+    if slicer_client is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Slicer not configured: ORCASLICER_API_URL not set",
+        )
+    detail = await slicer_client.get_filament_detail(setting_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"Filament profile {setting_id!r} not found")
+    return detail.get("resolved", {})
 
 
 @app.get("/api/slicer/processes/{setting_id}")
@@ -1822,9 +1907,11 @@ async def print_file(
     plate_type: str = Form(""),
     slice_only: bool = Form(False),
     process_overrides: str = Form(""),
+    filament_overrides: str = Form(""),
 ):
     effective_job_id = job_id or preview_id
     process_overrides_dict = _parse_process_overrides_form(process_overrides)
+    filament_overrides_dict = _parse_filament_overrides_form(filament_overrides)
 
     # --- Fast path: print from a sliced job ---
     if effective_job_id and slice_jobs is not None:
@@ -2028,6 +2115,7 @@ async def print_file(
                 plate_type=plate_type.strip(),
                 plate=plate_id or 1,
                 process_overrides=process_overrides_dict,
+                filament_overrides=filament_overrides_dict,
             )
         except SlicingError as e:
             raise HTTPException(status_code=502, detail=f"Slicing failed: {e}")
@@ -2041,6 +2129,7 @@ async def print_file(
         slice_result.settings_transfer_status
         or slice_result.filament_transfers
         or slice_result.process_overrides_applied
+        or slice_result.filament_overrides_applied
     ):
         settings_transfer = SettingsTransferInfo(
             status=slice_result.settings_transfer_status,
@@ -2053,6 +2142,10 @@ async def print_file(
             process_overrides_applied=[
                 ProcessOverrideApplied(**o)
                 for o in slice_result.process_overrides_applied
+            ],
+            filament_overrides_applied=[
+                FilamentOverrideApplied(**o)
+                for o in slice_result.filament_overrides_applied
             ],
         )
 
@@ -2592,6 +2685,7 @@ async def create_slice_job(
     printer_id: str = Form(""),
     auto_print: bool = Form(False),
     process_overrides: str = Form(""),
+    filament_overrides: str = Form(""),
     copies: int = Form(1),
 ):
     if slice_jobs is None or slicer_client is None:
@@ -2646,6 +2740,7 @@ async def create_slice_job(
         )
 
     process_overrides_dict = _parse_process_overrides_form(process_overrides)
+    filament_overrides_dict = _parse_filament_overrides_form(filament_overrides)
 
     # Validate + normalize filament selections the same way /api/print-stream
     # and /api/print-preview do, so missing setting_ids or unavailable AMS
@@ -2697,6 +2792,7 @@ async def create_slice_job(
         printer_id=printer_id or None,
         auto_print=auto_print,
         process_overrides=process_overrides_dict,
+        filament_overrides=filament_overrides_dict,
         copies=copies,
         auto_center=auto_center,
     )

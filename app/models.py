@@ -376,11 +376,25 @@ class ProcessOverrideApplied(BaseModel):
     previous: str
 
 
+class FilamentOverrideApplied(BaseModel):
+    """One filament override that the slicer actually applied.
+
+    Returned in ``settings_transfer.filament_overrides_applied`` for each
+    per-slot override the client submitted that wasn't dropped.
+    """
+
+    slot: int
+    key: str
+    value: str
+    previous: str | None = None
+
+
 class SettingsTransferInfo(BaseModel):
     status: str
     transferred: list[TransferredSetting] = []
     filaments: list[FilamentTransferEntry] = []
     process_overrides_applied: list[ProcessOverrideApplied] = []
+    filament_overrides_applied: list[FilamentOverrideApplied] = []
 
 
 class PrintEstimate(BaseModel):
