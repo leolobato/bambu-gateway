@@ -40,6 +40,7 @@ class SliceResult:
     filament_transfers: list[dict] = field(default_factory=list)
     estimate: PrintEstimate | None = None
     process_overrides_applied: list[dict] = field(default_factory=list)
+    filament_overrides_applied: list[dict] = field(default_factory=list)
 
 
 def translate_estimate_from_binary(payload: dict | None) -> dict | None:
@@ -124,6 +125,7 @@ def _slice_result_from_v2(payload: dict, sliced_bytes: bytes) -> "SliceResult":
     status = str(transfer.get("status", "") or "")
     filament_slots = transfer.get("filament_slots") or []
     overrides_applied = transfer.get("process_overrides_applied") or []
+    filament_overrides_applied = transfer.get("filament_overrides_applied") or []
     return SliceResult(
         content=sliced_bytes,
         settings_transfer_status=status,
@@ -132,6 +134,10 @@ def _slice_result_from_v2(payload: dict, sliced_bytes: bytes) -> "SliceResult":
         estimate=_decode_print_estimate_dict(payload.get("estimate")),
         process_overrides_applied=(
             list(overrides_applied) if isinstance(overrides_applied, list) else []
+        ),
+        filament_overrides_applied=(
+            list(filament_overrides_applied)
+            if isinstance(filament_overrides_applied, list) else []
         ),
     )
 
@@ -159,6 +165,7 @@ class SlicerClient:
         plate_type: str = "",
         plate: int = 1,
         process_overrides: dict[str, str] | None = None,
+        filament_overrides: dict[str, dict[str, str]] | None = None,
         copies: int = 1,
         auto_center: bool | None = None,
     ) -> SliceResult:
@@ -185,6 +192,7 @@ class SlicerClient:
             plate=plate,
             plate_type=plate_type,
             process_overrides=process_overrides,
+            filament_overrides=filament_overrides,
             copies=copies,
             auto_center=auto_center,
         )
@@ -227,6 +235,7 @@ class SlicerClient:
         plate_type: str = "",
         plate: int = 1,
         process_overrides: dict[str, str] | None = None,
+        filament_overrides: dict[str, dict[str, str]] | None = None,
         copies: int = 1,
         auto_center: bool | None = None,
     ):
@@ -239,19 +248,20 @@ class SlicerClient:
         if await self._check_stream_support():
             async for event in self._slice_stream_real(
                 file_data, filename, machine_profile, process_profile, filament_profiles,
-                plate, plate_type, process_overrides, copies, auto_center,
+                plate, plate_type, process_overrides, filament_overrides, copies, auto_center,
             ):
                 yield event
         else:
             async for event in self._slice_stream_fallback(
                 file_data, filename, machine_profile, process_profile, filament_profiles,
-                plate, plate_type, process_overrides, copies, auto_center,
+                plate, plate_type, process_overrides, filament_overrides, copies, auto_center,
             ):
                 yield event
 
     async def _slice_stream_real(
         self, file_data, filename, machine_profile, process_profile, filament_profiles,
-        plate=1, plate_type="", process_overrides=None, copies=1, auto_center=None,
+        plate=1, plate_type="", process_overrides=None, filament_overrides=None,
+        copies=1, auto_center=None,
     ):
         upload = await self.upload_3mf(file_data, filename=filename)
         input_token = upload["token"]
@@ -263,6 +273,7 @@ class SlicerClient:
             plate=plate,
             plate_type=plate_type,
             process_overrides=process_overrides,
+            filament_overrides=filament_overrides,
             copies=copies,
             auto_center=auto_center,
         )
@@ -304,14 +315,16 @@ class SlicerClient:
 
     async def _slice_stream_fallback(
         self, file_data, filename, machine_profile, process_profile, filament_profiles,
-        plate=1, plate_type="", process_overrides=None, copies=1, auto_center=None,
+        plate=1, plate_type="", process_overrides=None, filament_overrides=None,
+        copies=1, auto_center=None,
     ):
         """Use the non-streaming /slice/v2 endpoint and emit synthetic SSE events."""
         yield {"event": "status", "data": {"phase": "slicing", "message": "Slicing..."}}
 
         result = await self.slice(
             file_data, filename, machine_profile, process_profile, filament_profiles,
-            plate_type, plate, process_overrides=process_overrides, copies=copies,
+            plate_type, plate, process_overrides=process_overrides,
+            filament_overrides=filament_overrides, copies=copies,
             auto_center=auto_center,
         )
 
@@ -325,6 +338,10 @@ class SlicerClient:
         if result.process_overrides_applied:
             transfer_info["process_overrides_applied"] = list(
                 result.process_overrides_applied
+            )
+        if result.filament_overrides_applied:
+            transfer_info["filament_overrides_applied"] = list(
+                result.filament_overrides_applied
             )
 
         yield {"event": "result", "data": {
@@ -346,6 +363,7 @@ class SlicerClient:
         plate: int,
         plate_type: str = "",
         process_overrides: dict[str, str] | None = None,
+        filament_overrides: dict[str, dict[str, str]] | None = None,
         copies: int = 1,
         auto_center: bool | None = None,
     ) -> dict[str, Any]:
@@ -400,6 +418,10 @@ class SlicerClient:
             body["plate_type"] = plate_type
         if process_overrides:
             body["process_overrides"] = dict(process_overrides)
+        if filament_overrides:
+            body["filament_overrides"] = {
+                slot: dict(keys) for slot, keys in filament_overrides.items()
+            }
         return body
 
     async def _normalize_filament_selection(
@@ -883,6 +905,7 @@ class SlicerClient:
         process_profile: str,
         plate_type: str = "",
         process_overrides: dict[str, str] | None = None,
+        filament_overrides: dict[str, dict[str, str]] | None = None,
         thumbnail_png_data_url: str | None = None,
     ) -> dict[str, Any]:
         """Persist selected project settings into a token-backed 3MF."""
@@ -894,6 +917,10 @@ class SlicerClient:
             body["plate_type"] = plate_type
         if process_overrides:
             body["process_overrides"] = dict(process_overrides)
+        if filament_overrides:
+            body["filament_overrides"] = {
+                slot: dict(keys) for slot, keys in filament_overrides.items()
+            }
         thumbnail_b64 = _png_data_url_to_base64(thumbnail_png_data_url)
         if thumbnail_b64:
             body["thumbnail_png_base64"] = thumbnail_b64
