@@ -68,6 +68,7 @@ class SliceJob:
     # blobs (paths as strings for JSON-friendliness; converted to Path in code)
     input_path: str
     process_overrides: dict[str, str] | None = None
+    filament_overrides: dict[str, dict[str, str]] | None = None
     copies: int = 1
     output_path: str | None = None
     # Authored 3MF slot index per project-filament position. For sparse 3MFs
@@ -122,6 +123,7 @@ class SliceJob:
         auto_print: bool,
         input_path: Path,
         process_overrides: dict[str, str] | None = None,
+        filament_overrides: dict[str, dict[str, str]] | None = None,
         copies: int = 1,
         slot_indices: list[int] | None = None,
         auto_center: bool | None = None,
@@ -142,6 +144,7 @@ class SliceJob:
             auto_print=auto_print,
             input_path=str(input_path),
             process_overrides=process_overrides,
+            filament_overrides=filament_overrides,
             copies=copies,
             slot_indices=slot_indices,
             auto_center=auto_center,
@@ -541,6 +544,7 @@ class SliceJobManager:
         printer_id: str | None,
         auto_print: bool,
         process_overrides: dict[str, str] | None = None,
+        filament_overrides: dict[str, dict[str, str]] | None = None,
         copies: int = 1,
         slot_indices: list[int] | None = None,
         auto_center: bool | None = None,
@@ -563,6 +567,7 @@ class SliceJobManager:
             auto_print=auto_print,
             input_path=input_path,
             process_overrides=process_overrides,
+            filament_overrides=filament_overrides,
             copies=copies,
             slot_indices=slot_indices,
             auto_center=auto_center,
@@ -637,6 +642,7 @@ class SliceJobManager:
                 job.filament_profiles, plate_type=job.plate_type,
                 plate=job.plate_id or 1,
                 process_overrides=job.process_overrides,
+                filament_overrides=job.filament_overrides,
                 copies=job.copies,
                 auto_center=job.auto_center,
             )
