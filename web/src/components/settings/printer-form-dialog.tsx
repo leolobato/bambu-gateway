@@ -23,10 +23,17 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   createPrinterConfig,
   updatePrinterConfig,
 } from '@/lib/api/printer-configs';
-import { getSlicerMachines } from '@/lib/api/slicer-profiles';
+import { getSlicerMachines, getSlicerPlateTypes } from '@/lib/api/slicer-profiles';
 import type { PrinterConfigInput, PrinterConfigResponse } from '@/lib/api/types';
 import { cn } from '@/lib/utils';
 
@@ -40,7 +47,12 @@ interface FormState {
   ip: string;
   access_code: string;
   machine_model: string;
+  default_plate_type: string;
 }
+
+// Sentinel for the "use the file's plate" option — Radix Select rejects an
+// empty-string item value, so map it to "" on the way in/out of the payload.
+const NO_PLATE = '__none__';
 
 interface FieldErrors {
   serial?: string;
@@ -75,6 +87,7 @@ export function PrinterFormDialog({
     ip: '',
     access_code: '',
     machine_model: '',
+    default_plate_type: '',
   });
   const [touched, setTouched] = useState<Record<string, boolean>>({});
 
@@ -87,9 +100,10 @@ export function PrinterFormDialog({
         ip: mode.printer.ip,
         access_code: '',
         machine_model: mode.printer.machine_model,
+        default_plate_type: mode.printer.default_plate_type ?? '',
       });
     } else if (mode?.kind === 'add') {
-      setState({ name: '', serial: '', ip: '', access_code: '', machine_model: '' });
+      setState({ name: '', serial: '', ip: '', access_code: '', machine_model: '', default_plate_type: '' });
     }
     setTouched({});
   }, [mode]);
@@ -100,6 +114,17 @@ export function PrinterFormDialog({
     staleTime: Infinity,
     enabled: open,
   });
+
+  const plateTypesQuery = useQuery({
+    queryKey: ['slicer', 'plate-types'],
+    queryFn: getSlicerPlateTypes,
+    staleTime: Infinity,
+    enabled: open,
+  });
+  const plateTypeOptions = useMemo(
+    () => (plateTypesQuery.data ?? []).filter((p) => p.value),
+    [plateTypesQuery.data],
+  );
 
   const machineOptions = useMemo(
     () =>
@@ -120,6 +145,7 @@ export function PrinterFormDialog({
         access_code: state.access_code.trim(),
         name: state.name.trim(),
         machine_model: state.machine_model,
+        default_plate_type: state.default_plate_type,
       };
       if (mode?.kind === 'edit') {
         return updatePrinterConfig(mode.printer.serial, input);
@@ -204,6 +230,36 @@ export function PrinterFormDialog({
               options={machineOptions}
               onChange={(machine_model) => setState((s) => ({ ...s, machine_model }))}
             />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="default_plate_type" className="text-xs text-text-1">
+              Default plate
+            </Label>
+            <Select
+              value={state.default_plate_type || NO_PLATE}
+              onValueChange={(v) =>
+                setState((s) => ({ ...s, default_plate_type: v === NO_PLATE ? '' : v }))
+              }
+            >
+              <SelectTrigger
+                id="default_plate_type"
+                aria-label="Default plate"
+                className="bg-bg-0 border-border text-text-0"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_PLATE}>
+                  <span className="text-text-1">Use file's plate</span>
+                </SelectItem>
+                {plateTypeOptions.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <DialogFooter className="mt-2 gap-2">

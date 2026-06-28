@@ -428,6 +428,8 @@ export interface PrinterConfigResponse {
   ip: string;
   name: string;
   machine_model: string;
+  /** Build plate kept on this printer (slicer slug, e.g. "textured_pei_plate"); "" = none. */
+  default_plate_type?: string;
 }
 
 export interface PrinterConfigListResponse {
@@ -440,6 +442,8 @@ export interface PrinterConfigInput {
   access_code: string;
   name: string;
   machine_model: string;
+  /** Build plate kept on this printer (slicer slug); "" = use the file's plate. */
+  default_plate_type?: string;
 }
 
 // --- Settings: push devices (mirror app/models.py DeviceInfo) ---

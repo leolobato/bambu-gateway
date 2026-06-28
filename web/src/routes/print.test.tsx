@@ -50,6 +50,14 @@ vi.mock('@/lib/api/printers', () => ({
   listPrinters: vi.fn(),
 }));
 
+vi.mock('@/lib/api/printer-configs', () => ({
+  listPrinterConfigs: vi.fn(),
+}));
+
+vi.mock('@/lib/api/filament-matches', () => ({
+  getFilamentMatches: vi.fn(),
+}));
+
 vi.mock('@/lib/api/ams', () => ({
   getAms: vi.fn(),
 }));
@@ -83,10 +91,13 @@ vi.mock('@/lib/api/print', async (importOriginal) => {
 import { toast } from 'sonner';
 import { getAms } from '@/lib/api/ams';
 import { listPrinters } from '@/lib/api/printers';
+import { listPrinterConfigs } from '@/lib/api/printer-configs';
+import { getFilamentMatches } from '@/lib/api/filament-matches';
 import {
   getSlicerMachines,
   getSlicerPlateTypes,
   getSlicerProcesses,
+  resolveForMachine,
 } from '@/lib/api/slicer-profiles';
 import { createStlDraft } from '@/lib/api/stl-drafts';
 import { parse3mf } from '@/lib/api/3mf';
@@ -137,6 +148,11 @@ describe('PrintRoute STL import defaults', () => {
 
   beforeEach(() => {
     window.localStorage.setItem('bg.active-printer-id', 'printer-1');
+    vi.mocked(listPrinterConfigs).mockResolvedValue({
+      printers: [
+        { serial: 'printer-1', ip: '10.0.1.10', name: 'A1 Mini', machine_model: 'GM020', default_plate_type: '' },
+      ],
+    });
     vi.mocked(listPrinters).mockResolvedValue({
       printers: [
         {
@@ -262,6 +278,11 @@ describe('PrintRoute reprint rehydration', () => {
 
   beforeEach(() => {
     window.localStorage.setItem('bg.active-printer-id', 'printer-1');
+    vi.mocked(listPrinterConfigs).mockResolvedValue({
+      printers: [
+        { serial: 'printer-1', ip: '10.0.1.10', name: 'A1 Mini', machine_model: 'GM020', default_plate_type: '' },
+      ],
+    });
     vi.mocked(listPrinters).mockResolvedValue({
       printers: [
         {
@@ -332,5 +353,91 @@ describe('PrintRoute reprint rehydration', () => {
     const confirm = await screen.findByRole('button', { name: /confirm print/i });
     fireEvent.click(confirm);
     await waitFor(() => expect(printFromJob).toHaveBeenCalledWith('job123', 'printer-1'));
+  });
+});
+
+describe('PrintRoute printer default plate', () => {
+  beforeAll(() => {
+    installLocalStorageStub();
+  });
+
+  beforeEach(() => {
+    window.localStorage.setItem('bg.active-printer-id', 'printer-1');
+    // The active printer keeps a textured PEI plate on the bed — its
+    // configured default_plate_type must win over the 3MF's authored plate.
+    vi.mocked(listPrinterConfigs).mockResolvedValue({
+      printers: [
+        {
+          serial: 'printer-1', ip: '10.0.1.10', name: 'A1 Mini',
+          machine_model: 'GM020', default_plate_type: 'textured_pei_plate',
+        },
+      ],
+    });
+    vi.mocked(listPrinters).mockResolvedValue({
+      printers: [
+        {
+          id: 'printer-1', name: 'A1 Mini', machine_model: 'GM020', online: true,
+          state: 'idle', stg_cur: 0, stage_name: null, stage_category: null,
+          speed_level: 2, active_tray: null,
+          temperatures: { nozzle_temp: 0, nozzle_target: 0, bed_temp: 0, bed_target: 0 },
+          job: null, hms_codes: [], print_error: 0, error_message: null, camera: null,
+        },
+      ],
+    });
+    vi.mocked(getAms).mockResolvedValue({
+      printer_id: 'printer-1', trays: [], units: [], vt_tray: null,
+      auto_refill_enabled: null, auto_refill_supported: null,
+    });
+    vi.mocked(getFilamentMatches).mockResolvedValue({ printer_id: 'printer-1', matches: [] });
+    vi.mocked(getSlicerMachines).mockResolvedValue([
+      { setting_id: 'GM020', name: 'Bambu Lab A1 mini 0.4 nozzle', vendor: 'Bambu Lab', nozzle_diameter: '0.4', printer_model: 'A1 mini' },
+    ]);
+    vi.mocked(getSlicerProcesses).mockResolvedValue([
+      { setting_id: 'GP000', name: '0.20mm Standard @BBL A1M', vendor: 'Bambu Lab', compatible_printers: ['GM020'], layer_height: '0.20' },
+    ]);
+    // Two plates so authored ("Cool Plate") differs from the printer default.
+    vi.mocked(getSlicerPlateTypes).mockResolvedValue([
+      { value: 'textured_pei_plate', label: 'Textured PEI Plate' },
+      { value: 'cool_plate', label: 'Cool Plate' },
+    ]);
+    // The 3MF was authored on a Cool Plate.
+    vi.mocked(parse3mf).mockResolvedValue({
+      plates: [{ id: 1, used_filament_indices: [0] }],
+      filaments: [{ index: 0, used: true, setting_id: 'GFA00' }],
+      printer: { printer_settings_id: 'GM020' },
+      print_profile: { print_settings_id: 'GP000' },
+      bed_type: 'Cool Plate',
+      has_gcode: false,
+      process_modifications: null,
+    } as unknown as ThreeMFInfo);
+    // Even the resolver keeps the authored Cool Plate — the printer default
+    // must still win over it.
+    vi.mocked(resolveForMachine).mockResolvedValue({
+      machine_id: 'GM020', machine_name: 'Bambu Lab A1 mini 0.4 nozzle',
+      process: null, filaments: [],
+      plate_type: { requested: 'cool_plate', resolved: 'cool_plate', match: 'unchanged' },
+    });
+  });
+
+  afterEach(() => {
+    window.localStorage.clear();
+    vi.clearAllMocks();
+  });
+
+  test("defaults the plate to the active printer's default over the 3MF's authored plate", async () => {
+    const { container } = renderPrintRoute();
+
+    await waitFor(() => {
+      expect(getSlicerProcesses).toHaveBeenCalledWith('GM020');
+    });
+
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['<3mf/>'], 'cube.3mf', { type: 'application/octet-stream' });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    const plateTrigger = await screen.findByLabelText('Plate type');
+    await waitFor(() => {
+      expect(plateTrigger).toHaveTextContent('Textured PEI Plate');
+    });
   });
 });

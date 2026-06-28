@@ -26,6 +26,7 @@ import {
 } from '@/lib/api/slicer-profiles';
 import { getAms } from '@/lib/api/ams';
 import { listPrinters } from '@/lib/api/printers';
+import { listPrinterConfigs } from '@/lib/api/printer-configs';
 import { getFilamentMatches } from '@/lib/api/filament-matches';
 import { cancelUpload, getUploadState } from '@/lib/api/uploads';
 import { printFromJob, printGcodeFile } from '@/lib/api/print';
@@ -192,6 +193,22 @@ export default function PrintRoute() {
   const activePrinter = printers.find((p) => p.id === activePrinterId) ?? printers[0];
   const requestPrinterId = activePrinter?.id ?? activePrinterId ?? null;
   const activePrinterName = activePrinter?.name ?? null;
+  // The per-printer "build plate kept on the bed" (`default_plate_type`) lives on
+  // the printer *config* (GET /api/settings/printers), not on the live status
+  // returned by /api/printers — so source it from the config list and match by
+  // serial. When set, it's the highest-precedence plate default in the import
+  // flow, winning over the 3MF's authored plate and the resolve-for-machine
+  // fallback (mirroring the backend's request → printer default → authored →
+  // machine default precedence).
+  const printerConfigsQuery = useQuery({
+    queryKey: ['printer-configs'],
+    queryFn: listPrinterConfigs,
+    staleTime: 60_000,
+  });
+  const activePrinterDefaultPlate = useMemo(() => {
+    const cfg = printerConfigsQuery.data?.printers.find((p) => p.serial === requestPrinterId);
+    return cfg?.default_plate_type?.trim() ?? '';
+  }, [printerConfigsQuery.data, requestPrinterId]);
   const defaultMachine = useMemo(() => {
     const configuredMachine = activePrinter?.machine_model?.trim() ?? '';
     if (!configuredMachine) return '';
@@ -324,13 +341,37 @@ export default function PrintRoute() {
       if (resolved.process && resolved.process.setting_id) {
         next.process = resolved.process.setting_id;
       }
-      if (resolved.plate_type && resolved.plate_type.resolved) {
+      // The printer's configured default plate (applied by the effect below)
+      // outranks the resolver's authored/machine-default plate, so only let the
+      // resolver govern the plate when the active printer has no default.
+      if (!activePrinterDefaultPlate && resolved.plate_type && resolved.plate_type.resolved) {
         next.plateType = resolved.plate_type.resolved;
       }
       return next;
     });
     appliedForMachineRef.current = settings.machine;
-  }, [resolveQuery.data, settings.machine, setSettings]);
+  }, [resolveQuery.data, settings.machine, setSettings, activePrinterDefaultPlate]);
+
+  // Printer default plate: the highest-precedence plate default. When the active
+  // printer has a configured `default_plate_type`, seed `settings.plateType` from
+  // it — over the 3MF's authored plate and the resolve-for-machine fallback —
+  // but only once per (printer, machine) so a plate the user later picks is never
+  // clobbered. Independent of `resolveQuery` so it still applies when the
+  // resolver hasn't run (or failed). `rehydrateFromJob` pre-arms the ref to keep
+  // a reprint's restored plate intact.
+  const appliedPrinterPlateRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activePrinterDefaultPlate) return;
+    if (state.kind !== 'imported' && state.kind !== 'previewReady') return;
+    const key = `${requestPrinterId ?? ''}|${settings.machine}`;
+    if (appliedPrinterPlateRef.current === key) return;
+    appliedPrinterPlateRef.current = key;
+    setSettings((prev) =>
+      prev.plateType === activePrinterDefaultPlate
+        ? prev
+        : { ...prev, plateType: activePrinterDefaultPlate },
+    );
+  }, [activePrinterDefaultPlate, requestPrinterId, settings.machine, state.kind, setSettings]);
 
   // Used filament slots for the "Filament settings" card. `slot` is the dense
   // position that keys overrides and the slice payload alike — see
@@ -386,7 +427,8 @@ export default function PrintRoute() {
       setSettings((prev) => ({
         machine: prev.machine || info.printer.printer_settings_id || '',
         process: prev.process || info.print_profile.print_settings_id || '',
-        plateType: prev.plateType || matchedPlateType,
+        // Printer default plate (if any) outranks the 3MF's authored plate.
+        plateType: prev.plateType || activePrinterDefaultPlate || matchedPlateType,
         copies: prev.copies,
       }));
       // Filament-tray defaults via backend matcher. Only ask about filaments
@@ -443,7 +485,7 @@ export default function PrintRoute() {
       toast.error(`Failed to parse 3MF: ${(err as Error).message}`);
       setState({ kind: 'empty' });
     }
-  }, [requestPrinterId, plateTypesQuery.data, resetAllProcessOverrides, setProcessSheetOpen]);
+  }, [requestPrinterId, plateTypesQuery.data, activePrinterDefaultPlate, resetAllProcessOverrides, setProcessSheetOpen]);
 
   const rehydrateFromJob = useCallback(
     async (jobId: string) => {
@@ -473,6 +515,9 @@ export default function PrintRoute() {
         // Suppress the one-time resolve-for-machine auto-apply so entering the
         // editable state later doesn't clobber the restored process/plate-type.
         appliedForMachineRef.current = config.machine_profile;
+        // Likewise suppress the printer-default plate seed — the reprint's stored
+        // plate is authoritative.
+        appliedPrinterPlateRef.current = `${config.printer_id ?? ''}|${config.machine_profile}`;
         resetAllProcessOverrides();
         for (const [key, value] of Object.entries(config.process_overrides ?? {})) {
           setProcessOverride(key, value);
