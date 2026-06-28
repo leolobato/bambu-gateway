@@ -17,7 +17,7 @@ from urllib.parse import quote
 
 import httpx
 
-from fastapi import Body, FastAPI, Form, HTTPException, Query, UploadFile
+from fastapi import Body, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -41,6 +41,7 @@ from app.filament_selection import (
     validate_selected_trays,
 )
 from app.notification_hub import NotificationHub
+from app.print_sessions import build_handoff_url, resolve_plate_type
 from app.models import (
     ActivityRegisterRequest,
     ActivityRegisterResponse,
@@ -71,6 +72,7 @@ from app.models import (
     PrinterListResponse,
     PrintEstimate,
     PrintResponse,
+    PrintSessionResponse,
     FilamentOverrideApplied,
     ProcessOverrideApplied,
     SetAmsFilamentRequest,
@@ -813,6 +815,12 @@ async def get_printer(printer_id: str):
     if status is None:
         raise HTTPException(status_code=404, detail="Printer not found")
     return PrinterDetailResponse(printer=status)
+
+
+def _printer_config_by_id(printer_id: str) -> PrinterConfig | None:
+    """Look up a printer's saved config (carrying ``machine_model`` and
+    ``default_plate_type``) by serial, or ``None`` if it is unknown."""
+    return printer_service.get_config(printer_id)
 
 
 def _resolve_printer_id(printer_id: str) -> str:
@@ -2807,6 +2815,255 @@ async def create_slice_job(
         auto_center=auto_center,
     )
     return _slice_job_to_response(job)
+
+
+async def _authored_plate_value(label: str) -> str:
+    """Map a 3MF's authored bed-type *label* to the slicer's plate *value*.
+
+    Mirrors the web's ``plateTypesQuery.find(p => p.label === bed_type).value``
+    translation so the authored plate can take its place in the precedence
+    chain as a slice-API value rather than a display string.
+    """
+    if not label:
+        return ""
+    try:
+        catalog = await slicer_client.get_profiles("plate-types") or DEFAULT_PLATE_TYPES
+    except Exception:
+        catalog = DEFAULT_PLATE_TYPES
+    for entry in catalog:
+        if entry.get("label") == label:
+            return str(entry.get("value", ""))
+    return ""
+
+
+def _merge_resolved_filaments(
+    authored_ids: list[str], resolved_filaments: list[dict],
+) -> list[str]:
+    """Per-slot filament setting_ids after the cross-machine resolver.
+
+    For each authored slot, the resolver's substitute wins when it produced a
+    meaningful match (not ``unchanged``/``none``); otherwise the authored
+    setting_id stays. Mirrors ``computeFilamentSlots`` in ``web/print.tsx``.
+    """
+    by_slot: dict[int, str] = {}
+    for entry in resolved_filaments:
+        try:
+            slot = int(entry.get("slot"))
+        except (TypeError, ValueError):
+            continue
+        setting_id = str(entry.get("setting_id") or "")
+        if setting_id and entry.get("match") not in ("unchanged", "none"):
+            by_slot[slot] = setting_id
+    return [by_slot.get(i, authored_ids[i]) for i in range(len(authored_ids))]
+
+
+@app.post("/api/print-sessions", response_model=PrintSessionResponse)
+async def create_print_session(
+    request: Request,
+    file: UploadFile | None = None,
+    printer_id: str = Form(...),
+    machine_profile: str = Form(""),
+    process_profile: str = Form(""),
+    filament_profiles: str = Form(""),
+    plate_id: int = Form(0),
+    plate_type: str = Form(""),
+    slice: bool = Form(False),
+    process_overrides: str = Form(""),
+    filament_overrides: str = Form(""),
+    copies: int = Form(1),
+):
+    """Configure a print session from a model + a printer, returning a handoff URL.
+
+    Resolves the full slice config server-side: the machine comes from the
+    target printer (overridable), while process and per-slot filaments are
+    defaulted via the slicer's resolve-for-machine (any agent-supplied pick
+    wins). The model (3MF or STL) becomes a slicer ``input_token``; a slice
+    job is created — sliced now when ``slice=true``, else persisted unsliced.
+    This endpoint NEVER prints.
+    """
+    if slice_jobs is None or slicer_client is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Slicing not available: ORCASLICER_API_URL not configured",
+        )
+    if file is None or not file.filename:
+        raise HTTPException(status_code=400, detail="file is required")
+    name_lower = file.filename.lower()
+    is_stl = name_lower.endswith(".stl")
+    is_3mf = name_lower.endswith(".3mf")
+    if not (is_stl or is_3mf):
+        raise HTTPException(status_code=400, detail="File must be a .3mf or .stl file")
+    if not (1 <= copies <= 100):
+        raise HTTPException(
+            status_code=400,
+            detail=f"copies must be between 1 and 100 (got {copies})",
+        )
+
+    # Map printer -> machine model + preferred plate type (Task 1).
+    printer = _printer_config_by_id(printer_id)
+    if printer is None:
+        raise HTTPException(status_code=400, detail=f"Unknown printer: {printer_id}")
+    machine = machine_profile or printer.machine_model
+    if not machine:
+        raise HTTPException(
+            status_code=400,
+            detail="No machine available: printer has no machine_model and "
+            "machine_profile was not supplied",
+        )
+
+    process_overrides_dict = _parse_process_overrides_form(process_overrides)
+    filament_overrides_dict = _parse_filament_overrides_form(filament_overrides)
+
+    file_data = await file.read()
+    if len(file_data) > MAX_FILE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File exceeds {settings.max_file_size_mb} MB limit",
+        )
+    if not file_data:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    filename = file.filename
+
+    if is_3mf:
+        try:
+            info = await parse_3mf_via_slicer(
+                file_data, slicer_client, plate_id=plate_id or 1,
+            )
+            upload = await slicer_client.upload_3mf(file_data, filename=filename)
+            source_token = str(upload["token"])
+        except SlicingError as e:
+            raise HTTPException(status_code=502, detail=f"Slicer unreachable: {e}")
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Failed to parse 3MF: {e}")
+        authored_process = info.print_profile.print_settings_id
+        authored_filaments = [f.setting_id for f in info.filaments]
+        authored_plate_value = await _authored_plate_value(info.bed_type)
+        try:
+            resolved = await slicer_client.resolve_for_machine(
+                machine_id=machine,
+                process_name=authored_process,
+                filament_names=authored_filaments,
+                plate_type=authored_plate_value,
+            )
+        except SlicingError as e:
+            raise HTTPException(status_code=502, detail=f"Slicer unreachable: {e}")
+        effective_process = process_profile or str(
+            (resolved.get("process") or {}).get("setting_id", ""),
+        )
+        if not effective_process:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not resolve a process profile for this machine",
+            )
+    else:
+        # STL import REQUIRES machine + process, so resolve those first.
+        authored_plate_value = ""
+        try:
+            resolved = await slicer_client.resolve_for_machine(
+                machine_id=machine,
+                process_name="",
+                filament_names=[],
+                plate_type="",
+            )
+        except SlicingError as e:
+            raise HTTPException(status_code=502, detail=f"Slicer unreachable: {e}")
+        effective_process = process_profile or str(
+            (resolved.get("process") or {}).get("setting_id", ""),
+        )
+        if not effective_process:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not resolve a process profile for this machine",
+            )
+        try:
+            scene = await slicer_client.import_stl_draft(
+                file_data,
+                filename=filename,
+                machine_profile=machine,
+                process_profile=effective_process,
+            )
+            draft_token = str(scene.get("draft_token") or "")
+            if not draft_token:
+                raise SlicingError("STL import did not return a draft token")
+            materialized = await slicer_client.materialize_stl_draft(draft_token)
+            source_token = str(materialized["input_token"])
+            info = await parse_3mf_token_via_slicer(
+                source_token, slicer_client, plate_id=1,
+            )
+        except SlicingError as e:
+            raise HTTPException(status_code=422, detail=f"STL import failed: {e}")
+        filename = f"{Path(filename).stem}.3mf"
+
+    machine_default_plate = str((resolved.get("plate_type") or {}).get("resolved", ""))
+    resolved_filaments = resolved.get("filaments") or []
+
+    # Default per-slot filaments via the resolver, then let agent overrides win.
+    project_filament_ids = _merge_resolved_filaments(
+        [f.setting_id for f in info.filaments], resolved_filaments,
+    )
+    filament_payload, filament_error = await _resolve_slice_filament_payload(
+        project_filament_ids,
+        filament_profiles,
+        printer_id,
+        used_filament_indices={f.index for f in info.filaments if f.used},
+    )
+    if filament_error is not None or filament_payload is None:
+        raise HTTPException(
+            status_code=400,
+            detail=filament_error or "filament_profiles must be valid JSON",
+        )
+
+    # Plate precedence: request -> printer default -> authored -> machine default.
+    final_plate = resolve_plate_type(
+        plate_type.strip(),
+        printer.default_plate_type,
+        authored_plate_value,
+        machine_default_plate,
+    )
+
+    tray_error = await validate_selected_trays(filament_payload, printer_id, printer_service)
+    if tray_error is not None:
+        raise HTTPException(status_code=400, detail=tray_error)
+
+    auto_center = await slicer_client.should_auto_center_for_machine(source_token, machine)
+    try:
+        prepared = await slicer_client.prepare_3mf_token(
+            source_token,
+            machine_profile=machine,
+            process_profile=effective_process,
+            plate_type=final_plate,
+            process_overrides=process_overrides_dict,
+            filament_overrides=filament_overrides_dict,
+        )
+    except SlicingError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to prepare 3MF: {e}")
+
+    enqueue = bool(slice)
+    job = await slice_jobs.submit(
+        file_data=prepared["content"],
+        filename=filename,
+        machine_profile=machine,
+        process_profile=effective_process,
+        filament_profiles=filament_payload,
+        plate_id=plate_id,
+        plate_type=final_plate,
+        project_filament_count=len(info.filaments),
+        slot_indices=[f.index for f in info.filaments] or None,
+        printer_id=printer_id,
+        auto_print=False,
+        process_overrides=process_overrides_dict,
+        filament_overrides=filament_overrides_dict,
+        copies=copies,
+        auto_center=auto_center,
+        enqueue=enqueue,
+    )
+
+    base = settings.public_base_url or str(request.base_url)
+    return PrintSessionResponse(
+        job_id=job.id,
+        sliced=enqueue,
+        handoff_url=build_handoff_url(base, job.id),
+    )
 
 
 @app.get("/api/slice-jobs", response_model=SliceJobListResponse)

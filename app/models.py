@@ -614,3 +614,9 @@ class SliceJobReprintConfig(BaseModel):
 
 class SliceJobListResponse(BaseModel):
     jobs: list[SliceJobResponse]
+
+
+class PrintSessionResponse(BaseModel):
+    job_id: str
+    sliced: bool
+    handoff_url: str
