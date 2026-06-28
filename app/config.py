@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     apns_bundle_id: str = ""
     apns_environment: str = "production"  # or "sandbox"
 
+    # Agent print-session
+    public_base_url: str = ""
+    allow_agent_print: bool = True
+
     # Bambu cloud direct-printing (opt-in)
     bambu_cloud_enabled: bool = False
     bambu_cloud_region: Literal["US", "CN"] = "US"
