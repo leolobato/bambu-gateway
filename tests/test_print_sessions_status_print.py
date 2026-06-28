@@ -28,3 +28,27 @@ async def test_print_action_409_when_not_sliced(tmp_path, monkeypatch):
     async with AsyncClient(transport=transport, base_url="http://t") as c:
         r = await c.post("/api/print-sessions/anyid/print")
     assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_print_action_409_when_not_terminal(tmp_path, monkeypatch):
+    """Job has on-disk output but a non-terminal status (e.g. SLICING) → 409."""
+    from app.slice_jobs import SliceJob, SliceJobStatus
+    monkeypatch.setattr(app_main.settings, "allow_agent_print", True, raising=False)
+    class _Stub:
+        async def get(self, jid):
+            blob = tmp_path / "in.3mf"; blob.write_bytes(b"x")
+            out = tmp_path / "out.3mf"; out.write_bytes(b"sliced")
+            job = SliceJob.new(filename="a.3mf", machine_profile="GM020",
+                process_profile="GP109", filament_profiles=["GFL99"], plate_id=0,
+                plate_type="", project_filament_count=1, printer_id="p1",
+                auto_print=False, input_path=blob)
+            job.output_path = str(out)   # has on-disk output
+            job.status = SliceJobStatus.SLICING  # but still mid-flight
+            return job
+    monkeypatch.setattr(app_main, "slice_jobs", _Stub())
+    transport = ASGITransport(app=app_main.app)
+    async with AsyncClient(transport=transport, base_url="http://t") as c:
+        r = await c.post("/api/print-sessions/anyid/print")
+    assert r.status_code == 409
+    assert "not printable" in r.json()["detail"]

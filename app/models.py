@@ -132,6 +132,7 @@ class PrinterStatus(BaseModel):
     id: str
     name: str
     machine_model: str = ""
+    default_plate_type: str = ""
     online: bool = False
     state: PrinterState = PrinterState.offline
     stg_cur: int = -1

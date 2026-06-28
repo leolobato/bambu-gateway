@@ -587,6 +587,7 @@ class BambuMQTTClient:
             id=config.serial,
             name=config.name or f"Printer {config.serial[-4:]}",
             machine_model=config.machine_model,
+            default_plate_type=config.default_plate_type,
         )
         self._gcode_state: str = "IDLE"
         self._ams_trays: list[dict] = []

@@ -26,7 +26,6 @@ import {
 } from '@/lib/api/slicer-profiles';
 import { getAms } from '@/lib/api/ams';
 import { listPrinters } from '@/lib/api/printers';
-import { listPrinterConfigs } from '@/lib/api/printer-configs';
 import { getFilamentMatches } from '@/lib/api/filament-matches';
 import { cancelUpload, getUploadState } from '@/lib/api/uploads';
 import { printFromJob, printGcodeFile } from '@/lib/api/print';
@@ -193,22 +192,12 @@ export default function PrintRoute() {
   const activePrinter = printers.find((p) => p.id === activePrinterId) ?? printers[0];
   const requestPrinterId = activePrinter?.id ?? activePrinterId ?? null;
   const activePrinterName = activePrinter?.name ?? null;
-  // The per-printer "build plate kept on the bed" (`default_plate_type`) lives on
-  // the printer *config* (GET /api/settings/printers), not on the live status
-  // returned by /api/printers — so source it from the config list and match by
-  // serial. When set, it's the highest-precedence plate default in the import
-  // flow, winning over the 3MF's authored plate and the resolve-for-machine
-  // fallback (mirroring the backend's request → printer default → authored →
-  // machine default precedence).
-  const printerConfigsQuery = useQuery({
-    queryKey: ['printer-configs'],
-    queryFn: listPrinterConfigs,
-    staleTime: 60_000,
-  });
-  const activePrinterDefaultPlate = useMemo(() => {
-    const cfg = printerConfigsQuery.data?.printers.find((p) => p.serial === requestPrinterId);
-    return cfg?.default_plate_type?.trim() ?? '';
-  }, [printerConfigsQuery.data, requestPrinterId]);
+  // `default_plate_type` is now surfaced on /api/printers (PrinterStatus), so
+  // read it directly from the active printer status. When set, it's the
+  // highest-precedence plate default in the import flow, winning over the 3MF's
+  // authored plate and the resolve-for-machine fallback (mirroring the backend's
+  // request → printer default → authored → machine default precedence).
+  const activePrinterDefaultPlate = activePrinter?.default_plate_type?.trim() ?? '';
   const defaultMachine = useMemo(() => {
     const configuredMachine = activePrinter?.machine_model?.trim() ?? '';
     if (!configuredMachine) return '';

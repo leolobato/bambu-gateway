@@ -376,7 +376,8 @@ describe('PrintRoute printer default plate', () => {
     vi.mocked(listPrinters).mockResolvedValue({
       printers: [
         {
-          id: 'printer-1', name: 'A1 Mini', machine_model: 'GM020', online: true,
+          id: 'printer-1', name: 'A1 Mini', machine_model: 'GM020',
+          default_plate_type: 'textured_pei_plate', online: true,
           state: 'idle', stg_cur: 0, stage_name: null, stage_category: null,
           speed_level: 2, active_tray: null,
           temperatures: { nozzle_temp: 0, nozzle_target: 0, bed_temp: 0, bed_target: 0 },

@@ -53,6 +53,7 @@ export interface PrinterStatus {
   id: string;
   name: string;
   machine_model: string;
+  default_plate_type?: string;
   online: boolean;
   state: PrinterState;
   stg_cur: number;

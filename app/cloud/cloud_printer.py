@@ -35,13 +35,15 @@ class CloudPrinterClient:
     """
 
     def __init__(
-        self, *, dev_id: str, name: str = "", machine_model: str = "", host=None
+        self, *, dev_id: str, name: str = "", machine_model: str = "",
+        default_plate_type: str = "", host=None
     ) -> None:
         self._dev_id = dev_id
         self._status = PrinterStatus(
             id=dev_id,
             name=name or f"Cloud Printer {dev_id[-4:]}",
             machine_model=machine_model,
+            default_plate_type=default_plate_type,
         )
         self._gcode_state: str = "IDLE"
         # AMS state, parsed from the same `print.ams` block the LAN client

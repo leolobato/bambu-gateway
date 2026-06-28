@@ -260,7 +260,9 @@ class PrinterService:
                 logger.info("Adding cloud printer %s", serial)
                 client = CloudPrinterClient(
                     dev_id=serial, name=display,
-                    machine_model=cfg.machine_model, host=self._cloud_host,
+                    machine_model=cfg.machine_model,
+                    default_plate_type=cfg.default_plate_type,
+                    host=self._cloud_host,
                 )
                 if self._status_change_callback is not None:
                     client.set_status_change_callback(

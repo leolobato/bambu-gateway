@@ -3106,9 +3106,13 @@ async def start_print_session(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     if not (job.output_path and Path(job.output_path).exists()):
         raise HTTPException(status_code=409, detail="Session is not sliced yet")
+    if job.status.value not in ("ready", "failed", "cancelled"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is {job.status.value}, not printable",
+        )
     logger.info("agent print start: session=%s printer=%s", job.id, job.printer_id)
-    await _print_finished_job(job, job.printer_id)
-    return {"job_id": job.id, "status": "printing"}
+    return await _print_finished_job(job, job.printer_id)
 
 
 @app.get("/api/slice-jobs", response_model=SliceJobListResponse)
