@@ -620,3 +620,11 @@ class PrintSessionResponse(BaseModel):
     job_id: str
     sliced: bool
     handoff_url: str
+
+
+class PrintSessionStatus(BaseModel):
+    job_id: str
+    status: str
+    sliced: bool
+    printer_id: str | None = None
+    handoff_url: str

@@ -73,6 +73,7 @@ from app.models import (
     PrintEstimate,
     PrintResponse,
     PrintSessionResponse,
+    PrintSessionStatus,
     FilamentOverrideApplied,
     ProcessOverrideApplied,
     SetAmsFilamentRequest,
@@ -1902,6 +1903,99 @@ def _background_submit(
         upload_state.fail(str(e))
 
 
+async def _print_finished_job(job, printer_id: str = "") -> PrintResponse:
+    """Submit an already-sliced job to its printer.
+
+    Shared by ``/api/print`` (job branch) and
+    ``/api/print-sessions/{id}/print``. Resolves the target printer, validates
+    connectivity and selected trays, builds the AMS mapping, and hands the
+    sliced output off (cloud relay or local FTPS upload). Marks the job
+    READY/printed and returns a ``PrintResponse``. Raises ``HTTPException`` on
+    failure. The caller is responsible for verifying the job is sliced.
+    """
+    pid = printer_id or job.printer_id or printer_service.default_printer_id()
+    if pid is None:
+        raise HTTPException(status_code=404, detail="No printers configured")
+
+    cloud_client = _get_cloud_client(pid)
+    client = printer_service.get_client(pid)
+    if cloud_client is None:
+        if client is None:
+            raise HTTPException(status_code=404, detail=f"Printer {pid} not found")
+        try:
+            client.ensure_connected()
+            if not client.get_status().online:
+                raise ConnectionError(f"Printer {pid} is offline")
+        except ConnectionError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+
+    tray_error = await validate_selected_trays(
+        job.filament_profiles, pid, printer_service,
+    )
+    if tray_error is not None:
+        raise HTTPException(status_code=409, detail=tray_error)
+    logger.info(
+        "Print from job id=%s filament_profiles=%s "
+        "project_filament_count=%s slot_indices=%s",
+        job.id, job.filament_profiles, job.project_filament_count,
+        job.slot_indices,
+    )
+    ams_mapping, use_ams = build_ams_mapping(
+        job.filament_profiles,
+        project_filament_count=job.project_filament_count,
+        slot_indices=job.slot_indices,
+    )
+
+    # Cloud printers: the sliced output is already on disk — hand the
+    # path to the plugin and wait for the terminal frame.
+    if cloud_client is not None:
+        error = await run_cloud_print(
+            cloud_client=cloud_client,
+            file_path=job.output_path,
+            filename=job.filename,
+            plate_index=job.plate_id or 1,
+            ams_mapping=ams_mapping,
+            use_ams=use_ams,
+        )
+        if error is not None:
+            status = 409 if error.get("code") == PRINT_IN_FLIGHT_CODE else 502
+            raise HTTPException(
+                status_code=status,
+                detail=error.get("msg", "Cloud print submission failed"),
+            )
+        job.status = SliceJobStatus.READY
+        job.printed = True
+        await slice_jobs._store.upsert(job)
+        return PrintResponse(
+            status="printing",
+            file_name=job.filename,
+            printer_id=pid,
+            was_sliced=True,
+            estimate=PrintEstimate(**job.estimate) if job.estimate else None,
+        )
+
+    file_data_job = Path(job.output_path).read_bytes()
+    upload_state = upload_tracker.create(job.filename, pid, len(file_data_job))
+    asyncio.get_running_loop().run_in_executor(None, lambda: _background_submit(
+        upload_state, pid, file_data_job, job.filename,
+        plate_id=job.plate_id or 1, ams_mapping=ams_mapping, use_ams=use_ams,
+    ))
+
+    # Slice-job perspective: handed off to the printer, work is done.
+    job.status = SliceJobStatus.READY
+    job.printed = True
+    await slice_jobs._store.upsert(job)
+
+    return PrintResponse(
+        status="uploading",
+        file_name=job.filename,
+        printer_id=pid,
+        was_sliced=True,
+        upload_id=upload_state.upload_id,
+        estimate=PrintEstimate(**job.estimate) if job.estimate else None,
+    )
+
+
 @app.post("/api/print")
 async def print_file(
     file: UploadFile = None,
@@ -1939,87 +2033,7 @@ async def print_file(
                 status_code=410,
                 detail="Sliced output is gone; re-slice the file",
             )
-        pid = printer_id or job.printer_id or printer_service.default_printer_id()
-        if pid is None:
-            raise HTTPException(status_code=404, detail="No printers configured")
-
-        cloud_client = _get_cloud_client(pid)
-        client = printer_service.get_client(pid)
-        if cloud_client is None:
-            if client is None:
-                raise HTTPException(status_code=404, detail=f"Printer {pid} not found")
-            try:
-                client.ensure_connected()
-                if not client.get_status().online:
-                    raise ConnectionError(f"Printer {pid} is offline")
-            except ConnectionError as e:
-                raise HTTPException(status_code=409, detail=str(e))
-
-        tray_error = await validate_selected_trays(
-            job.filament_profiles, pid, printer_service,
-        )
-        if tray_error is not None:
-            raise HTTPException(status_code=409, detail=tray_error)
-        logger.info(
-            "Print from job id=%s filament_profiles=%s "
-            "project_filament_count=%s slot_indices=%s",
-            job.id, job.filament_profiles, job.project_filament_count,
-            job.slot_indices,
-        )
-        ams_mapping, use_ams = build_ams_mapping(
-            job.filament_profiles,
-            project_filament_count=job.project_filament_count,
-            slot_indices=job.slot_indices,
-        )
-
-        # Cloud printers: the sliced output is already on disk — hand the
-        # path to the plugin and wait for the terminal frame.
-        if cloud_client is not None:
-            error = await run_cloud_print(
-                cloud_client=cloud_client,
-                file_path=job.output_path,
-                filename=job.filename,
-                plate_index=job.plate_id or 1,
-                ams_mapping=ams_mapping,
-                use_ams=use_ams,
-            )
-            if error is not None:
-                status = 409 if error.get("code") == PRINT_IN_FLIGHT_CODE else 502
-                raise HTTPException(
-                    status_code=status,
-                    detail=error.get("msg", "Cloud print submission failed"),
-                )
-            job.status = SliceJobStatus.READY
-            job.printed = True
-            await slice_jobs._store.upsert(job)
-            return PrintResponse(
-                status="printing",
-                file_name=job.filename,
-                printer_id=pid,
-                was_sliced=True,
-                estimate=PrintEstimate(**job.estimate) if job.estimate else None,
-            )
-
-        file_data_job = Path(job.output_path).read_bytes()
-        upload_state = upload_tracker.create(job.filename, pid, len(file_data_job))
-        asyncio.get_running_loop().run_in_executor(None, lambda: _background_submit(
-            upload_state, pid, file_data_job, job.filename,
-            plate_id=job.plate_id or 1, ams_mapping=ams_mapping, use_ams=use_ams,
-        ))
-
-        # Slice-job perspective: handed off to the printer, work is done.
-        job.status = SliceJobStatus.READY
-        job.printed = True
-        await slice_jobs._store.upsert(job)
-
-        return PrintResponse(
-            status="uploading",
-            file_name=job.filename,
-            printer_id=pid,
-            was_sliced=True,
-            upload_id=upload_state.upload_id,
-            estimate=PrintEstimate(**job.estimate) if job.estimate else None,
-        )
+        return await _print_finished_job(job, printer_id)
 
     # --- Normal path ---
 
@@ -3064,6 +3078,37 @@ async def create_print_session(
         sliced=enqueue,
         handoff_url=build_handoff_url(base, job.id),
     )
+
+
+@app.get("/api/print-sessions/{session_id}", response_model=PrintSessionStatus)
+async def get_print_session(session_id: str, request: Request):
+    if slice_jobs is None:
+        raise HTTPException(status_code=404, detail="Slice jobs disabled")
+    job = await slice_jobs.get(session_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    sliced = bool(job.output_path and Path(job.output_path).exists())
+    base = settings.public_base_url or str(request.base_url)
+    return PrintSessionStatus(
+        job_id=job.id, status=job.status.value, sliced=sliced,
+        printer_id=job.printer_id, handoff_url=build_handoff_url(base, job.id),
+    )
+
+
+@app.post("/api/print-sessions/{session_id}/print")
+async def start_print_session(session_id: str):
+    if not settings.allow_agent_print:
+        raise HTTPException(status_code=403, detail="Agent printing is disabled")
+    if slice_jobs is None:
+        raise HTTPException(status_code=404, detail="Slice jobs disabled")
+    job = await slice_jobs.get(session_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not (job.output_path and Path(job.output_path).exists()):
+        raise HTTPException(status_code=409, detail="Session is not sliced yet")
+    logger.info("agent print start: session=%s printer=%s", job.id, job.printer_id)
+    await _print_finished_job(job, job.printer_id)
+    return {"job_id": job.id, "status": "printing"}
 
 
 @app.get("/api/slice-jobs", response_model=SliceJobListResponse)
