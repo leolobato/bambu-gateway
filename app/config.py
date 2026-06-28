@@ -18,6 +18,7 @@ class PrinterConfig:
     serial: str
     name: str = ""
     machine_model: str = ""
+    default_plate_type: str = ""
 
 
 class Settings(BaseSettings):

@@ -30,6 +30,8 @@ def _serialize(configs: list[PrinterConfig]) -> list[dict]:
         }
         if c.machine_model:
             d["machine_model"] = c.machine_model
+        if c.default_plate_type:
+            d["default_plate_type"] = c.default_plate_type
         result.append(d)
     return result
 
@@ -42,6 +44,7 @@ def _deserialize(items: list[dict]) -> list[PrinterConfig]:
             access_code=item["access_code"],
             name=item.get("name", ""),
             machine_model=item.get("machine_model", ""),
+            default_plate_type=item.get("default_plate_type", ""),
         )
         for item in items
     ]

@@ -432,6 +432,7 @@ class PrinterConfigInput(BaseModel):
     access_code: str = ""
     name: str = ""
     machine_model: str = ""
+    default_plate_type: str = ""
 
 
 class PrinterConfigResponse(BaseModel):
@@ -441,6 +442,7 @@ class PrinterConfigResponse(BaseModel):
     ip: str
     name: str
     machine_model: str = ""
+    default_plate_type: str = ""
 
 
 class PrinterConfigListResponse(BaseModel):

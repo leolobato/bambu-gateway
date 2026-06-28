@@ -2532,6 +2532,7 @@ def _config_to_response(cfg: PrinterConfig) -> PrinterConfigResponse:
         ip=cfg.ip,
         name=cfg.name,
         machine_model=cfg.machine_model,
+        default_plate_type=cfg.default_plate_type,
     )
 
 
@@ -2627,6 +2628,7 @@ async def add_printer_config(body: PrinterConfigInput):
         access_code=body.access_code,
         name=body.name,
         machine_model=body.machine_model,
+        default_plate_type=body.default_plate_type,
     )
     configs = printer_service.get_configs() + [cfg]
     config_store.save(configs)
@@ -2649,6 +2651,7 @@ async def update_printer_config(serial: str, body: PrinterConfigInput):
         access_code=body.access_code if body.access_code else old.access_code,
         name=body.name,
         machine_model=body.machine_model,
+        default_plate_type=body.default_plate_type,
     )
     new_configs = [updated if c.serial == serial else c for c in configs]
     config_store.save(new_configs)
