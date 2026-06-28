@@ -166,6 +166,8 @@ export default function PrintRoute() {
     setProcessBaseline,
     setProcessSheetOpen,
     filamentOverrides,
+    setFilamentOverride,
+    resetAllFilamentOverrides,
   } = usePrintContext();
 
   // Slicer catalogs — load once, don't refetch automatically.
@@ -475,6 +477,13 @@ export default function PrintRoute() {
         for (const [key, value] of Object.entries(config.process_overrides ?? {})) {
           setProcessOverride(key, value);
         }
+        resetAllFilamentOverrides();
+        for (const [slotStr, keys] of Object.entries(config.filament_overrides ?? {})) {
+          const slot = Number(slotStr);
+          for (const [key, value] of Object.entries(keys)) {
+            setFilamentOverride(slot, key, value);
+          }
+        }
         setFilamentMapping(buildReprintMapping(config.filament_profiles, info));
 
         if (config.has_output) {
@@ -511,6 +520,8 @@ export default function PrintRoute() {
       setSettings,
       resetAllProcessOverrides,
       setProcessOverride,
+      resetAllFilamentOverrides,
+      setFilamentOverride,
       setFilamentMapping,
       setState,
     ],

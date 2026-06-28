@@ -194,6 +194,7 @@ export interface SliceJobReprintConfig {
   plate_type: string;
   copies: number;
   process_overrides: Record<string, string> | null;
+  filament_overrides?: Record<string, Record<string, string>> | null;
   slot_indices: number[] | null;
   estimate: PrintEstimate | null;
   settings_transfer: SettingsTransferInfo | null;

@@ -603,6 +603,7 @@ class SliceJobReprintConfig(BaseModel):
     plate_type: str
     copies: int
     process_overrides: dict[str, str] | None = None
+    filament_overrides: dict[str, dict[str, str]] | None = None
     slot_indices: list[int] | None = None
     estimate: dict | None = None
     settings_transfer: dict | None = None

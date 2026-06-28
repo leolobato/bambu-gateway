@@ -2863,6 +2863,7 @@ async def get_slice_job_reprint_config(job_id: str):
         plate_type=job.plate_type,
         copies=job.copies,
         process_overrides=job.process_overrides,
+        filament_overrides=job.filament_overrides,
         slot_indices=job.slot_indices,
         estimate=job.estimate,
         settings_transfer=job.settings_transfer,
