@@ -549,6 +549,7 @@ class SliceJobManager:
         copies: int = 1,
         slot_indices: list[int] | None = None,
         auto_center: bool | None = None,
+        enqueue: bool = True,
     ) -> SliceJob:
         # Allocate job id, then write input blob at the matching path so the
         # job record always references a real file.
@@ -578,7 +579,8 @@ class SliceJobManager:
 
         await self._store.upsert(job)
         self._cancel_events[job.id] = asyncio.Event()
-        await self._queue.put(job.id)
+        if enqueue:
+            await self._queue.put(job.id)
         logger.info(
             "slice job submitted id=%s filament_profiles=%s "
             "project_filament_count=%s slot_indices=%s auto_print=%s printer_id=%s",
