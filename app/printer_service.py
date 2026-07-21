@@ -5,12 +5,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Callable
 
 from app.camera_proxy import CameraProxy
 from app.config import PrinterConfig
 from app.models import CameraInfo, ChamberLightInfo, PrinterStatus
-from app.mqtt_client import BambuMQTTClient, build_ams_filament_setting
+from app.mqtt_client import (
+    VIRTUAL_TRAY_DEPUTY_ID,
+    VIRTUAL_TRAY_MAIN_ID,
+    BambuMQTTClient,
+    build_ams_filament_setting,
+)
 from app import ftp_client
 
 # Avoid a circular import at module level — imported locally when needed.
@@ -91,6 +97,14 @@ class PrinterService:
         # Delay between cloud-relay publish retries (overridable so tests don't
         # actually sleep through the retry loop).
         self._cloud_retry_delay: float = 0.4
+        # AMS-write verification: how long to wait for the printer to echo the
+        # new tray state per publish attempt, how often to poll the cached
+        # state while waiting, and how many publish attempts before giving up.
+        # Overridable so tests don't sleep. Total worst-case latency must stay
+        # under callers' HTTP timeouts (spool-helper uses 10s).
+        self._ams_echo_timeout: float = 3.5
+        self._ams_echo_poll: float = 0.25
+        self._ams_write_attempts: int = 2
         # Cloud printer clients keyed by serial. Set via set_cloud_printers()
         # after the EventPump is wired up; None until then.
         self._cloud_clients: dict[str, "CloudPrinterClient"] | None = None  # type: ignore[name-defined]
@@ -784,24 +798,135 @@ class PrinterService:
 
         Publishes ``ams_filament_setting`` through the printer's command
         transport (the network plugin in cloud mode — see
-        :meth:`send_command_envelope`). The printer echoes the new tray state
-        back over its status report and `_apply_ams_status` propagates it into
-        the cached PrinterStatus, so the dashboard reflects the change on its
-        next poll.
+        :meth:`send_command_envelope`) and then waits for the printer to echo
+        the new tray state back over its status report. The write rides QoS 1
+        and is re-published if the echo never arrives: the cloud relay accepts
+        messages (rc=0) without any delivery guarantee to the printer, so a
+        fire-and-forget publish silently drops often enough that assignments
+        "don't stick". Raises :class:`ConnectionError` when the printer never
+        confirms, so callers get an honest failure instead of a false 200.
         """
         if printer_id not in self._configs:
             raise ValueError(f"Printer {printer_id} not found")
-        envelope = build_ams_filament_setting(
-            ams_id, tray_id, tray_info_idx, tray_color, tray_type,
-            nozzle_temp_min, nozzle_temp_max, setting_id,
-            tag_uid=tag_uid, bed_temp=bed_temp, tray_weight=tray_weight,
-            remain=remain, k=k, n=n, tray_uuid=tray_uuid, cali_idx=cali_idx,
+        for attempt in range(1, self._ams_write_attempts + 1):
+            # Rebuild per attempt so each publish carries a fresh sequence_id.
+            envelope = build_ams_filament_setting(
+                ams_id, tray_id, tray_info_idx, tray_color, tray_type,
+                nozzle_temp_min, nozzle_temp_max, setting_id,
+                tag_uid=tag_uid, bed_temp=bed_temp, tray_weight=tray_weight,
+                remain=remain, k=k, n=n, tray_uuid=tray_uuid, cali_idx=cali_idx,
+            )
+            await self.send_command_envelope(printer_id, envelope, qos=1)
+            if await self._await_ams_filament_echo(
+                printer_id, ams_id, tray_id,
+                tray_info_idx=tray_info_idx,
+                setting_id=setting_id,
+                tray_color=tray_color,
+            ):
+                logger.info(
+                    "AMS filament set on printer %s AMS %d tray %d: %s (%s)",
+                    printer_id, ams_id, tray_id, tray_info_idx, setting_id,
+                )
+                return
+            logger.warning(
+                "Printer %s did not echo AMS %d tray %d assignment %s "
+                "(attempt %d/%d)",
+                printer_id, ams_id, tray_id, tray_info_idx,
+                attempt, self._ams_write_attempts,
+            )
+        raise ConnectionError(
+            f"Printer {printer_id}: AMS {ams_id} tray {tray_id} never "
+            f"confirmed filament {tray_info_idx} ({setting_id}) — the "
+            "command likely didn't reach the printer"
         )
-        await self.send_command_envelope(printer_id, envelope)
-        logger.info(
-            "AMS filament set on printer %s AMS %d tray %d: %s (%s)",
-            printer_id, ams_id, tray_id, tray_info_idx, setting_id,
-        )
+
+    async def _await_ams_filament_echo(
+        self,
+        printer_id: str,
+        ams_id: int,
+        tray_id: int,
+        *,
+        tray_info_idx: str,
+        setting_id: str,
+        tray_color: str,
+    ) -> bool:
+        """Wait for the cached AMS state to echo an ``ams_filament_setting``.
+
+        Polls the client's cached tray state (fed by printer reports) until
+        the target slot matches what was sent or ``_ams_echo_timeout`` runs
+        out. Cloud printers only push AMS state on the ~30s pushall cycle, so
+        a full-status refresh is kicked periodically while waiting — that also
+        collapses the confirmation lag callers see after a successful write.
+        Returns True when there is no client to read state from (bare config):
+        verification is impossible, keep the legacy fire-and-forget contract.
+        """
+        client = self._any_client(printer_id)
+        if client is None:
+            return True
+        deadline = time.monotonic() + self._ams_echo_timeout
+        next_kick = 0.0
+        while True:
+            if self._ams_echo_matches(
+                client, ams_id, tray_id, tray_info_idx, setting_id, tray_color,
+            ):
+                return True
+            now = time.monotonic()
+            if now >= deadline:
+                return False
+            if now >= next_kick:
+                await self._kick_status_refresh(printer_id)
+                next_kick = now + 1.5
+            await asyncio.sleep(min(self._ams_echo_poll, deadline - now))
+
+    @staticmethod
+    def _ams_echo_matches(
+        client,
+        ams_id: int,
+        tray_id: int,
+        tray_info_idx: str,
+        setting_id: str,
+        tray_color: str,
+    ) -> bool:
+        """True when the cached tray state reflects the assignment.
+
+        ``tray_info_idx`` must match exactly; ``setting_id`` and ``tray_color``
+        only when the report echoes them non-empty — firmware omits or rewrites
+        those fields in some report shapes, and a lenient match here beats
+        failing a write that actually landed.
+        """
+        trays, _units, vt_tray = client.get_ams_info()
+        if ams_id in (VIRTUAL_TRAY_MAIN_ID, VIRTUAL_TRAY_DEPUTY_ID):
+            entry = vt_tray
+        else:
+            entry = next(
+                (t for t in trays
+                 if t.get("ams_id") == ams_id and t.get("tray_id") == tray_id),
+                None,
+            )
+        if not entry:
+            return False
+        if str(entry.get("tray_info_idx") or "") != tray_info_idx:
+            return False
+        echoed_setting = str(entry.get("setting_id") or "")
+        if echoed_setting and setting_id and echoed_setting != setting_id:
+            return False
+        echoed_color = str(entry.get("tray_color") or "").lstrip("#").upper()
+        want_color = tray_color.lstrip("#").upper()
+        if echoed_color and want_color and echoed_color != want_color:
+            return False
+        return True
+
+    async def _kick_status_refresh(self, printer_id: str) -> None:
+        """Ask the printer for a full status snapshot on either transport."""
+        if self._cloud_mode:
+            host = self._cloud_host
+            if host is not None:
+                from app.cloud.session import request_pushall
+                await request_pushall(host=host, dev_id=printer_id)
+            return
+        client = self._clients.get(printer_id)
+        if client is not None:
+            client.request_pushall()
 
     def submit_print(
         self,

@@ -1066,10 +1066,10 @@ async def set_ams_filament(
     """Assign a filament profile to one AMS tray.
 
     Resolves the slicer profile's `filament_id`, type, default colour, and
-    nozzle temperature range, then publishes `ams_filament_setting` over MQTT.
-    The printer echoes the new state back over its `pushall` report and the
-    cached PrinterStatus picks up the change automatically — clients should
-    invalidate their AMS query on success and re-poll.
+    nozzle temperature range, then publishes `ams_filament_setting` over MQTT
+    and waits for the printer to echo the new tray state back. A 200 means the
+    printer confirmed the assignment (and the cached AMS state already
+    reflects it); an unconfirmed write is retried and finally returns 409.
 
     `tray_id` is the per-AMS slot index 0..3 (NOT the global slot). Pass
     ams_id=255 / tray_id=254 for the external spool.
