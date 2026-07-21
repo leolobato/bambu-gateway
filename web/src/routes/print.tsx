@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { RotateCcw } from 'lucide-react';
+import { Loader2, RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { DropZoneCard, DropOverlay } from '@/components/print/drop-zone';
@@ -169,6 +169,10 @@ export default function PrintRoute() {
     setFilamentOverride,
     resetAllFilamentOverrides,
   } = usePrintContext();
+
+  // Guards the print/slice submission buttons against double-clicks during the
+  // multi-second window before the state machine moves off `imported`/`previewReady`.
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Slicer catalogs — load once, don't refetch automatically.
   const machinesQuery = useQuery({
@@ -699,6 +703,9 @@ export default function PrintRoute() {
       return;
     }
 
+    // Guard the action buttons until the state machine leaves `imported`/
+    // `previewReady` (set false on the error path and once we reach `slicing`).
+    setIsSubmitting(true);
     sliceAbortRef.current?.abort();
     const ctrl = new AbortController();
     sliceAbortRef.current = ctrl;
@@ -735,10 +742,12 @@ export default function PrintRoute() {
           details: (err as Error).message,
         },
       });
+      setIsSubmitting(false);
       return;
     }
 
     queryClient.invalidateQueries({ queryKey: ['slice-jobs'] });
+    setIsSubmitting(false);
     setState({
       kind: 'slicing',
       file,
@@ -920,7 +929,12 @@ export default function PrintRoute() {
 
   async function confirmPrint() {
     if (state.kind !== 'previewReady') return;
-    await startPrintUploadFromJob(state.jobId, state.file, state.info, state.estimate);
+    setIsSubmitting(true);
+    try {
+      await startPrintUploadFromJob(state.jobId, state.file, state.info, state.estimate);
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   async function applyStlLayoutAction(action: StlLayoutAction) {
@@ -1031,6 +1045,7 @@ export default function PrintRoute() {
    * POST the file to /api/print, then poll /api/uploads/{id} for FTP progress.
    */
   async function startGcodePrint(file: File, info: ThreeMFInfo) {
+    setIsSubmitting(true);
     try {
       const resp = await printGcodeFile(
         file,
@@ -1108,6 +1123,8 @@ export default function PrintRoute() {
       }
     } catch (err) {
       toast.error(`Print failed: ${(err as Error).message}`);
+    } finally {
+      setIsSubmitting(false);
     }
   }
 
@@ -1297,6 +1314,7 @@ export default function PrintRoute() {
           )}
           <ActionButtons
             kind={state.kind}
+            submitting={isSubmitting}
             onPreview={() => startSlicing(state.file, state.info, true, stateSourceFields(state))}
             onPrint={() =>
               state.kind === 'imported' && state.info.has_gcode
@@ -1399,6 +1417,7 @@ function PreviewThumbnail({ jobId }: { jobId: string }) {
 
 function ActionButtons({
   kind,
+  submitting,
   onPreview,
   onPrint,
   onReslice,
@@ -1407,6 +1426,7 @@ function ActionButtons({
   onEdit,
 }: {
   kind: 'imported' | 'previewReady';
+  submitting: boolean;
   onPreview: () => void;
   onPrint: () => void;
   onReslice: () => void;
@@ -1420,6 +1440,7 @@ function ActionButtons({
         <Button
           type="button"
           onClick={onPreview}
+          disabled={submitting}
           className="rounded-full bg-surface-1 hover:bg-surface-2 text-accent border-0 h-11 text-[14px] font-semibold"
         >
           ◉ Preview
@@ -1427,9 +1448,16 @@ function ActionButtons({
         <Button
           type="button"
           onClick={onPrint}
+          disabled={submitting}
           className="rounded-full bg-gradient-to-r from-accent-strong to-accent text-white border-0 h-11 text-[14px] font-semibold"
         >
-          ⎙ Print
+          {submitting ? (
+            <>
+              <Loader2 className="w-4 h-4 mr-1.5 animate-spin" aria-hidden /> Starting…
+            </>
+          ) : (
+            '⎙ Print'
+          )}
         </Button>
       </div>
     );
@@ -1441,6 +1469,7 @@ function ActionButtons({
         <Button
           type="button"
           onClick={onEdit}
+          disabled={submitting}
           className="rounded-full bg-surface-1 hover:bg-surface-2 text-accent border-0 h-11 text-[14px] font-semibold"
         >
           Edit settings
@@ -1448,6 +1477,7 @@ function ActionButtons({
         <Button
           type="button"
           onClick={onReslice}
+          disabled={submitting}
           className="rounded-full bg-surface-1 hover:bg-surface-2 text-accent border-0 h-11 text-[14px] font-semibold"
         >
           <RotateCcw className="w-4 h-4 mr-1.5" aria-hidden /> Re-slice
@@ -1455,6 +1485,7 @@ function ActionButtons({
         <Button
           type="button"
           onClick={onDownload}
+          disabled={submitting}
           className="rounded-full bg-surface-1 hover:bg-surface-2 text-accent border-0 h-11 text-[14px] font-semibold"
         >
           Download 3MF
@@ -1463,9 +1494,16 @@ function ActionButtons({
       <Button
         type="button"
         onClick={onConfirmPrint}
+        disabled={submitting}
         className="rounded-full bg-gradient-to-r from-accent-strong to-accent text-white border-0 h-11 text-[14px] font-semibold"
       >
-        Confirm Print
+        {submitting ? (
+          <>
+            <Loader2 className="w-4 h-4 mr-1.5 animate-spin" aria-hidden /> Starting…
+          </>
+        ) : (
+          'Confirm Print'
+        )}
       </Button>
     </div>
   );
