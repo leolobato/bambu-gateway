@@ -9,6 +9,16 @@ from typing import Any, Mapping
 
 logger = logging.getLogger("bambu.cloud.host")
 
+# Substrings that mark a plugin stderr line as a failure worth surfacing at
+# WARNING. Everything else — including the ~1Hz install_device_cert keepalive
+# and the send_message rc=0 confirmations — is routine chatter logged at DEBUG.
+_STDERR_FAILURE_MARKERS = ("skipped", "missing", "error", "fail", "null", "rc=-")
+
+
+def _stderr_is_failure(line: str) -> bool:
+    low = line.lower()
+    return any(marker in low for marker in _STDERR_FAILURE_MARKERS)
+
 
 class PluginHostError(RuntimeError):
     """Raised when the host subprocess returns an error or dies."""
@@ -184,4 +194,11 @@ class PluginHost:
         async for raw in self._proc.stderr:
             if not raw:
                 break
-            logger.info("host: %s", raw.decode("utf-8", errors="replace").rstrip())
+            line = raw.decode("utf-8", errors="replace").rstrip()
+            # Routine plugin chatter (the per-second install_device_cert
+            # keepalive, send_message rc=0) is noise at INFO — keep it at DEBUG
+            # and only surface a line when it signals a failure.
+            if _stderr_is_failure(line):
+                logger.warning("host: %s", line)
+            else:
+                logger.debug("host: %s", line)
