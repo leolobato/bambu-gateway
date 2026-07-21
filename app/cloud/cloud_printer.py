@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, AsyncIterator
 from app.models import AMSType, PrinterStatus
 from app.mqtt_client import (
     apply_print_payload,
+    extract_command_ack,
     parse_ams_module_types,
     parse_ams_report,
 )
@@ -57,6 +58,8 @@ class CloudPrinterClient:
         # report arrives; feeds parse_ams_report so AMS Lite is recognised as
         # sensor-less (otherwise it shows a phantom humidity reading).
         self._ams_module_types: dict[int, AMSType] = {}
+        # Last command ack per command name (see extract_command_ack).
+        self._command_acks: dict[str, dict] = {}
         self._lock = threading.Lock()
         # Single in-flight print job's progress channel. None = no active job.
         self._progress: asyncio.Queue | None = None
@@ -115,6 +118,12 @@ class CloudPrinterClient:
         no cold-start barrier to await — return the current snapshot."""
         return self.get_ams_info()
 
+    def get_command_ack(self, command: str) -> dict | None:
+        """Return the last recorded ack for a command name, or None."""
+        with self._lock:
+            ack = self._command_acks.get(command)
+            return dict(ack) if ack else None
+
     def set_status_change_callback(self, callback) -> None:
         """Register a ``(prev, new)`` snapshot callback — same contract as
         :meth:`BambuMQTTClient.set_status_change_callback`."""
@@ -159,6 +168,9 @@ class CloudPrinterClient:
 
         with self._lock:
             prev_snapshot = self._status.model_copy(deep=True)
+            ack = extract_command_ack(print_info)
+            if ack is not None:
+                self._command_acks[ack["command"]] = ack
             # Receiving cloud reports is this transport's notion of liveness —
             # the UI hides all controls for printers with online == False.
             self._status.online = True

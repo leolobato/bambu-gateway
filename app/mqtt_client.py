@@ -429,6 +429,28 @@ def _parse_vt_tray_entry(data: dict) -> tuple[dict | None, bool]:
     return None, False
 
 
+def extract_command_ack(print_info: dict) -> dict | None:
+    """Extract a command acknowledgment from a ``print`` payload, if any.
+
+    Bambu printers echo most write commands back on the report topic as
+    ``{"command": <name>, "sequence_id": ..., "result": "success"|"fail"}``.
+    This ack arrives within a couple of seconds — unlike the full AMS state,
+    whose refresh rides the firmware-throttled pushall cycle — so it is the
+    fastest reliable delivery confirmation available. Returns ``None`` when
+    the payload isn't an ack (no ``command`` + ``result`` pair).
+    """
+    command = print_info.get("command")
+    result = print_info.get("result")
+    if not command or result is None:
+        return None
+    return {
+        "command": str(command),
+        "sequence_id": str(print_info.get("sequence_id", "")),
+        "result": str(result).lower(),
+        "reason": str(print_info.get("reason") or ""),
+    }
+
+
 @dataclass
 class AmsReport:
     """Parsed AMS state from a single print payload. ``*_present`` flags let
@@ -596,6 +618,8 @@ class BambuMQTTClient:
         self._ams_module_types: dict[int, AMSType] = {}  # ams_id -> AMSType from get_version
         # None until the printer reports its first `lights_report`.
         self._chamber_light_on: bool | None = None
+        # Last command ack per command name (see extract_command_ack).
+        self._command_acks: dict[str, dict] = {}
         self._lock = threading.Lock()
         self._disconnect_timer: threading.Timer | None = None
         self._status_change_callback: Callable[[PrinterStatus, PrinterStatus], None] | None = None
@@ -974,10 +998,20 @@ class BambuMQTTClient:
         logger.debug("AMS module types detected: %s",
                      {k: v.value for k, v in detected.items()})
 
+    def get_command_ack(self, command: str) -> dict | None:
+        """Return the last recorded ack for a command name, or None."""
+        with self._lock:
+            ack = self._command_acks.get(command)
+            return dict(ack) if ack else None
+
     def _update_status(self, print_info: dict) -> None:
         """Apply fields from an MQTT print report to the in-memory status."""
         with self._lock:
             prev_snapshot = self._status.model_copy(deep=True)
+
+            ack = extract_command_ack(print_info)
+            if ack is not None:
+                self._command_acks[ack["command"]] = ack
 
             # Log HMS and print_error changes before delegating to the shared
             # parser (the module-level function doesn't have access to the

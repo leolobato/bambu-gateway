@@ -817,8 +817,9 @@ class PrinterService:
                 remain=remain, k=k, n=n, tray_uuid=tray_uuid, cali_idx=cali_idx,
             )
             await self.send_command_envelope(printer_id, envelope, qos=1)
-            if await self._await_ams_filament_echo(
+            if await self._await_ams_filament_confirmation(
                 printer_id, ams_id, tray_id,
+                sequence_id=envelope["print"]["sequence_id"],
                 tray_info_idx=tray_info_idx,
                 setting_id=setting_id,
                 tray_color=tray_color,
@@ -827,9 +828,14 @@ class PrinterService:
                     "AMS filament set on printer %s AMS %d tray %d: %s (%s)",
                     printer_id, ams_id, tray_id, tray_info_idx, setting_id,
                 )
+                # The cached tray state may lag the ack by a few seconds
+                # (pushall is firmware-throttled); kick one refresh so
+                # clients re-reading /api/ams converge quickly.
+                if self._any_client(printer_id) is not None:
+                    await self._kick_status_refresh(printer_id)
                 return
             logger.warning(
-                "Printer %s did not echo AMS %d tray %d assignment %s "
+                "Printer %s did not confirm AMS %d tray %d assignment %s "
                 "(attempt %d/%d)",
                 printer_id, ams_id, tray_id, tray_info_idx,
                 attempt, self._ams_write_attempts,
@@ -840,32 +846,50 @@ class PrinterService:
             "command likely didn't reach the printer"
         )
 
-    async def _await_ams_filament_echo(
+    async def _await_ams_filament_confirmation(
         self,
         printer_id: str,
         ams_id: int,
         tray_id: int,
         *,
+        sequence_id: str,
         tray_info_idx: str,
         setting_id: str,
         tray_color: str,
     ) -> bool:
-        """Wait for the cached AMS state to echo an ``ams_filament_setting``.
+        """Wait for the printer to confirm an ``ams_filament_setting`` write.
 
-        Polls the client's cached tray state (fed by printer reports) until
-        the target slot matches what was sent or ``_ams_echo_timeout`` runs
-        out. Cloud printers only push AMS state on the ~30s pushall cycle, so
-        a full-status refresh is kicked periodically while waiting — that also
-        collapses the confirmation lag callers see after a successful write.
+        Primary signal: the printer's direct command ack (same command echoed
+        back with our ``sequence_id`` and a result) — it arrives within a
+        couple of seconds. Fallback: the cached tray state matching what was
+        sent, since the ack itself can be lost. The full AMS state refresh is
+        firmware-throttled (~one pushall serviced per ~5s), so state-echo
+        alone regularly misses the window and produced false failures.
+
+        An explicit ``result: fail`` ack raises immediately — retrying an
+        assignment the printer rejected won't change the outcome.
         Returns True when there is no client to read state from (bare config):
         verification is impossible, keep the legacy fire-and-forget contract.
         """
         client = self._any_client(printer_id)
         if client is None:
             return True
+        get_ack = getattr(client, "get_command_ack", None)
         deadline = time.monotonic() + self._ams_echo_timeout
         next_kick = 0.0
         while True:
+            ack = get_ack("ams_filament_setting") if get_ack else None
+            if ack is not None and ack.get("sequence_id") == sequence_id:
+                result = ack.get("result", "")
+                if result == "success":
+                    return True
+                if result in ("fail", "failed"):
+                    reason = ack.get("reason") or "no reason given"
+                    raise ConnectionError(
+                        f"Printer {printer_id} rejected the AMS {ams_id} "
+                        f"tray {tray_id} filament assignment: {reason}"
+                    )
+                # Unknown result value — fall through to the state echo.
             if self._ams_echo_matches(
                 client, ams_id, tray_id, tray_info_idx, setting_id, tray_color,
             ):

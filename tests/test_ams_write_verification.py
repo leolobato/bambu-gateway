@@ -42,14 +42,19 @@ class FakeHost:
 
 
 class FakeCloudClient:
-    """Just enough CloudPrinterClient surface for the echo check."""
+    """Just enough CloudPrinterClient surface for the confirmation check."""
 
     def __init__(self) -> None:
         self.trays: list[dict] = []
         self.vt_tray: dict | None = None
+        self.command_acks: dict[str, dict] = {}
 
     def get_ams_info(self):
         return list(self.trays), [], self.vt_tray
+
+    def get_command_ack(self, command: str):
+        ack = self.command_acks.get(command)
+        return dict(ack) if ack else None
 
 
 def _wire() -> tuple[PrinterService, FakeHost, FakeCloudClient]:
@@ -162,6 +167,90 @@ async def test_external_spool_echo_checks_vt_tray():
         nozzle_temp_min=190, nozzle_temp_max=240, setting_id="GFSA00_02",
     )
     assert host.sent_commands().count("ams_filament_setting") == 1
+
+
+async def test_command_ack_confirms_without_state_echo():
+    """The direct ack is the primary signal: it must confirm the write even
+    when the (firmware-throttled) AMS state echo never arrives in time —
+    that lag produced false 409s for writes that actually landed."""
+    svc, host, client = _wire()
+
+    def ack_on_printer(params: dict) -> None:
+        payload = json.loads(params["payload"]).get("print", {})
+        if payload.get("command") == "ams_filament_setting":
+            client.command_acks["ams_filament_setting"] = {
+                "command": "ams_filament_setting",
+                "sequence_id": str(payload["sequence_id"]),
+                "result": "success",
+                "reason": "",
+            }
+
+    host.on_send_message = ack_on_printer
+    await _assign(svc)  # client.trays stays empty — ack alone confirms
+    assert host.sent_commands().count("ams_filament_setting") == 1
+
+
+async def test_fail_ack_raises_without_retry():
+    svc, host, client = _wire()
+
+    def reject_on_printer(params: dict) -> None:
+        payload = json.loads(params["payload"]).get("print", {})
+        if payload.get("command") == "ams_filament_setting":
+            client.command_acks["ams_filament_setting"] = {
+                "command": "ams_filament_setting",
+                "sequence_id": str(payload["sequence_id"]),
+                "result": "fail",
+                "reason": "tray busy",
+            }
+
+    host.on_send_message = reject_on_printer
+    with pytest.raises(ConnectionError, match="rejected.*tray busy"):
+        await _assign(svc)
+    assert host.sent_commands().count("ams_filament_setting") == 1
+
+
+async def test_stale_ack_from_previous_write_is_ignored():
+    svc, host, _client = _wire()
+    _client.command_acks["ams_filament_setting"] = {
+        "command": "ams_filament_setting",
+        "sequence_id": "1",  # from some earlier assignment
+        "result": "success",
+        "reason": "",
+    }
+    with pytest.raises(ConnectionError):
+        await _assign(svc)
+
+
+async def test_cloud_client_records_command_ack():
+    from app.cloud.cloud_printer import CloudPrinterClient
+    client = CloudPrinterClient(dev_id="S1")
+    await client.handle_event({
+        "kind": "OnMessage", "dev_id": "S1",
+        "payload": json.dumps({"print": {
+            "command": "ams_filament_setting",
+            "sequence_id": 20042, "result": "SUCCESS",
+        }}),
+    })
+    ack = client.get_command_ack("ams_filament_setting")
+    assert ack == {
+        "command": "ams_filament_setting", "sequence_id": "20042",
+        "result": "success", "reason": "",
+    }
+    assert client.get_command_ack("pause") is None
+
+
+def test_lan_client_records_command_ack():
+    from app.mqtt_client import BambuMQTTClient
+    client = BambuMQTTClient(
+        PrinterConfig(ip="10.0.1.157", access_code="ac", serial="S1", name="A1")
+    )
+    client._update_status({
+        "command": "ams_filament_setting",
+        "sequence_id": "20099", "result": "fail", "reason": "unknown filament",
+    })
+    ack = client.get_command_ack("ams_filament_setting")
+    assert ack["result"] == "fail"
+    assert ack["reason"] == "unknown filament"
 
 
 def test_echo_match_is_lenient_on_omitted_fields():
