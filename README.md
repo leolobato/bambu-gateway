@@ -167,7 +167,7 @@ python -m app -c /data/printers.json
 | `SERVER_PORT` | `4844` | Server bind port |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `MAX_FILE_SIZE_MB` | `200` | Maximum upload file size in MB |
-| `ORCASLICER_API_URL` | | OrcaSlicer Headless API URL (e.g. `http://10.0.1.9:8070`) — required for slicing |
+| `ORCASLICER_API_URL` | | OrcaSlicer Headless API URL (e.g. `http://localhost:8070`) — required for slicing |
 | `BAMBU_CLOUD_ENABLED` | `false` | Connect through your Bambu Cloud account instead of LAN — see [Bambu Cloud mode](#bambu-cloud-mode-optional) |
 | `BAMBU_CLOUD_REGION` | `US` | Bambu account region: `US` or `CN` |
 | `APNS_KEY_PATH` | | Path to APNs Auth Key `.p8` — see [docs/APNS.md](docs/APNS.md). All four APNS_* vars must be set to enable push |
@@ -232,7 +232,7 @@ Run the orcaslicer-headless server (see the [orcaslicer-headless docs](https://g
 for full setup instructions), then point Bambu Gateway to it:
 
 ```env
-ORCASLICER_API_URL=http://10.0.1.9:8070
+ORCASLICER_API_URL=http://localhost:8070
 ```
 
 When a slicer URL is configured, the web UI will show machine and filament profile
