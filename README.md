@@ -306,6 +306,10 @@ Bambu Gateway is the **printer control plane and slicing web app** in a suite of
 - **[bambu-gateway-ios](https://github.com/leolobato/bambu-gateway-ios)** — Phone client for `bambu-gateway`. Browse printers, import 3MF files (including from MakerWorld), preview G-code, and start prints. Live Activities and push notifications for print state changes.
 - **[spool-browser](https://github.com/leolobato/spool-browser)** — Phone client for `bambu-spool-helper` and Spoolman. Browse the spool inventory, link Bambu profiles to spools, activate filaments on the AMS, and print physical spool labels over Bluetooth.
 
+**AI agents**
+
+- **[bambu-gateway-mcp](https://github.com/leolobato/bambu-gateway-mcp)** — MCP server that exposes the gateway's print-session API to an LLM agent. The agent prepares a print (file, printer, profiles, filament mapping) and hands off a review URL; printing itself stays gated behind explicit confirmation.
+
 ## License
 
 Bambu Gateway is available under the MIT License. See [LICENSE](LICENSE) for details.
