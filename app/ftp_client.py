@@ -115,3 +115,27 @@ def upload_file(
             ftp.close()
 
     return remote_path
+
+
+def download_file(
+    *, host: str, access_code: str, remote_path: str, port: int = FTPS_PORT,
+) -> bytes:
+    """Download one active print source from the printer over implicit FTPS."""
+    chunks: list[bytes] = []
+    ftp = ImplicitFTPS()
+    try:
+        ftp.connect(host=host, port=port, timeout=30)
+        ftp.login(FTP_USERNAME, access_code)
+        ftp.prot_p()
+        ftp.retrbinary(
+            f"RETR {remote_path}", chunks.append, blocksize=65536,
+        )
+    finally:
+        # The printer commonly hangs during TLS close_notify; close the socket
+        # directly just as the upload path tolerates failed graceful shutdown.
+        try:
+            if ftp.sock is not None:
+                ftp.sock.close()
+        except Exception:
+            pass
+    return b"".join(chunks)

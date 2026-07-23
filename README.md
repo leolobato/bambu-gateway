@@ -186,6 +186,8 @@ exists.
 | `GET` | `/api/health` | Health check |
 | `GET` | `/api/printers` | List printers with live status |
 | `GET` | `/api/printers/{id}` | Status for a single printer |
+| `GET` | `/api/printers/{id}/print-events` | SSE stream of versioned, accumulated print snapshots for tracking clients |
+| `GET` | `/api/printers/{id}/current-job/file?job_key=…` | Return the validated active job's 3MF |
 | `POST` | `/api/printers/{id}/pause` | Pause current print |
 | `POST` | `/api/printers/{id}/resume` | Resume paused print |
 | `POST` | `/api/printers/{id}/cancel` | Cancel current print |
@@ -213,6 +215,14 @@ exists.
 | `GET` | `/api/uploads/{id}` | Poll FTP upload progress |
 
 Interactive API docs are available at `/docs` (Swagger UI).
+
+The tracking stream has the same schema for LAN MQTT and cloud-plugin
+printers. It includes stable job identity, state, current/total layer,
+G-code entry, AMS mapping, active tray, and explicit source availability.
+Gateway-submitted 3MFs are retained in memory for the active job. External
+jobs use a reported HTTP(S) URL or the printer's FTPS cache when possible;
+when neither is retrievable the snapshot reports the source as unavailable
+instead of estimating filament use.
 
 ## OrcaSlicer Headless Integration
 

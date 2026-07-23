@@ -57,6 +57,17 @@ async def submit_cloud_print(
         else:
             gcode_path = str(file_path)
 
+        source_data = (
+            file_data
+            if file_data is not None
+            else await asyncio.to_thread(Path(gcode_path).read_bytes)
+        )
+        cloud_client.register_print_source(
+            data=source_data,
+            filename=filename,
+            plate_id=plate_index,
+            ams_mapping=list(ams_mapping) if ams_mapping else None,
+        )
         print_params = build_print_params(
             dev_id=cloud_client.serial,
             project_name=Path(filename).stem,

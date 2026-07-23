@@ -18,6 +18,7 @@ from app.mqtt_client import (
     build_ams_filament_setting,
 )
 from app import ftp_client
+from app.print_tracking import PrintEventBroker
 
 # Avoid a circular import at module level — imported locally when needed.
 # from app.cloud.cloud_printer import CloudPrinterClient  (do not import here)
@@ -108,6 +109,9 @@ class PrinterService:
         # Cloud printer clients keyed by serial. Set via set_cloud_printers()
         # after the EventPump is wired up; None until then.
         self._cloud_clients: dict[str, "CloudPrinterClient"] | None = None  # type: ignore[name-defined]
+        self._print_brokers: dict[str, PrintEventBroker] = {
+            cfg.serial: PrintEventBroker(cfg.serial) for cfg in printer_configs
+        }
         for cfg in printer_configs:
             self._configs[cfg.serial] = cfg
             if not self._wants_lan(cfg):
@@ -115,9 +119,58 @@ class PrinterService:
                 # (CloudPrinterClient), not a local MQTT client.
                 continue
             client = BambuMQTTClient(cfg)
+            self._wire_print_client(cfg.serial, client)
             if status_change_callback is not None:
                 client.set_status_change_callback(status_change_callback)
             self._clients[cfg.serial] = client
+
+    def _wire_print_client(self, serial: str, client) -> None:
+        broker = self._print_brokers.setdefault(
+            serial, PrintEventBroker(serial)
+        )
+        cfg = self._configs.get(serial)
+        broker.set_printer_file_available(
+            bool(cfg and cfg.ip and cfg.access_code)
+        )
+        if hasattr(client, "set_print_report_callback"):
+            client.set_print_report_callback(broker.update)
+        if hasattr(client, "set_print_source_registrar"):
+            client.set_print_source_registrar(broker.register_source)
+        if isinstance(client, BambuMQTTClient):
+            broker.set_connection_lease(
+                client.acquire_connection_lease,
+                client.release_connection_lease,
+            )
+        else:
+            broker.set_connection_lease(None, None)
+
+    def get_print_event_broker(
+        self, printer_id: str,
+    ) -> PrintEventBroker | None:
+        if printer_id not in self._configs:
+            return None
+        return self._print_brokers.get(printer_id)
+
+    def register_print_source(
+        self,
+        printer_id: str,
+        *,
+        data: bytes | None = None,
+        path: str | None = None,
+        filename: str,
+        plate_id: int,
+        ams_mapping: list[int] | None,
+    ) -> str:
+        broker = self.get_print_event_broker(printer_id)
+        if broker is None:
+            raise ValueError(f"Printer {printer_id} not found")
+        return broker.register_source(
+            data=data,
+            path=path,
+            filename=filename,
+            plate_id=plate_id,
+            ams_mapping=ams_mapping,
+        )
 
     def set_cloud_printers(self, cloud_clients: dict, host=None) -> None:
         """Register cloud printer clients so they appear in list/status results.
@@ -135,6 +188,8 @@ class PrinterService:
         if self._status_change_callback is not None:
             for client in cloud_clients.values():
                 client.set_status_change_callback(self._status_change_callback)
+        for serial, client in cloud_clients.items():
+            self._wire_print_client(serial, client)
 
     def get_cloud_client(self, printer_id: str):
         """Return the CloudPrinterClient for a printer, or None."""
@@ -200,6 +255,7 @@ class PrinterService:
             self._clients[serial].stop()
             del self._clients[serial]
             del self._configs[serial]
+            self._print_brokers.pop(serial, None)
             proxy = self._proxies.pop(serial, None)
             if proxy is not None:
                 asyncio.create_task(proxy.stop())
@@ -212,6 +268,7 @@ class PrinterService:
                 self._clients[serial].stop()
                 self._configs[serial] = new
                 new_client = BambuMQTTClient(new)
+                self._wire_print_client(serial, new_client)
                 if self._status_change_callback is not None:
                     new_client.set_status_change_callback(self._status_change_callback)
                 self._clients[serial] = new_client
@@ -232,6 +289,8 @@ class PrinterService:
             logger.info("Adding printer %s", serial)
             self._configs[serial] = cfg
             client = BambuMQTTClient(cfg)
+            self._print_brokers.setdefault(serial, PrintEventBroker(serial))
+            self._wire_print_client(serial, client)
             if self._status_change_callback is not None:
                 client.set_status_change_callback(self._status_change_callback)
             self._clients[serial] = client
@@ -257,6 +316,7 @@ class PrinterService:
             if self._cloud_clients is not None and serial in self._cloud_clients:
                 logger.info("Removing cloud printer %s", serial)
                 del self._cloud_clients[serial]
+            self._print_brokers.pop(serial, None)
 
         for serial, cfg in new_by_serial.items():
             if self._wants_lan(cfg):
@@ -278,6 +338,7 @@ class PrinterService:
                     default_plate_type=cfg.default_plate_type,
                     host=self._cloud_host,
                 )
+                self._wire_print_client(serial, client)
                 if self._status_change_callback is not None:
                     client.set_status_change_callback(
                         self._status_change_callback
@@ -286,6 +347,9 @@ class PrinterService:
             else:
                 existing.set_name(display)
                 existing.set_machine_model(cfg.machine_model)
+                # Refresh source capabilities when discovery adds/removes LAN
+                # credentials while the cloud client itself stays in place.
+                self._wire_print_client(serial, existing)
 
     def _drop_lan_client(self, serial: str) -> None:
         client = self._clients.pop(serial, None)
@@ -303,6 +367,7 @@ class PrinterService:
         if existing is None:
             logger.info("Adding LAN printer %s (%s)", serial, cfg.ip)
             client = BambuMQTTClient(cfg)
+            self._wire_print_client(serial, client)
             if self._status_change_callback is not None:
                 client.set_status_change_callback(self._status_change_callback)
             self._clients[serial] = client
@@ -312,6 +377,7 @@ class PrinterService:
             logger.info("Resetting LAN printer %s client (config changed)", serial)
             existing.stop()
             new_client = BambuMQTTClient(cfg)
+            self._wire_print_client(serial, new_client)
             if self._status_change_callback is not None:
                 new_client.set_status_change_callback(self._status_change_callback)
             self._clients[serial] = new_client
@@ -974,6 +1040,13 @@ class PrinterService:
             raise ConnectionError(f"Printer {printer_id} is offline")
 
         cfg = client._config
+        self.register_print_source(
+            printer_id,
+            data=file_data,
+            filename=filename,
+            plate_id=plate_id,
+            ams_mapping=ams_mapping,
+        )
         ftp_client.upload_file(
             cfg.ip, cfg.access_code, file_data, filename,
             progress_callback=progress_callback,

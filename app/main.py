@@ -13,7 +13,7 @@ import time
 import zipfile
 from contextlib import asynccontextmanager, AsyncExitStack, suppress
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 import httpx
 
@@ -32,7 +32,7 @@ from app.cloud.plugin_host import PluginHost, PluginHostError
 from app.cloud.session import establish_session
 from app.cloud.submit import run_cloud_print
 from app.config import PrinterConfig, settings
-from app import config_store
+from app import config_store, ftp_client
 from app.device_store import ActiveActivity, DeviceRecord, DeviceStore
 from app.filament_selection import (
     build_ams_mapping,
@@ -816,6 +816,132 @@ async def get_printer(printer_id: str):
     if status is None:
         raise HTTPException(status_code=404, detail="Printer not found")
     return PrinterDetailResponse(printer=status)
+
+
+PRINT_EVENTS_KEEPALIVE_SECONDS = 15.0
+
+
+@app.get("/api/printers/{printer_id}/print-events")
+async def printer_print_events(printer_id: str):
+    """SSE stream of complete, versioned, transport-neutral print snapshots."""
+    pid = printer_id or printer_service.default_printer_id()
+    if not pid:
+        raise HTTPException(status_code=404, detail="No printers configured")
+    broker = printer_service.get_print_event_broker(pid)
+    if broker is None:
+        raise HTTPException(
+            status_code=404, detail="Printer tracking stream unavailable",
+        )
+
+    async def generate():
+        async with broker.subscribe() as queue:
+            while True:
+                try:
+                    snapshot = await asyncio.wait_for(
+                        queue.get(), timeout=PRINT_EVENTS_KEEPALIVE_SECONDS,
+                    )
+                    yield _sse_event("snapshot", snapshot)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/printers/{printer_id}/current-job/file")
+async def current_job_file(printer_id: str, job_key: str = Query(...)):
+    """Return the active 3MF after validating the caller's job identity."""
+    pid = printer_id or printer_service.default_printer_id()
+    if not pid:
+        raise HTTPException(status_code=404, detail="No printers configured")
+    broker = printer_service.get_print_event_broker(pid)
+    if broker is None:
+        raise HTTPException(status_code=404, detail="Printer not found")
+    snapshot = broker.snapshot()
+    active_key = snapshot.get("job_key")
+    if not active_key:
+        raise HTTPException(status_code=404, detail="No active print source")
+    if job_key != active_key:
+        raise HTTPException(
+            status_code=409, detail="Requested job is no longer active",
+        )
+    source = broker.source_for(job_key)
+    if source is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(snapshot.get("source") or {}).get("reason")
+            or "Active 3MF is unavailable",
+        )
+
+    data: bytes
+    if source.data is not None:
+        data = source.data
+    elif source.path:
+        try:
+            data = await asyncio.to_thread(Path(source.path).read_bytes)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=404, detail=f"Registered source is unavailable: {exc}",
+            ) from exc
+    elif source.url:
+        parsed = urlparse(source.url)
+        if parsed.scheme in {"http", "https"}:
+            try:
+                async with httpx.AsyncClient(
+                    timeout=60.0, follow_redirects=True,
+                ) as client:
+                    response = await client.get(source.url)
+                    response.raise_for_status()
+                    data = response.content
+            except httpx.HTTPError as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Active source download failed: {exc}",
+                ) from exc
+        elif parsed.scheme in {"file", "ftp", "ftps"}:
+            cfg = printer_service.get_config(pid)
+            if cfg is None or not cfg.ip or not cfg.access_code:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Printer FTPS credentials are unavailable",
+                )
+            remote_path = unquote(parsed.path)
+            if remote_path.startswith("/sdcard/"):
+                remote_path = remote_path[len("/sdcard"):]
+            try:
+                data = await asyncio.to_thread(
+                    ftp_client.download_file,
+                    host=cfg.ip,
+                    access_code=cfg.access_code,
+                    remote_path=remote_path,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Printer FTPS download failed: {exc}",
+                ) from exc
+        else:
+            raise HTTPException(
+                status_code=404, detail="Unsupported active source URL",
+            )
+    else:
+        raise HTTPException(status_code=404, detail="Active 3MF is unavailable")
+
+    filename = source.filename or "current-job.3mf"
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": _attachment_disposition(filename),
+            "X-Print-Job-Key": job_key,
+        },
+    )
 
 
 def _printer_config_by_id(printer_id: str) -> PrinterConfig | None:

@@ -623,6 +623,10 @@ class BambuMQTTClient:
         self._lock = threading.Lock()
         self._disconnect_timer: threading.Timer | None = None
         self._status_change_callback: Callable[[PrinterStatus, PrinterStatus], None] | None = None
+        self._print_report_callback: Callable[[dict], None] | None = None
+        # Long-lived consumers (notably print-events SSE) lease the MQTT
+        # connection so the normal UI-driven idle timer cannot disconnect it.
+        self._connection_leases = 0
         # Set by _update_status on the first MQTT report that parses. Lets
         # async consumers wait briefly on cold-start / lazy-connect for the
         # printer's first pushall to land in the cache before returning.
@@ -634,6 +638,25 @@ class BambuMQTTClient:
     ) -> None:
         """Register a callback invoked on every status update with (prev, new) snapshots."""
         self._status_change_callback = callback
+
+    def set_print_report_callback(
+        self, callback: Callable[[dict], None] | None,
+    ) -> None:
+        """Receive every partial firmware ``print`` payload."""
+        self._print_report_callback = callback
+
+    def acquire_connection_lease(self) -> None:
+        """Keep LAN MQTT connected until the matching lease is released."""
+        with self._lock:
+            self._connection_leases += 1
+            self._cancel_disconnect_timer_locked()
+        self.ensure_connected()
+
+    def release_connection_lease(self) -> None:
+        with self._lock:
+            self._connection_leases = max(0, self._connection_leases - 1)
+            if self._connection_leases == 0:
+                self._schedule_disconnect_locked()
 
     @property
     def serial(self) -> str:
@@ -925,7 +948,7 @@ class BambuMQTTClient:
 
     def _schedule_disconnect_locked(self) -> None:
         self._cancel_disconnect_timer_locked()
-        if self._client is None:
+        if self._client is None or self._connection_leases:
             return
         timer = threading.Timer(MQTT_IDLE_TIMEOUT_SECONDS, self.stop)
         timer.daemon = True
@@ -983,6 +1006,12 @@ class BambuMQTTClient:
             return
 
         self._update_status(print_info)
+        callback = self._print_report_callback
+        if callback is not None:
+            try:
+                callback(dict(print_info))
+            except Exception:
+                logger.exception("Print report callback raised")
 
     def _parse_version_modules(self, info: dict) -> None:
         """Extract AMS module types from a get_version response.
