@@ -52,6 +52,21 @@ def _reported_url(report: dict) -> str:
         value = _text(report.get(key))
         if value:
             return value
+    # Bambu Studio uploads its 3MF to the printer's /cache directory, but the
+    # subsequent push_status commonly reports only a bare gcode_file name.
+    # That filename is an explicit source identity, so it is safe to turn into
+    # the standard printer-local FTPS path. Ignore ordinary .gcode entries.
+    gcode_file = _text(report.get("gcode_file"))
+    if gcode_file.lower().endswith(".3mf"):
+        if "://" in gcode_file:
+            return gcode_file
+        if gcode_file.startswith("/sdcard/"):
+            return f"file://{gcode_file}"
+        if gcode_file.startswith("/cache/"):
+            return f"file:///sdcard{gcode_file}"
+        filename = Path(gcode_file).name
+        if filename:
+            return f"file:///sdcard/cache/{filename}"
     return ""
 
 

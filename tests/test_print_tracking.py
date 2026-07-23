@@ -99,6 +99,26 @@ def test_external_job_without_source_is_explicitly_unavailable():
     assert "retrievable" in snapshot["source"]["reason"]
 
 
+def test_bambu_studio_gcode_filename_becomes_printer_ftps_source():
+    snapshot = PrintEventBroker("S1").update({
+        "gcode_state": "RUNNING",
+        "task_id": "42",
+        "subtask_name": "Single color single plate print",
+        "gcode_file": "Single color single plate print.3mf",
+    })
+
+    assert snapshot["source"] == {
+        "available": True,
+        "kind": "printer_ftps",
+        "filename": "Single color single plate print.3mf",
+        "url": (
+            "file:///sdcard/cache/"
+            "Single color single plate print.3mf"
+        ),
+        "reason": None,
+    }
+
+
 def test_replacement_job_does_not_inherit_previous_job_snapshot_fields():
     broker = PrintEventBroker("S1")
     first = broker.update({

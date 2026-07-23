@@ -89,8 +89,8 @@ async def test_current_job_downloads_printer_file_over_ftps(monkeypatch):
     snapshot = broker.update({
         "gcode_state": "RUNNING",
         "task_id": "42",
-        "subtask_name": "external.3mf",
-        "url": "file:///sdcard/cache/external.3mf",
+        "subtask_name": "Single color single plate print",
+        "gcode_file": "external.3mf",
     })
     captured = {}
 
