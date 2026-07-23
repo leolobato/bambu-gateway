@@ -18,7 +18,7 @@ from app.mqtt_client import (
     build_ams_filament_setting,
 )
 from app import ftp_client
-from app.print_tracking import PrintEventBroker
+from app.print_tracking import ACTIVE_STATES, PrintEventBroker
 
 # Avoid a circular import at module level — imported locally when needed.
 # from app.cloud.cloud_printer import CloudPrinterClient  (do not import here)
@@ -80,6 +80,12 @@ class PrinterService:
         self._status_change_callback = status_change_callback
         self._cloud_mode = cloud_mode
         self._cloud_host = None
+        self._cloud_metadata_loop: asyncio.AbstractEventLoop | None = None
+        self._cloud_metadata_tasks: dict[
+            tuple[str, str], asyncio.Task
+        ] = {}
+        self._cloud_metadata_complete: set[tuple[str, str]] = set()
+        self._cloud_metadata_failed_at: dict[tuple[str, str], float] = {}
         # Serials with a live plugin LAN connection (connect_printer succeeded
         # and OnLocalConnected reported ready). Writes to these go through the
         # plugin's authenticated local publish (send_message_to_printer).
@@ -133,7 +139,10 @@ class PrinterService:
             bool(cfg and cfg.ip and cfg.access_code)
         )
         if hasattr(client, "set_print_report_callback"):
-            client.set_print_report_callback(broker.update)
+            client.set_print_report_callback(
+                lambda report, serial=serial, broker=broker:
+                    self._handle_print_report(serial, broker, report)
+            )
         if hasattr(client, "set_print_source_registrar"):
             client.set_print_source_registrar(broker.register_source)
         if isinstance(client, BambuMQTTClient):
@@ -143,6 +152,93 @@ class PrinterService:
             )
         else:
             broker.set_connection_lease(None, None)
+
+    def _handle_print_report(
+        self, serial: str, broker: PrintEventBroker, report: dict,
+    ) -> dict:
+        snapshot = broker.update(report)
+        loop = self._cloud_metadata_loop
+        if loop is not None and self._cloud_host is not None:
+            loop.call_soon_threadsafe(
+                self._schedule_cloud_metadata, serial, broker, snapshot,
+            )
+        return snapshot
+
+    def _schedule_cloud_metadata(
+        self, serial: str, broker: PrintEventBroker, snapshot: dict,
+    ) -> None:
+        job_key = str(snapshot.get("job_key") or "")
+        subtask_id = str(snapshot.get("subtask_id") or "")
+        state = str(snapshot.get("state") or "").upper()
+        if (
+            not job_key
+            or subtask_id in {"", "0"}
+            or state not in ACTIVE_STATES
+            or self._cloud_host is None
+        ):
+            return
+        key = (serial, job_key)
+        stale_keys = {
+            item for item in (
+                set(self._cloud_metadata_tasks)
+                | self._cloud_metadata_complete
+                | set(self._cloud_metadata_failed_at)
+            )
+            if item[0] == serial and item != key
+        }
+        for stale in stale_keys:
+            task = self._cloud_metadata_tasks.pop(stale, None)
+            if task is not None:
+                task.cancel()
+            self._cloud_metadata_complete.discard(stale)
+            self._cloud_metadata_failed_at.pop(stale, None)
+        if key in self._cloud_metadata_complete:
+            return
+        existing = self._cloud_metadata_tasks.get(key)
+        if existing is not None and not existing.done():
+            return
+        # Cloud metadata is optional. A temporary API failure may be retried
+        # from a later firmware report, but not on every high-frequency event.
+        if time.monotonic() - self._cloud_metadata_failed_at.get(key, 0) < 30:
+            return
+        self._cloud_metadata_tasks[key] = asyncio.create_task(
+            self._enrich_cloud_metadata(
+                key=key,
+                broker=broker,
+                subtask_id=subtask_id,
+            ),
+            name=f"cloud-print-metadata-{serial[-6:]}",
+        )
+
+    async def _enrich_cloud_metadata(
+        self,
+        *,
+        key: tuple[str, str],
+        broker: PrintEventBroker,
+        subtask_id: str,
+    ) -> None:
+        from app.cloud.task_metadata import fetch_subtask_metadata
+
+        try:
+            reference, source_url = await fetch_subtask_metadata(
+                host=self._cloud_host, subtask_id=subtask_id,
+            )
+            accepted = broker.enrich_job(
+                key[1],
+                usage_reference=reference,
+                source_url=source_url,
+            )
+            if accepted:
+                self._cloud_metadata_complete.add(key)
+        except Exception as exc:
+            self._cloud_metadata_failed_at[key] = time.monotonic()
+            logger.info(
+                "Optional cloud metadata unavailable for printer %s "
+                "subtask %s: %s",
+                key[0], subtask_id, exc,
+            )
+        finally:
+            self._cloud_metadata_tasks.pop(key, None)
 
     def get_print_event_broker(
         self, printer_id: str,
@@ -185,6 +281,10 @@ class PrinterService:
         """
         self._cloud_clients = cloud_clients
         self._cloud_host = host
+        try:
+            self._cloud_metadata_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._cloud_metadata_loop = None
         if self._status_change_callback is not None:
             for client in cloud_clients.values():
                 client.set_status_change_callback(self._status_change_callback)
@@ -472,6 +572,12 @@ class PrinterService:
     async def stop_async(self) -> None:
         """Stop all MQTT clients and camera proxies. Safe to call from async code."""
         self.stop()
+        metadata_tasks = list(self._cloud_metadata_tasks.values())
+        self._cloud_metadata_tasks.clear()
+        for task in metadata_tasks:
+            task.cancel()
+        if metadata_tasks:
+            await asyncio.gather(*metadata_tasks, return_exceptions=True)
         proxies = list(self._proxies.values())
         self._proxies.clear()
         for proxy in proxies:

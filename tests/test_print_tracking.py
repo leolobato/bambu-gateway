@@ -99,6 +99,85 @@ def test_external_job_without_source_is_explicitly_unavailable():
     assert "retrievable" in snapshot["source"]["reason"]
 
 
+def test_cloud_enrichment_is_advisory_and_can_supply_missing_source():
+    broker = PrintEventBroker("S1")
+    snapshot = broker.update({
+        "gcode_state": "RUNNING",
+        "task_id": "41",
+        "subtask_id": "42",
+        "subtask_name": "Cloud cube",
+    })
+    key = snapshot["job_key"]
+    reference = {
+        "available": True,
+        "source": "bambu_cloud",
+        "subtask_id": "42",
+        "title": "Cloud cube",
+        "plate_index": 2,
+        "filaments": [
+            {"filament_index": 0, "used_length_mm": 1250.0},
+        ],
+    }
+
+    assert broker.enrich_job(
+        key,
+        usage_reference=reference,
+        source_url="https://example.invalid/jobs/cloud-cube.3mf?sig=x",
+    )
+
+    enriched = broker.snapshot()
+    assert enriched["usage_reference"] == reference
+    assert enriched["source"]["kind"] == "cloud_http"
+    assert enriched["source"]["available"] is True
+    assert enriched["gcode_entry"] == "Metadata/plate_2.gcode"
+
+
+def test_delayed_cloud_enrichment_cannot_modify_replacement_job():
+    broker = PrintEventBroker("S1")
+    old = broker.update({
+        "gcode_state": "RUNNING",
+        "task_id": "1",
+        "subtask_id": "10",
+        "subtask_name": "old.3mf",
+    })
+    broker.update({"gcode_state": "FINISH"})
+    new = broker.update({
+        "gcode_state": "RUNNING",
+        "task_id": "2",
+        "subtask_id": "20",
+        "subtask_name": "new.3mf",
+    })
+
+    assert not broker.enrich_job(
+        old["job_key"],
+        usage_reference={"available": True, "title": "Wrong"},
+        source_url="https://example.invalid/wrong.3mf",
+    )
+    assert broker.snapshot()["job_key"] == new["job_key"]
+    assert broker.snapshot()["usage_reference"] is None
+
+
+def test_cloud_source_recovers_unreachable_printer_ftps_source():
+    broker = PrintEventBroker("S1", printer_file_available=False)
+    snapshot = broker.update({
+        "gcode_state": "RUNNING",
+        "task_id": "41",
+        "subtask_id": "42",
+        "gcode_file": "cloud-cube.3mf",
+    })
+    assert snapshot["source"]["available"] is False
+    assert snapshot["source"]["kind"] == "printer_ftps"
+
+    broker.enrich_job(
+        snapshot["job_key"],
+        usage_reference={"available": True, "plate_index": 1},
+        source_url="https://example.invalid/jobs/cloud-cube.3mf?sig=x",
+    )
+
+    assert broker.snapshot()["source"]["available"] is True
+    assert broker.snapshot()["source"]["kind"] == "cloud_http"
+
+
 def test_bambu_studio_gcode_filename_becomes_printer_ftps_source():
     snapshot = PrintEventBroker("S1").update({
         "gcode_state": "RUNNING",

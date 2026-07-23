@@ -57,6 +57,16 @@ def _dispatch(method: str, params: dict) -> dict:
             ),
             "http_code": 200,
         }
+    if method == "get_subtask_info":
+        if "subtask_id" not in params:
+            raise ValueError("get_subtask_info requires 'subtask_id'")
+        return {
+            "subtask_id": params["subtask_id"],
+            "task": json.loads(
+                os.environ.get("FAKE_HOST_SUBTASK_INFO", "{}")
+            ),
+            "http_code": 200,
+        }
     if method == "set_user_selected_machine":
         if "dev_id" not in params:
             raise ValueError("set_user_selected_machine requires 'dev_id'")

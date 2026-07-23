@@ -147,6 +147,11 @@ class PluginLoader {
   // ({"devices":[...], "http_code":N}). Throws on non-zero rc / parse error.
   nlohmann::json get_user_print_info();
 
+  // Calls bambu_network_get_subtask_info using the plugin's logged-in
+  // session. Returns the parsed task JSON for one printer-reported subtask,
+  // including its plate-level slicer filament totals.
+  nlohmann::json get_subtask_info(const std::string& subtask_id);
+
   // Calls bambu_network_set_user_selected_machine(agent, dev_id) — the cloud
   // equivalent of connect_printer. Opens the publish channel to the device so
   // send_message stops returning -2 (CONNECT_FAILED). Returns the plugin rc.
@@ -355,6 +360,13 @@ class PluginLoader {
   // Source: BBLNetworkPlugin.hpp:92. Uses the plugin's stored session token.
   using fn_get_user_print_info = int(*)(void*, unsigned int*, std::string*);
 
+  // int bambu_network_get_subtask_info(void *agent, std::string subtask_id,
+  //     std::string *task_json, unsigned int *http_code,
+  //     std::string *http_body)
+  // Source: BBLNetworkPlugin.hpp:98.
+  using fn_get_subtask_info =
+      int(*)(void*, std::string, std::string*, unsigned int*, std::string*);
+
   // int bambu_network_set_user_selected_machine(void *agent, std::string dev_id)
   // Source: BBLNetworkPlugin.hpp:76.
   using fn_set_user_selected_machine = int(*)(void*, std::string);
@@ -465,6 +477,7 @@ class PluginLoader {
   fn_user_logout        p_user_logout_        = nullptr;
   fn_get_my_token       p_get_my_token_       = nullptr;
   fn_get_user_print_info p_get_user_print_info_ = nullptr;
+  fn_get_subtask_info   p_get_subtask_info_   = nullptr;
   fn_set_user_selected_machine p_set_user_selected_machine_ = nullptr;
   fn_set_on_message_fn  p_set_on_message_fn_  = nullptr;
   fn_set_on_printer_connected_fn p_set_on_printer_connected_fn_ = nullptr;

@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Callable
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,7 @@ class PrintEventBroker:
         self._subscribers: dict[asyncio.Queue[dict], asyncio.AbstractEventLoop] = {}
         self._raw: dict = {}
         self._sources: dict[str, PrintSource] = {}
+        self._usage_references: dict[str, dict] = {}
         self._pending_source: PrintSource | None = None
         self._active_job_key: str | None = None
         self._sequence = 0
@@ -143,6 +145,7 @@ class PrintEventBroker:
             "gcode_entry": None,
             "ams_mapping": [],
             "active_tray": None,
+            "usage_reference": None,
             "source": {
                 "available": False,
                 "kind": "unavailable",
@@ -221,6 +224,7 @@ class PrintEventBroker:
             # One active job per printer. Releasing the prior blob here avoids
             # retaining a full print history in memory.
             self._sources = {key: source}
+            self._usage_references = {}
             self._pending_source = source
             self._active_job_key = key
             self._raw["subtask_name"] = filename
@@ -284,11 +288,60 @@ class PrintEventBroker:
                 ):
                     self._active_job_key = None
                     self._sources = {}
+                    self._usage_references = {}
             _merge(self._raw, report)
             self._snapshot = self._build_snapshot()
             snapshot = _copy_dict(self._snapshot)
         self._fan_out(snapshot)
         return snapshot
+
+    def enrich_job(
+        self,
+        job_key: str,
+        *,
+        usage_reference: dict,
+        source_url: str | None = None,
+    ) -> bool:
+        """Attach advisory cloud metadata to the still-active job.
+
+        A cloud source is accepted only when no stronger registered/reported
+        source exists. Job-key validation prevents a delayed cloud response
+        from contaminating a replacement print.
+        """
+        with self._lock:
+            if not job_key or self._snapshot.get("job_key") != job_key:
+                return False
+            self._usage_references = {
+                job_key: _copy_dict(usage_reference),
+            }
+            existing_source = self._sources.get(job_key)
+            source_can_fall_back = (
+                existing_source is None
+                or (
+                    existing_source.kind == "printer_ftps"
+                    and not self._printer_file_available
+                )
+            )
+            if (
+                source_url
+                and source_can_fall_back
+                and urlparse(source_url).scheme in {"http", "https"}
+            ):
+                parsed = urlparse(source_url)
+                plate_id = _integer(
+                    usage_reference.get("plate_index"), 1,
+                )
+                self._sources[job_key] = PrintSource(
+                    job_key=job_key,
+                    kind="cloud_http",
+                    filename=Path(parsed.path).name,
+                    url=source_url,
+                    plate_id=max(1, plate_id),
+                )
+            self._snapshot = self._build_snapshot()
+            snapshot = _copy_dict(self._snapshot)
+        self._fan_out(snapshot)
+        return True
 
     def _derive_job_key(self) -> str | None:
         if self._active_job_key is not None:
@@ -326,6 +379,7 @@ class PrintEventBroker:
             mapping = self._snapshot.get("ams_mapping") or []
 
         source = self._sources.get(key or "")
+        usage_reference = self._usage_references.get(key or "")
         if (
             source is not None
             and self._pending_source is not None
@@ -387,7 +441,14 @@ class PrintEventBroker:
             "job_key": key,
             "task_id": _text(self._raw.get("task_id")) or None,
             "subtask_id": _text(self._raw.get("subtask_id")) or None,
-            "job_name": name or (source.filename if source else None),
+            "job_name": (
+                name
+                or (
+                    _text(usage_reference.get("title"))
+                    if usage_reference else ""
+                )
+                or (source.filename if source else None)
+            ),
             "state": state,
             "layer": {
                 "current": _integer(self._raw.get("layer_num"), 0),
@@ -402,6 +463,9 @@ class PrintEventBroker:
             "ams_mapping": [_integer(v, -1) for v in mapping],
             "active_tray": _active_tray(
                 self._raw, self._snapshot.get("active_tray")
+            ),
+            "usage_reference": (
+                _copy_dict(usage_reference) if usage_reference else None
             ),
             "source": source_status,
             "updated_at": time.time(),

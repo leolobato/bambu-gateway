@@ -136,6 +136,7 @@ void PluginLoader::load_from_env() {
   p_user_logout_       = must_resolve<fn_user_logout>       (dl_handle_, "bambu_network_user_logout");
   p_get_my_token_      = must_resolve<fn_get_my_token>      (dl_handle_, "bambu_network_get_my_token");
   p_get_user_print_info_ = must_resolve<fn_get_user_print_info>(dl_handle_, "bambu_network_get_user_print_info");
+  p_get_subtask_info_  = try_resolve<fn_get_subtask_info>   (dl_handle_, "bambu_network_get_subtask_info");
   p_set_user_selected_machine_ = must_resolve<fn_set_user_selected_machine>(dl_handle_, "bambu_network_set_user_selected_machine");
   p_set_on_message_fn_ = must_resolve<fn_set_on_message_fn> (dl_handle_, "bambu_network_set_on_message_fn");
   p_set_on_printer_connected_fn_ = must_resolve<fn_set_on_printer_connected_fn>(dl_handle_, "bambu_network_set_on_printer_connected_fn");
@@ -429,6 +430,56 @@ nlohmann::json PluginLoader::get_user_print_info() {
 
   body_j["http_code"] = http_code;
   return body_j;
+}
+
+nlohmann::json PluginLoader::get_subtask_info(
+    const std::string& subtask_id) {
+  if (!agent_) {
+    throw std::runtime_error("get_subtask_info: agent not bootstrapped");
+  }
+  if (!p_get_subtask_info_) {
+    throw std::runtime_error(
+        "get_subtask_info: plugin does not expose this optional operation");
+  }
+
+  std::string task_json;
+  unsigned int http_code = 0;
+  std::string http_body;
+  int rc = p_get_subtask_info_(
+      agent_, subtask_id, &task_json, &http_code, &http_body);
+  std::fprintf(
+      stderr,
+      "bambu_cloud_host: get_subtask_info subtask_id=%s rc=%d "
+      "http_code=%u task_len=%zu body_len=%zu\n",
+      subtask_id.c_str(), rc, http_code, task_json.size(), http_body.size());
+  if (rc != 0) {
+    throw std::runtime_error(
+        "get_subtask_info rc=" + std::to_string(rc) +
+        " http_code=" + std::to_string(http_code));
+  }
+
+  nlohmann::json result = {
+      {"subtask_id", subtask_id},
+      {"http_code", http_code},
+  };
+  try {
+    result["task"] = task_json.empty()
+        ? nlohmann::json::object()
+        : nlohmann::json::parse(task_json);
+  } catch (const std::exception& e) {
+    throw std::runtime_error(
+        std::string("get_subtask_info: failed to parse task JSON: ") +
+        e.what() + " task=" + task_json.substr(0, 200));
+  }
+  if (!http_body.empty()) {
+    try {
+      result["response"] = nlohmann::json::parse(http_body);
+    } catch (const std::exception&) {
+      // The task JSON is the authoritative output. Some plugin versions put
+      // an informational, non-JSON string in http_body.
+    }
+  }
+  return result;
 }
 
 // register_message_callback — installs a trampoline that pushes every incoming

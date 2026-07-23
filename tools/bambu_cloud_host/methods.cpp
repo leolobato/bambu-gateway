@@ -84,6 +84,13 @@ json method_get_user_print_info(const json& /*params*/) {
   return loader().get_user_print_info();
 }
 
+// get_subtask_info — return exact slicer metadata for one cloud print task
+// using the plugin's managed login session (no Python-side token storage).
+json method_get_subtask_info(const json& params) {
+  return loader().get_subtask_info(
+      params.at("subtask_id").get<std::string>());
+}
+
 // set_user_selected_machine — open the cloud publish channel to a device so
 // pushall/commands can be sent (cloud equivalent of connect_printer).
 json method_set_user_selected_machine(const json& params) {
@@ -355,6 +362,7 @@ json dispatch_method(const std::string& method, const json& params) {
   if (method == "user_logout")         return method_user_logout(params);
   if (method == "get_my_token")        return method_get_my_token(params);
   if (method == "get_user_print_info") return method_get_user_print_info(params);
+  if (method == "get_subtask_info")    return method_get_subtask_info(params);
   if (method == "set_user_selected_machine") return method_set_user_selected_machine(params);
   if (method == "bridge.poll_events")  return method_bridge_poll_events(params);
   if (method == "_test_push_event")    return method_test_push_event(params);
