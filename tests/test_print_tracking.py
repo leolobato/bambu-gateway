@@ -99,6 +99,36 @@ def test_external_job_without_source_is_explicitly_unavailable():
     assert "retrievable" in snapshot["source"]["reason"]
 
 
+def test_replacement_job_does_not_inherit_previous_job_snapshot_fields():
+    broker = PrintEventBroker("S1")
+    first = broker.update({
+        "task_id": "10",
+        "subtask_id": "20",
+        "subtask_name": "first.3mf",
+        "gcode_state": "RUNNING",
+        "layer_num": 8,
+        "total_layer_num": 12,
+        "ams_mapping": [1, 3],
+        "ams": {"tray_now": 3},
+    })
+    broker.update({"gcode_state": "FINISH"})
+
+    second = broker.update({
+        "task_id": "11",
+        "subtask_id": "21",
+        "subtask_name": "second.3mf",
+        "gcode_state": "RUNNING",
+        "layer_num": 0,
+        "total_layer_num": 20,
+    })
+
+    assert second["job_key"] != first["job_key"]
+    assert second["job_key"] == "printer:11:21:second.3mf"
+    assert second["ams_mapping"] == []
+    assert second["active_tray"] is None
+    assert second["layer"] == {"current": 0, "total": 20}
+
+
 @pytest.mark.asyncio
 async def test_lan_and_cloud_feed_identical_snapshot_schema(monkeypatch):
     report = {

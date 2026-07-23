@@ -254,6 +254,11 @@ class PrintEventBroker:
                 )
             ):
                 self._raw = {}
+                # Fallbacks in _build_snapshot are intentionally allowed to
+                # bridge partial reports within one job. Reset the accumulated
+                # snapshot at a job boundary so identity, mapping, and active
+                # tray values cannot leak into the replacement job.
+                self._snapshot = self._empty_snapshot()
                 pending_name = (
                     self._pending_source.filename
                     if self._pending_source is not None
