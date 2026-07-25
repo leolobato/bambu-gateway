@@ -112,6 +112,12 @@ class PrinterService:
         self._ams_echo_timeout: float = 3.5
         self._ams_echo_poll: float = 0.25
         self._ams_write_attempts: int = 2
+        # Control-command (speed/pause/…) ack wait: how long to sit on the
+        # request waiting for the printer to echo the command back. Shorter
+        # than the AMS budget — these are interactive taps, and an absent ack
+        # is not treated as a failure (see await_command_ack).
+        self._control_ack_timeout: float = 2.0
+        self._control_ack_poll: float = 0.1
         # Cloud printer clients keyed by serial. Set via set_cloud_printers()
         # after the EventPump is wired up; None until then.
         self._cloud_clients: dict[str, "CloudPrinterClient"] | None = None  # type: ignore[name-defined]
@@ -666,8 +672,11 @@ class PrinterService:
         client.send_stop()
         logger.info("Cancel sent to printer %s", printer_id)
 
-    def set_print_speed(self, printer_id: str, level: int) -> None:
-        """Set print speed on the given printer."""
+    def set_print_speed(self, printer_id: str, level: int) -> str:
+        """Set print speed on the given printer.
+
+        :return: The published command's ``sequence_id``, for ack matching.
+        """
         client = self._clients.get(printer_id)
         if client is None:
             raise ValueError(f"Printer {printer_id} not found")
@@ -675,8 +684,9 @@ class PrinterService:
         status = client.get_status()
         if not status.online:
             raise ConnectionError(f"Printer {printer_id} is offline")
-        client.send_print_speed(level)
+        sequence_id = client.send_print_speed(level)
         logger.info("Print speed set to %d on printer %s", level, printer_id)
+        return sequence_id
 
     def set_chamber_light(
         self, printer_id: str, on: bool, node: str = "chamber_light",
@@ -1004,7 +1014,7 @@ class PrinterService:
                 # (pushall is firmware-throttled); kick one refresh so
                 # clients re-reading /api/ams converge quickly.
                 if self._any_client(printer_id) is not None:
-                    await self._kick_status_refresh(printer_id)
+                    await self.kick_status_refresh(printer_id)
                 return
             logger.warning(
                 "Printer %s did not confirm AMS %d tray %d assignment %s "
@@ -1070,7 +1080,7 @@ class PrinterService:
             if now >= deadline:
                 return False
             if now >= next_kick:
-                await self._kick_status_refresh(printer_id)
+                await self.kick_status_refresh(printer_id)
                 next_kick = now + 1.5
             await asyncio.sleep(min(self._ams_echo_poll, deadline - now))
 
@@ -1112,7 +1122,45 @@ class PrinterService:
             return False
         return True
 
-    async def _kick_status_refresh(self, printer_id: str) -> None:
+    async def await_command_ack(
+        self,
+        printer_id: str,
+        command: str,
+        sequence_id: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict | None:
+        """Wait for the printer to echo a control command back.
+
+        Bambu firmware replies to most write commands with the command name,
+        our ``sequence_id`` and a result (see ``extract_command_ack``). That
+        echo is the only delivery confirmation the transport offers: the relay
+        publish returning rc=0 means the plugin queued the packet, nothing more.
+
+        Returns the ack dict on a match, or ``None`` when nothing arrives in
+        time. A timeout is deliberately NOT an error — the firmware does not
+        ack every command and the ack itself can be dropped, so treating
+        silence as failure would fail commands that actually landed. Only an
+        explicit ``result: fail`` (which the caller reads off the returned
+        dict) proves rejection.
+        """
+        client = self._any_client(printer_id)
+        get_ack = getattr(client, "get_command_ack", None) if client else None
+        if get_ack is None:
+            return None
+        deadline = time.monotonic() + (
+            self._control_ack_timeout if timeout is None else timeout
+        )
+        while True:
+            ack = get_ack(command)
+            if ack is not None and ack.get("sequence_id") == sequence_id:
+                return ack
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            await asyncio.sleep(min(self._control_ack_poll, remaining))
+
+    async def kick_status_refresh(self, printer_id: str) -> None:
         """Ask the printer for a full status snapshot on either transport."""
         if self._cloud_mode:
             host = self._cloud_host

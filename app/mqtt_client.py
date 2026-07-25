@@ -31,6 +31,13 @@ MQTT_PORT = 8883
 MQTT_USERNAME = "bblp"
 MQTT_IDLE_TIMEOUT_SECONDS = 20
 
+# How long an optimistically-applied speed level survives before reported
+# ``spd_lvl`` values are trusted again. Reports already in flight when the
+# command was published still carry the old level; without this hold-off they
+# clobber the new value within a second and the UI snaps back — which reads as
+# "the printer ignored me". Matches the AMS auto-refill hold-off.
+SPEED_LEVEL_HOLD_SECONDS = 3.0
+
 
 # Sequence-id source for control commands. OrcaSlicer cycles
 # ``MachineObject::m_sequence_id`` strictly within [START_SEQ_ID, END_SEQ_ID) =
@@ -254,6 +261,7 @@ def apply_print_payload(
     *,
     gcode_state: str = "IDLE",
     ams_auto_refill_hold_until: float = 0.0,
+    speed_level_hold_until: float = 0.0,
 ) -> str:
     """Apply fields from a Bambu ``print`` MQTT payload to ``status`` in-place.
 
@@ -267,6 +275,8 @@ def apply_print_payload(
         printer.  Will be updated if the payload contains a new value.
     :param ams_auto_refill_hold_until: ``time.monotonic()`` deadline below
         which AMS auto-refill fields are ignored (optimistic-update hold-off).
+    :param speed_level_hold_until: ``time.monotonic()`` deadline below which
+        ``spd_lvl`` is ignored (optimistic-update hold-off).
     :return: The (possibly updated) ``gcode_state`` string.
 
     .. note:: Caller is responsible for holding any necessary lock while
@@ -282,7 +292,7 @@ def apply_print_payload(
         except (ValueError, TypeError):
             pass
 
-    if "spd_lvl" in print_info:
+    if "spd_lvl" in print_info and time.monotonic() >= speed_level_hold_until:
         try:
             status.speed_level = int(print_info["spd_lvl"])
         except (ValueError, TypeError):
@@ -632,6 +642,7 @@ class BambuMQTTClient:
         # printer's first pushall to land in the cache before returning.
         self._data_ready_event = threading.Event()
         self._ams_auto_refill_hold_until = 0.0
+        self._speed_level_hold_until = 0.0
 
     def set_status_change_callback(
         self, callback: Callable[[PrinterStatus, PrinterStatus], None] | None,
@@ -820,9 +831,37 @@ class BambuMQTTClient:
         """Send an MQTT command to cancel/stop the current print."""
         self.publish(build_cancel_command())
 
-    def send_print_speed(self, level: int) -> None:
-        """Send an MQTT command to change the print speed level."""
-        self.publish(build_speed_command(level))
+    def send_print_speed(self, level: int) -> str:
+        """Send an MQTT command to change the print speed level.
+
+        Applies the new level to the cached status right away — the printer
+        only volunteers ``spd_lvl`` when it feels like it, and a full snapshot
+        rides the throttled pushall cycle, so waiting for the echo leaves
+        clients reading the old level for seconds.
+
+        :return: The ``sequence_id`` of the published command, for ack matching.
+        """
+        envelope = build_speed_command(level)
+        self.publish(envelope)
+        self.apply_optimistic_speed(level)
+        return envelope["print"]["sequence_id"]
+
+    def apply_optimistic_speed(self, level: int) -> None:
+        """Cache ``level`` as the current speed and hold off reported values."""
+        with self._lock:
+            self._status.speed_level = level
+            self._speed_level_hold_until = (
+                time.monotonic() + SPEED_LEVEL_HOLD_SECONDS
+            )
+
+    def clear_speed_hold(self) -> None:
+        """Drop the optimistic-speed hold-off — reported ``spd_lvl`` wins again.
+
+        Called once the printer has acknowledged the command: from then on its
+        reports are the authority and there is nothing left to protect.
+        """
+        with self._lock:
+            self._speed_level_hold_until = 0.0
 
     def send_chamber_light(self, on: bool, node: str = "chamber_light") -> None:
         """Toggle an LED node (chamber light by default) via `system.ledctrl`."""
@@ -1088,6 +1127,7 @@ class BambuMQTTClient:
                 print_info,
                 gcode_state=self._gcode_state,
                 ams_auto_refill_hold_until=self._ams_auto_refill_hold_until,
+                speed_level_hold_until=self._speed_level_hold_until,
             )
 
             # Lights report: [{"node": "chamber_light", "mode": "on"|"off"|"flashing"}, ...]

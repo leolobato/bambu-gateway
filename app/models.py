@@ -177,6 +177,12 @@ class CommandResponse(BaseModel):
     status: str = "ok"
     printer_id: str
     command: str
+    # True when the printer echoed the command back with a success result.
+    # None means the command was published but no echo was expected or none
+    # arrived in the wait window — not every command is acked and the ack
+    # itself can be dropped, so this is "unconfirmed", not "failed". An
+    # explicit rejection surfaces as a 502 instead.
+    confirmed: bool | None = None
 
 
 class PrinterListResponse(BaseModel):

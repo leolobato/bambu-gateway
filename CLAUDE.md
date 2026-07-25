@@ -126,6 +126,19 @@ Previews are stored in `/tmp/bambu-gateway-previews/` and cleaned up on restart.
   (`{"temperature": 55, "duration_minutes": 480}`)
 - `POST /api/printers/{id}/ams/{ams_id}/stop-drying` — stop AMS drying
 
+All control commands publish at MQTT QoS 1 — a cloud-relay publish is one hop
+out of the gateway with no reply, so at QoS 0 a dropped packet is invisible and
+the route still answers 200. Responses carry `confirmed`: `true` when the
+printer echoed the command back, `null` when it was published but not echoed
+(not every command is acked and acks can be dropped, so this is "unconfirmed",
+not "failed"). An explicit rejection is a 502.
+
+`speed` additionally applies the requested level to the cached status on
+publish, holding off reported `spd_lvl` for a few seconds. Without it, clients
+read the old level until the printer volunteers a report — and a guaranteed
+full snapshot only rides the pushall cycle (30s in cloud mode), which looks
+exactly like the printer ignoring the command.
+
 ### Other endpoints
 
 - `GET /api/printers` — list all printers with status (includes `stg_cur`,

@@ -985,12 +985,27 @@ def _run_printer_command(
     return CommandResponse(printer_id=pid, command=command)
 
 
+def _client_hook(client, name: str, *args) -> None:
+    """Call ``client.name(*args)`` if the client implements it.
+
+    Control routes reach both transports' clients plus bare-config stubs, so
+    optimistic-state hooks are best-effort — same getattr guard the AMS write
+    verification uses.
+    """
+    fn = getattr(client, name, None)
+    if callable(fn):
+        fn(*args)
+
+
 async def _run_control_command(
     printer_id: str,
     command: str,
     envelope: dict,
     *,
     lan_action,
+    on_sent=None,
+    on_confirmed=None,
+    ack_command: str | None = None,
 ) -> CommandResponse:
     """Route a control command to cloud or LAN depending on printer type.
 
@@ -1000,12 +1015,27 @@ async def _run_control_command(
 
     A single branch here replaces per-route ``if cloud`` blocks so each of
     the control routes stays a 2-3 line body.
+
+    Control commands publish at QoS 1. A relay publish is a single hop out of
+    the gateway with no reply, so QoS 0 loses the packet silently and the route
+    still answers 200 — which is how a tap that never reached the printer looks
+    identical to one that did.
+
+    :param on_sent: Optional ``(client) -> None`` applied right after a
+        successful publish, to reflect the request in the cached status before
+        the printer reports it back.
+    :param on_confirmed: Optional ``(client) -> None`` applied once the printer
+        acknowledges — the point at which its own reports become authoritative
+        again and any optimistic hold from ``on_sent`` should be released.
+    :param ack_command: Command name the printer echoes on completion. When
+        given, the route waits briefly for that echo and reports it via
+        ``CommandResponse.confirmed``; an explicit rejection becomes a 502.
     """
     pid = _resolve_printer_id(printer_id)
     cloud_client = _get_cloud_client(pid)
     if cloud_client is not None:
         try:
-            rc = await cloud_client.send_command(envelope=envelope)
+            rc = await cloud_client.send_command(envelope=envelope, qos=1)
         except PluginHostError as exc:
             raise HTTPException(
                 status_code=503,
@@ -1016,15 +1046,58 @@ async def _run_control_command(
                 status_code=502,
                 detail=f"Cloud plugin error rc={rc} for command {command}",
             )
-        return CommandResponse(printer_id=pid, command=command)
-    # LAN path — call the existing synchronous action unchanged.
-    try:
-        lan_action(pid)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ConnectionError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    return CommandResponse(printer_id=pid, command=command)
+        client = cloud_client
+        sequence_id = str(envelope.get("print", {}).get("sequence_id", ""))
+    else:
+        # LAN path — call the existing synchronous action unchanged. It builds
+        # and publishes its own envelope, so the ack has to be matched against
+        # the sequence_id it returns, not the one assembled for the cloud path.
+        try:
+            published = lan_action(pid)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except ConnectionError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        client = printer_service.get_client(pid)
+        sequence_id = published if isinstance(published, str) else ""
+    if on_sent is not None and client is not None:
+        on_sent(client)
+    confirmed = await _confirm_control_command(
+        pid, command, sequence_id, ack_command,
+    )
+    if confirmed and on_confirmed is not None and client is not None:
+        on_confirmed(client)
+        await printer_service.kick_status_refresh(pid)
+    return CommandResponse(printer_id=pid, command=command, confirmed=confirmed)
+
+
+async def _confirm_control_command(
+    pid: str,
+    command: str,
+    sequence_id: str,
+    ack_command: str | None,
+) -> bool | None:
+    """Wait for the printer's echo of a just-published control command.
+
+    Returns True on a success ack, None when no ack was requested, the
+    sequence_id is unknown, or none arrived in the window (see
+    ``PrinterService.await_command_ack`` — silence is not evidence of failure),
+    and raises 502 when the printer says it rejected the command.
+    """
+    if ack_command is None or not sequence_id:
+        return None
+    ack = await printer_service.await_command_ack(
+        pid, ack_command, sequence_id,
+    )
+    if ack is None:
+        return None
+    if ack.get("result") in ("fail", "failed"):
+        reason = ack.get("reason") or "no reason given"
+        raise HTTPException(
+            status_code=502,
+            detail=f"Printer {pid} rejected {command}: {reason}",
+        )
+    return True
 
 
 @app.post("/api/printers/{printer_id}/pause", response_model=CommandResponse)
@@ -1053,11 +1126,24 @@ async def cancel_print(printer_id: str):
 
 @app.post("/api/printers/{printer_id}/speed", response_model=CommandResponse)
 async def set_print_speed(printer_id: str, body: SpeedRequest):
+    """Change the print speed level.
+
+    The cached ``speed_level`` is updated on publish rather than on the
+    printer's echo: a full snapshot only arrives on the throttled pushall
+    cycle, so clients polling in between would keep reading the old level and
+    show the change as having been ignored.
+    """
+    level = body.level.value
     return await _run_control_command(
         printer_id,
         f"speed:{body.level.name}",
-        build_speed_command(body.level.value),
-        lan_action=lambda pid: printer_service.set_print_speed(pid, body.level.value),
+        build_speed_command(level),
+        lan_action=lambda pid: printer_service.set_print_speed(pid, level),
+        # LAN's send_print_speed already applies this; harmless to repeat, and
+        # it keeps the cloud path from needing its own branch here.
+        on_sent=lambda c: _client_hook(c, "apply_optimistic_speed", level),
+        on_confirmed=lambda c: _client_hook(c, "clear_speed_hold"),
+        ack_command="print_speed",
     )
 
 

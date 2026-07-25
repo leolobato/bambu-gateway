@@ -85,10 +85,15 @@ def cloud_control_app(cloud_app_factory):
     the way production creates it (host attached, registered in both
     app.state.cloud_printers and PrinterService).
     """
+    import app.main as main_mod
+
     with cloud_app_factory(
         printers=[{"serial": "DEV1", "ip": "10.0.0.9"}],
         fake_env={},
     ) as client:
+        # The fake host never acks, so routes that wait for one (speed) would
+        # otherwise burn the full production window on every call.
+        main_mod.printer_service._control_ack_timeout = 0.05
         yield client
 
 

@@ -5,10 +5,12 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from typing import TYPE_CHECKING, AsyncIterator
 
 from app.models import AMSType, PrinterStatus
 from app.mqtt_client import (
+    SPEED_LEVEL_HOLD_SECONDS,
     apply_print_payload,
     extract_command_ack,
     parse_ams_module_types,
@@ -60,6 +62,9 @@ class CloudPrinterClient:
         self._ams_module_types: dict[int, AMSType] = {}
         # Last command ack per command name (see extract_command_ack).
         self._command_acks: dict[str, dict] = {}
+        # Deadline below which reported spd_lvl is ignored in favour of an
+        # optimistically-applied level (see apply_optimistic_speed).
+        self._speed_level_hold_until = 0.0
         self._lock = threading.Lock()
         # Single in-flight print job's progress channel. None = no active job.
         self._progress: asyncio.Queue | None = None
@@ -126,6 +131,24 @@ class CloudPrinterClient:
             ack = self._command_acks.get(command)
             return dict(ack) if ack else None
 
+    def apply_optimistic_speed(self, level: int) -> None:
+        """Cache ``level`` as the current speed and hold off reported values.
+
+        Same contract as :meth:`BambuMQTTClient.apply_optimistic_speed` — the
+        cloud path needs it more, since a full snapshot only arrives on the
+        periodic pushall (``BAMBU_CLOUD_PUSHALL_SECS``, 30s by default).
+        """
+        with self._lock:
+            self._status.speed_level = level
+            self._speed_level_hold_until = (
+                time.monotonic() + SPEED_LEVEL_HOLD_SECONDS
+            )
+
+    def clear_speed_hold(self) -> None:
+        """Drop the optimistic-speed hold-off — reported ``spd_lvl`` wins again."""
+        with self._lock:
+            self._speed_level_hold_until = 0.0
+
     def set_status_change_callback(self, callback) -> None:
         """Register a ``(prev, new)`` snapshot callback — same contract as
         :meth:`BambuMQTTClient.set_status_change_callback`."""
@@ -191,6 +214,7 @@ class CloudPrinterClient:
                 self._status,
                 print_info,
                 gcode_state=self._gcode_state,
+                speed_level_hold_until=self._speed_level_hold_until,
             )
             # AMS — shared parser, identical to the LAN path. Pass the
             # get_version-derived module types so AMS Lite is recognised.
