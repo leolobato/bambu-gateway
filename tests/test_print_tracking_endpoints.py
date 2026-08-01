@@ -96,7 +96,7 @@ async def test_current_job_downloads_printer_file_over_ftps(monkeypatch):
 
     def download_file(**kwargs):
         captured.update(kwargs)
-        return b"external bytes"
+        return b"PK external bytes"
 
     monkeypatch.setattr(main_mod, "printer_service", StubService(broker))
     monkeypatch.setattr(main_mod.ftp_client, "download_file", download_file)
@@ -110,5 +110,36 @@ async def test_current_job_downloads_printer_file_over_ftps(monkeypatch):
         )
 
     assert response.status_code == 200
-    assert response.content == b"external bytes"
+    assert response.content == b"PK external bytes"
     assert captured["remote_path"] == "/cache/external.3mf"
+
+
+@pytest.mark.asyncio
+async def test_current_job_rejects_non_3mf_payload(monkeypatch):
+    """A partial upload or origin error page must fail the request instead
+    of being served as application/zip."""
+    broker = PrintEventBroker("S1")
+    snapshot = broker.update({
+        "gcode_state": "RUNNING",
+        "task_id": "42",
+        "subtask_name": "Single color single plate print",
+        "gcode_file": "external.3mf",
+    })
+
+    monkeypatch.setattr(main_mod, "printer_service", StubService(broker))
+    monkeypatch.setattr(
+        main_mod.ftp_client,
+        "download_file",
+        lambda **kwargs: b"<html>not a 3mf</html>",
+    )
+    transport = httpx.ASGITransport(app=main_mod.app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test",
+    ) as client:
+        response = await client.get(
+            "/api/printers/S1/current-job/file",
+            params={"job_key": snapshot["job_key"]},
+        )
+
+    assert response.status_code == 502
+    assert "3MF" in response.json()["detail"]

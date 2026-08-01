@@ -48,6 +48,17 @@ def _text(value) -> str:
     return str(value).strip() if value is not None else ""
 
 
+def _name_identity(value: str) -> str:
+    """Job-name comparison key: ``subtask_name`` drops the extension that
+    ``gcode_file`` keeps (``gear`` vs ``gear.3mf``), and that flip must not
+    read as a job boundary."""
+    lowered = value.strip().lower()
+    for suffix in (".3mf", ".gcode"):
+        if lowered.endswith(suffix):
+            return lowered[: -len(suffix)]
+    return lowered
+
+
 def _reported_url(report: dict) -> str:
     for key in ("url", "project_file", "file_url"):
         value = _text(report.get(key))
@@ -254,13 +265,24 @@ class PrintEventBroker:
                 and _text(report.get(field)) != _text(self._raw.get(field))
                 for field in ("task_id", "subtask_id", "gcode_start_time")
             )
+            # An unchanged task/subtask id outweighs a differing name: partial
+            # reports alternate between subtask_name and gcode_file spellings
+            # of the same job, and a false boundary here resets accumulated
+            # layer/mapping state mid-print.
+            identity_stable = any(
+                _text(report.get(field)) not in {"", "0"}
+                and _text(report.get(field)) == _text(self._raw.get(field))
+                for field in ("task_id", "subtask_id")
+            )
             # A new active job after a terminal state must not inherit identity,
             # mapping, layer, or source URL from the previous print.
             if (
                 incoming_state in ACTIVE_STATES
                 and previous_state in TERMINAL_STATES
             ) or (
-                incoming_name and previous_name and incoming_name != previous_name
+                incoming_name and previous_name
+                and not identity_stable
+                and _name_identity(incoming_name) != _name_identity(previous_name)
                 and (
                     incoming_state in ACTIVE_STATES
                     or report.get("command") == "project_file"

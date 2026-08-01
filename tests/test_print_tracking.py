@@ -228,6 +228,48 @@ def test_replacement_job_does_not_inherit_previous_job_snapshot_fields():
     assert second["layer"] == {"current": 0, "total": 20}
 
 
+def test_subtask_name_and_gcode_file_spellings_are_one_job():
+    broker = PrintEventBroker("S1")
+    first = broker.update({
+        "task_id": "10",
+        "subtask_id": "10",
+        "gcode_file": "gear.3mf",
+        "gcode_state": "RUNNING",
+        "layer_num": 40,
+        "total_layer_num": 191,
+        "ams_mapping": [2],
+    })
+
+    # Same job, name now spelled without the extension via subtask_name.
+    second = broker.update({
+        "task_id": "10",
+        "subtask_id": "10",
+        "subtask_name": "gear",
+        "gcode_state": "RUNNING",
+    })
+
+    assert second["job_key"] == first["job_key"]
+    assert second["layer"] == {"current": 40, "total": 191}
+    assert second["ams_mapping"] == [2]
+
+
+def test_name_change_without_identity_fields_is_still_a_boundary():
+    broker = PrintEventBroker("S1")
+    first = broker.update({
+        "gcode_file": "first.3mf",
+        "gcode_state": "RUNNING",
+        "layer_num": 8,
+    })
+
+    second = broker.update({
+        "gcode_file": "second.3mf",
+        "gcode_state": "RUNNING",
+    })
+
+    assert second["job_key"] != first["job_key"]
+    assert second["layer"]["current"] == 0
+
+
 @pytest.mark.asyncio
 async def test_lan_and_cloud_feed_identical_snapshot_schema(monkeypatch):
     report = {

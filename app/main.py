@@ -933,6 +933,15 @@ async def current_job_file(printer_id: str, job_key: str = Query(...)):
     else:
         raise HTTPException(status_code=404, detail="Active 3MF is unavailable")
 
+    # A still-uploading printer file or a cloud error page arrives as a 200
+    # from the origin; without this check the caller gets garbage labelled
+    # application/zip and has to guess whether retrying will help.
+    if not data.startswith(b"PK"):
+        raise HTTPException(
+            status_code=502,
+            detail="Active source did not return 3MF data",
+        )
+
     filename = source.filename or "current-job.3mf"
     return Response(
         content=data,
