@@ -79,4 +79,49 @@ describe('CloudSection', () => {
       expect(pasteCloudLogin).toHaveBeenCalledWith('http://localhost:13618/?ticket=tk_abc'),
     );
   });
+
+  test('offers a fresh sign-in when Bambu rejects the saved session', async () => {
+    vi.mocked(getCapabilities).mockResolvedValue({
+      push: false, live_activities: false, cloud: true, version: '1',
+    });
+    vi.mocked(getCloudStatus).mockResolvedValue({
+      signed_in: true,
+      region: 'US',
+      profile: { name: 'Alice', account: 'a@b', avatar: '', uid: '42' },
+      session_error: 'Bambu Cloud rejected the saved session. Sign in again to reconnect.',
+    });
+    vi.mocked(pasteCloudLogin).mockResolvedValue({
+      profile: { name: 'Alice', account: 'a@b', avatar: '', uid: '42' },
+      connected: true,
+    });
+    renderSection();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/rejected the saved session/i);
+    expect(screen.getByRole('button', { name: /sign in again/i })).toBeInTheDocument();
+    await userEvent.type(
+      screen.getByPlaceholderText(/localhost:13618/i),
+      'http://localhost:13618/?ticket=tk_new',
+    );
+    await userEvent.click(screen.getByRole('button', { name: /complete sign-in/i }));
+    await waitFor(() =>
+      expect(pasteCloudLogin).toHaveBeenCalledWith('http://localhost:13618/?ticket=tk_new'),
+    );
+  });
+
+  test('hides the sign-in form while the session is healthy', async () => {
+    vi.mocked(getCapabilities).mockResolvedValue({
+      push: false, live_activities: false, cloud: true, version: '1',
+    });
+    vi.mocked(getCloudStatus).mockResolvedValue({
+      signed_in: true,
+      region: 'US',
+      profile: { name: 'Alice', account: 'a@b', avatar: '', uid: '42' },
+      session_error: null,
+    });
+    renderSection();
+
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/localhost:13618/i)).not.toBeInTheDocument();
+  });
 });

@@ -59,10 +59,12 @@ async def get_status(request: Request) -> dict:
     if profile is None and signed_in:
         profile = load_profile(_profile_cache_path())
         request.app.state.cloud_profile = profile
+    session_error = getattr(request.app.state, "cloud_session_error", None)
     return {
         "signed_in": signed_in,
         "profile": profile.to_dict() if profile else None,
         "region": settings.bambu_cloud_region,
+        "session_error": session_error if signed_in else None,
     }
 
 
@@ -91,6 +93,9 @@ async def post_paste(request: Request, body: PasteBody) -> dict:
     cached = CloudProfile.from_api(profile)
     save_profile(_profile_cache_path(), cached)
     request.app.state.cloud_profile = cached
+    # A fresh login supersedes the rejected one; connect/discovery below
+    # re-flag it if Bambu still refuses the session.
+    request.app.state.cloud_session_error = None
 
     # Login succeeded — connect the cloud MQTT relay and subscribe printers so
     # status starts flowing. A connect failure doesn't invalidate the login;
@@ -124,4 +129,5 @@ async def post_logout(request: Request) -> dict:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     clear_profile(_profile_cache_path())
     request.app.state.cloud_profile = None
+    request.app.state.cloud_session_error = None
     return {"ok": True}

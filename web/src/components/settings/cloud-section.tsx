@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Cloud, ExternalLink, LogOut } from 'lucide-react';
+import { AlertTriangle, Cloud, ExternalLink, LogOut } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -45,8 +45,10 @@ export function CloudSection() {
 
   const paste = useMutation({
     mutationFn: () => pasteCloudLogin(pasteValue.trim()),
-    onSuccess: ({ profile }) => {
-      toast.success(`Signed in as ${profile.name || profile.account || 'your account'}`);
+    onSuccess: ({ profile, connected }) => {
+      const who = profile.name || profile.account || 'your account';
+      if (connected) toast.success(`Signed in as ${who}`);
+      else toast.warning(`Signed in as ${who}, but the cloud connection failed`);
       setPasteValue('');
       invalidate();
     },
@@ -86,14 +88,31 @@ export function CloudSection() {
         ) : statusQuery.isLoading ? (
           <Skeleton className="h-14 rounded-2xl" />
         ) : statusQuery.data?.signed_in ? (
-          <SignedIn
-            name={statusQuery.data.profile?.name || statusQuery.data.profile?.account || 'Signed in to Bambu Cloud'}
-            account={statusQuery.data.profile?.account ?? ''}
-            avatar={statusQuery.data.profile?.avatar ?? ''}
-            region={statusQuery.data.region}
-            onSignOut={() => signOut.mutate()}
-            signingOut={signOut.isPending}
-          />
+          <>
+            <SignedIn
+              name={statusQuery.data.profile?.name || statusQuery.data.profile?.account || 'Signed in to Bambu Cloud'}
+              account={statusQuery.data.profile?.account ?? ''}
+              avatar={statusQuery.data.profile?.avatar ?? ''}
+              region={statusQuery.data.region}
+              onSignOut={() => signOut.mutate()}
+              signingOut={signOut.isPending}
+            />
+            {statusQuery.data.session_error ? (
+              <>
+                <SessionRejected message={statusQuery.data.session_error} />
+                <SignIn
+                  intro="Sign in again to get a fresh session — your printers reconnect as soon as it completes."
+                  openLabel="Sign in again"
+                  value={pasteValue}
+                  onChange={setPasteValue}
+                  onOpen={() => openSignIn.mutate()}
+                  opening={openSignIn.isPending}
+                  onPaste={() => paste.mutate()}
+                  pasting={paste.isPending}
+                />
+              </>
+            ) : null}
+          </>
         ) : (
           <SignIn
             value={pasteValue}
@@ -148,7 +167,24 @@ function SignedIn(props: {
   );
 }
 
+function SessionRejected({ message }: { message: string }) {
+  return (
+    <div
+      role="alert"
+      className="flex items-start gap-2 rounded-xl bg-surface-1 px-3 py-2 text-sm text-text-1"
+    >
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warm" aria-hidden />
+      <p>
+        <span className="font-semibold text-text-0">Printers disconnected.</span>{' '}
+        {message}
+      </p>
+    </div>
+  );
+}
+
 function SignIn(props: {
+  intro?: string;
+  openLabel?: string;
   value: string;
   onChange: (v: string) => void;
   onOpen: () => void;
@@ -159,7 +195,7 @@ function SignIn(props: {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-text-1">
-        Sign in with your Bambu account to control cloud-connected printers.
+        {props.intro ?? 'Sign in with your Bambu account to control cloud-connected printers.'}
       </p>
       <ol className="flex flex-col gap-2 text-sm text-text-1">
         <li className="flex items-center gap-2">
@@ -170,7 +206,7 @@ function SignIn(props: {
             disabled={props.opening}
             className="rounded-full h-8 px-3 bg-surface-1 hover:bg-surface-2 text-accent border-0 text-[13px] font-semibold"
           >
-            <ExternalLink className="w-3.5 h-3.5 mr-1" aria-hidden /> Open Bambu sign-in
+            <ExternalLink className="w-3.5 h-3.5 mr-1" aria-hidden /> {props.openLabel ?? 'Open Bambu sign-in'}
           </Button>
         </li>
         <li className="text-text-2 pl-5 text-xs">

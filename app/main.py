@@ -29,7 +29,7 @@ from app.cloud.cloud_printer import CloudPrinterClient, PRINT_IN_FLIGHT_CODE
 from app.cloud.event_pump import EventPump
 from app.cloud.plugin_downloader import PluginDownloader
 from app.cloud.plugin_host import PluginHost, PluginHostError
-from app.cloud.session import establish_session
+from app.cloud.session import CLOUD_SESSION_REJECTED, establish_session
 from app.cloud.submit import run_cloud_print
 from app.config import PrinterConfig, settings
 from app import config_store, ftp_client
@@ -415,11 +415,22 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
     # Connect the plugin's cloud MQTT relay and subscribe the printer
     # serials. Exposed on app.state so the login route can re-run it
     # the moment a session appears (without it no event ever arrives).
+    keepalive: dict[str, asyncio.Task] = {}
+
     async def _cloud_connect() -> bool:
         # config_store is the durable source of truth, so this picks
         # up printers added via the settings CRUD since startup.
         serials = [c.serial for c in config_store.load()]
-        return await establish_session(host=host, dev_ids=serials)
+        ok = await establish_session(host=host, dev_ids=serials)
+        app.state.cloud_session_error = None if ok else CLOUD_SESSION_REJECTED
+        # Start the keepalive on the first successful connect — at startup or
+        # after a re-login — so cloud writes work without a gateway restart.
+        if ok and "task" not in keepalive:
+            keepalive["task"] = asyncio.create_task(
+                _cloud_keepalive(), name="bambu-cloud-keepalive"
+            )
+            stack.push_async_callback(_cancel_task, keepalive["task"])
+        return ok
 
     app.state.cloud_connect = _cloud_connect
 
@@ -476,10 +487,6 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
         )
         if await _cloud_connect():
             logger.info("Bambu cloud session established")
-            ka_task = asyncio.create_task(
-                _cloud_keepalive(), name="bambu-cloud-keepalive"
-            )
-            stack.push_async_callback(_cancel_task, ka_task)
         else:
             logger.warning(
                 "Bambu cloud session could not be established; "
@@ -516,6 +523,9 @@ async def lifespan(app: FastAPI):
         app.state.cloud_profile = None
         app.state.cloud_discover = None
         app.state.cloud_ssdp = None
+        # Set when Bambu rejects the saved login (connect_server failure or an
+        # HTTP 401); the settings screen uses it to offer a fresh sign-in.
+        app.state.cloud_session_error = None
         cloud_active = False
         if settings.bambu_cloud_enabled:
             try:
@@ -2828,6 +2838,8 @@ async def _discover_cloud_printers() -> int:
         devices = await fetch_user_devices(host=host)
     except (PluginHostError, Exception) as exc:  # best-effort
         logger.warning("cloud device discovery failed: %s", exc)
+        if "http_code=401" in str(exc):
+            app.state.cloud_session_error = CLOUD_SESSION_REJECTED
         return 0
 
     # Map each printer's bare product name (e.g. "A1 mini") to a slicer

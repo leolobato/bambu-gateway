@@ -486,6 +486,8 @@ export interface CloudStatus {
   signed_in: boolean;
   profile: CloudProfile | null;
   region: string;
+  /** Set when the saved login exists but Bambu refuses it (expired/revoked). */
+  session_error?: string | null;
 }
 
 // --- Slice jobs ---

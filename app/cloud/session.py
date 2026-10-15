@@ -28,6 +28,13 @@ _GET_VERSION = {"info": {"sequence_id": "0", "command": "get_version"}}
 
 _SUBSCRIBE_MODULE = "app"
 
+# Reported via /api/cloud/auth/status when the plugin still holds a login but
+# Bambu refuses it (connect_server fails, or the API answers HTTP 401) — the
+# token expired or was revoked by a sign-in elsewhere.
+CLOUD_SESSION_REJECTED = (
+    "Bambu Cloud rejected the saved session. Sign in again to reconnect."
+)
+
 
 async def establish_session(
     *, host: PluginHost, dev_ids: Sequence[str],

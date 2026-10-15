@@ -126,3 +126,25 @@ def test_status_signed_in_without_cached_profile(cloud_app):
     assert body["signed_in"] is True
     assert body["profile"] is None
     assert body["region"] == "US"
+
+
+def test_status_has_no_session_error_when_connected(cloud_app):
+    resp = cloud_app.get("/api/cloud/auth/status")
+    assert resp.json()["session_error"] is None
+
+
+def test_status_flags_rejected_session_until_logout(cloud_app_factory):
+    """A saved login Bambu refuses (connect_server rc=-2) is reported so the
+    settings screen can offer a fresh sign-in; signing out clears it."""
+    with cloud_app_factory(
+        fake_env={
+            "FAKE_HOST_USER_LOGGED_IN": "1",
+            "FAKE_HOST_CONNECT_SERVER_RC": "-2",
+        },
+    ) as client:
+        body = client.get("/api/cloud/auth/status").json()
+        assert body["signed_in"] is True
+        assert "Sign in again" in body["session_error"]
+
+        client.post("/api/cloud/auth/logout")
+        assert client.get("/api/cloud/auth/status").json()["session_error"] is None
