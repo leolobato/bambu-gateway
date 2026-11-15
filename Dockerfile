@@ -12,7 +12,7 @@ RUN apt-get update && \
 
 COPY tools/bambu_cloud_host /src
 RUN cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release && \
-    cmake --build /build --parallel
+    cmake --build /build --parallel 2
 
 
 # --- Stage 2: Build the React frontend ---
