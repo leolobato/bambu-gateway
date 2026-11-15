@@ -1761,6 +1761,7 @@ def _build_ams_tray(raw: dict, filaments_by_id: dict) -> AMSTray:
     """Build an AMSTray from a raw dict, matching filament profile if possible."""
     raw_with_defaults = dict(raw)
     tray_info_idx = str(raw_with_defaults.pop("tray_info_idx", "")).strip()
+    raw_with_defaults["remaining_grams"] = _usable_remaining_grams(raw)
     matched = None
     if tray_info_idx:
         f = filaments_by_id.get(_normalize_filament_id(tray_info_idx))
@@ -1775,6 +1776,24 @@ def _build_ams_tray(raw: dict, filaments_by_id: dict) -> AMSTray:
         filament_id=tray_info_idx,
         matched_filament=matched,
     )
+
+
+def _usable_remaining_grams(raw: dict) -> int | None:
+    # Like Bambu Studio, treat a reported 0 g as unavailable without falling
+    # back to a potentially older percentage estimate.
+    reported_grams = raw.get("remain_g")
+    if type(reported_grams) is int and reported_grams >= 0:
+        return reported_grams or None
+
+    percent = raw.get("remain", -1)
+    if type(percent) is not int or not 0 < percent <= 100:
+        return None
+    try:
+        full_weight = int(raw.get("tray_weight", ""))
+    except (TypeError, ValueError):
+        return None
+    estimated_grams = full_weight * percent // 100
+    return estimated_grams if estimated_grams > 0 else None
 
 
 @app.post("/api/filament-matches", response_model=FilamentMatchResponse)

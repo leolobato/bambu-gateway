@@ -227,6 +227,7 @@ class AMSTray(BaseModel):
     bed_temp: str = ""
     remain: int = -1
     tray_weight: str = ""
+    remaining_grams: int | None = None
     matched_filament: SlicerFilament | None = None
 
 
