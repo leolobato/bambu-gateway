@@ -133,3 +133,33 @@ async def test_cloud_printer_client_callback_errors_are_swallowed():
         "payload": json.dumps({"print": {"gcode_state": "RUNNING"}}),
     })
     assert client.get_status().online is True
+
+
+async def test_cloud_printer_reads_offline_when_reports_go_stale(monkeypatch):
+    """The relay never sends an "offline" event: if reports stop (dead host,
+    dropped subscription) the client must stop claiming online, and expose
+    when it last heard from the printer, instead of serving a frozen cache."""
+    import app.cloud.cloud_printer as cp
+
+    clock = [1000.0]
+    monkeypatch.setattr(cp.time, "monotonic", lambda: clock[0])
+    monkeypatch.setenv("BAMBU_CLOUD_STALE_SECS", "60")
+    client = CloudPrinterClient(dev_id="DEV1")
+    await client.handle_event({
+        "kind": "OnMessage", "dev_id": "DEV1",
+        "payload": json.dumps({"print": {"gcode_state": "IDLE"}}),
+    })
+    status = client.get_status()
+    assert status.online is True
+    assert status.last_report_at is not None
+
+    clock[0] += 61
+    stale = client.get_status()
+    assert stale.online is False
+    assert stale.last_report_at == status.last_report_at
+
+    await client.handle_event({
+        "kind": "OnMessage", "dev_id": "DEV1",
+        "payload": json.dumps({"print": {"gcode_state": "IDLE"}}),
+    })
+    assert client.get_status().online is True

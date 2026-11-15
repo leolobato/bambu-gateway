@@ -70,3 +70,33 @@ def test_light_route_dispatches_to_cloud(cloud_app_factory):
         payload = json.loads(sends[-1]["params"]["payload"])
         assert payload["system"]["command"] == "ledctrl"
         assert payload["system"]["led_mode"] == "on"
+
+
+def test_supervisor_restarts_dead_plugin_host(cloud_app_factory, monkeypatch):
+    """A host process that dies mid-session must be respawned and re-booted
+    (init + re-subscribe) without a gateway restart — otherwise the cached
+    AMS/status silently freezes while the printer still reads online."""
+    import time
+
+    monkeypatch.setenv("BAMBU_CLOUD_SUPERVISOR_SECS", "0.1")
+    with cloud_app_factory(
+        printers=[{"serial": "DEVS", "ip": "10.0.0.5"}],
+        fake_env={"FAKE_HOST_USER_LOGGED_IN": "1"},
+    ) as client:
+        host = client.app.state.cloud_host
+        assert host.is_healthy
+        before = [r["method"] for r in _requests(client.rpc_record_file)]
+        assert before.count("init_plugin") == 1
+        host._proc.kill()
+
+        deadline = time.monotonic() + 10
+        methods: list[str] = []
+        while time.monotonic() < deadline:
+            methods = [r["method"] for r in _requests(client.rpc_record_file)]
+            if methods.count("add_subscribe") >= 2 and host.is_healthy:
+                break
+            time.sleep(0.05)
+        assert methods.count("init_plugin") == 2
+        assert methods.count("connect_server") == 2
+        assert methods.count("add_subscribe") >= 2
+        assert host.is_healthy

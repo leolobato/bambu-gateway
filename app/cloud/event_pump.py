@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Awaitable, Callable, Mapping
 
 from app.cloud.plugin_host import PluginHost, PluginHostError
@@ -55,14 +56,33 @@ class EventPump:
         self._task = None
 
     async def _run(self) -> None:
+        failures = 0
+        last_logged = 0.0
         while not self._stop.is_set():
             try:
                 result = await self._host.call("bridge.poll_events", {})
                 events: list[dict] = result.get("events", []) or []
             except PluginHostError as exc:
-                logger.warning("poll_events failed: %s; will retry", exc)
+                # Log the start of an outage once, not 4x/s: the per-poll
+                # warning flood rotated the original crash out of the journal.
+                # Recovering a dead host is the cloud supervisor's job.
+                # (Production runs at DEBUG, so demoting isn't enough — only
+                # a once-a-minute reminder while the outage lasts.)
+                now = time.monotonic()
+                if failures == 0 or now - last_logged >= 60.0:
+                    logger.warning(
+                        "poll_events failed (%d so far): %s; will retry",
+                        failures + 1, exc,
+                    )
+                    last_logged = now
+                failures += 1
                 await asyncio.sleep(self._idle)
                 continue
+            if failures:
+                logger.info(
+                    "poll_events recovered after %d failed polls", failures
+                )
+                failures = 0
             for ev in events:
                 kind = ev.get("kind")
                 handler = self._handlers.get(kind)

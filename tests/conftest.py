@@ -107,8 +107,12 @@ def cloud_app_factory(monkeypatch, tmp_path):
                 if real_host_holder:
                     await real_host_holder[0].stop()
 
-            async def call(self, method, params):
-                return await real_host_holder[0].call(method, params)
+            async def call(self, method, params, **kwargs):
+                return await real_host_holder[0].call(method, params, **kwargs)
+
+            def __getattr__(self, name):
+                # is_healthy / restart / _proc etc. — used by the supervisor.
+                return getattr(real_host_holder[0], name)
 
         with (
             patch(

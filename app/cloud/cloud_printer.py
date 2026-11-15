@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 from typing import TYPE_CHECKING, AsyncIterator
@@ -23,6 +24,18 @@ logger = logging.getLogger("bambu.cloud.printer")
 # attempted while one is already in flight for this printer. The HTTP layer maps
 # it to 409 Conflict so a double-click doesn't surface as a 500.
 PRINT_IN_FLIGHT_CODE = -1009
+
+
+
+def cloud_stale_after_secs() -> float:
+    """Seconds without a report before a cloud printer reads as offline.
+
+    Defaults to 4x the keepalive pushall interval (30s → 120s).
+    """
+    override = os.environ.get("BAMBU_CLOUD_STALE_SECS")
+    if override:
+        return float(override)
+    return 4 * float(os.environ.get("BAMBU_CLOUD_PUSHALL_SECS", "30"))
 
 
 class CloudPrinterClient:
@@ -65,6 +78,8 @@ class CloudPrinterClient:
         # Deadline below which reported spd_lvl is ignored in favour of an
         # optimistically-applied level (see apply_optimistic_speed).
         self._speed_level_hold_until = 0.0
+        # time.monotonic() of the last applied report; see get_status.
+        self._last_report_monotonic: float | None = None
         self._lock = threading.Lock()
         # Single in-flight print job's progress channel. None = no active job.
         self._progress: asyncio.Queue | None = None
@@ -95,7 +110,17 @@ class CloudPrinterClient:
 
     def get_status(self) -> PrinterStatus:
         with self._lock:
-            return self._status.model_copy()
+            status = self._status.model_copy()
+            last = self._last_report_monotonic
+        # No event ever arrives to flip a cloud printer offline, so derive it
+        # from report freshness: the keepalive pulls a full pushall every
+        # BAMBU_CLOUD_PUSHALL_SECS, so a reachable printer is never quiet this
+        # long. Without it a dead relay served frozen AMS data as "online".
+        if status.online and (
+            last is None or time.monotonic() - last > cloud_stale_after_secs()
+        ):
+            status.online = False
+        return status
 
     def set_name(self, name: str) -> None:
         with self._lock:
@@ -210,6 +235,7 @@ class CloudPrinterClient:
             # Receiving cloud reports is this transport's notion of liveness —
             # the UI hides all controls for printers with online == False.
             self._status.online = True
+            self._last_report_monotonic = time.monotonic()
             self._gcode_state = apply_print_payload(
                 self._status,
                 print_info,

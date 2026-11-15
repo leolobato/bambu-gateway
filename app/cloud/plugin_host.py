@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import signal
 from contextlib import suppress
 from typing import Any, Mapping
 
@@ -60,8 +62,6 @@ class PluginHost:
         await self.stop()
 
     async def start(self) -> None:
-        import os
-
         full_env = os.environ.copy()
         if self._env:
             full_env.update(self._env)
@@ -75,6 +75,10 @@ class PluginHost:
             # push_all payloads on a single JSONL line; asyncio's default
             # 64 KiB readline limit would kill the reader.
             limit=16 * 1024 * 1024,
+            # Own process group: the Bambu plugin forks a helper child, which
+            # stop() must take down too, so a restart() doesn't leave an
+            # orphan holding a second plugin/cloud connection.
+            start_new_session=True,
         )
         self._reader_task = asyncio.create_task(
             self._read_loop(), name="bambu-cloud-host-reader"
@@ -82,6 +86,32 @@ class PluginHost:
         asyncio.create_task(
             self._drain_stderr(), name="bambu-cloud-host-stderr"
         )
+
+    @property
+    def is_healthy(self) -> bool:
+        """True while the subprocess runs AND its stdout is being read.
+
+        Either one failing makes every ``call()`` fail, and nothing else
+        notices — callers like the EventPump just retry forever.
+        """
+        return (
+            not self._closed
+            and self._proc is not None
+            and self._proc.returncode is None
+            and self._reader_task is not None
+            and not self._reader_task.done()
+        )
+
+    async def restart(self) -> None:
+        """Replace a dead/wedged subprocess with a fresh one, in place.
+
+        The object identity is kept on purpose: the EventPump, cloud printer
+        clients and keepalive all hold this instance. The new process has no
+        plugin state, so the caller must re-run the boot sequence.
+        """
+        await self.stop()
+        self._closed = False
+        await self.start()
 
     async def stop(self) -> None:
         self._closed = True
@@ -95,6 +125,10 @@ class PluginHost:
                 logger.warning("host did not exit; killing")
                 self._proc.kill()
                 await self._proc.wait()
+        if self._proc is not None:
+            # Reap helper children left in the host's process group.
+            with suppress(ProcessLookupError, PermissionError):
+                os.killpg(self._proc.pid, signal.SIGKILL)
         if self._reader_task:
             self._reader_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -146,41 +180,38 @@ class PluginHost:
         try:
             return await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError:
-            self._pending.pop(rid, None)
             raise PluginHostError(
                 f"RPC {method} timed out after {timeout:g}s"
             ) from None
+        finally:
+            # Covers timeout AND caller cancellation: a late reply for this id
+            # then finds no waiter instead of a cancelled future.
+            self._pending.pop(rid, None)
 
     async def _read_loop(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
+        reason = "stdout closed (EOF)"
         try:
             async for raw in self._proc.stdout:
                 if not raw:
                     break
+                # One bad frame must never end the loop: a dead reader with a
+                # live process freezes every cloud report until a restart.
                 try:
-                    msg = json.loads(raw.decode("utf-8").rstrip("\n"))
-                except json.JSONDecodeError as exc:
-                    logger.error("malformed frame from host: %s", exc)
-                    continue
-                rid = msg.get("id")
-                fut = self._pending.pop(rid, None) if rid is not None else None
-                if fut is None:
-                    logger.warning("unmatched response id=%r", rid)
-                    continue
-                if "error" in msg:
-                    err = msg["error"]
-                    fut.set_exception(
-                        PluginHostError(
-                            err.get("message", "unknown host error")
-                        )
+                    self._dispatch_frame(raw)
+                except Exception:
+                    logger.exception(
+                        "dropping unprocessable frame from host: %r", raw[:200]
                     )
-                else:
-                    fut.set_result(msg.get("result"))
         except asyncio.CancelledError:
+            reason = "cancelled"
             raise
         except Exception as exc:
+            reason = f"crashed: {exc!r}"
             logger.exception("host read loop crashed: %s", exc)
         finally:
+            if not self._closed:
+                logger.error("host reader stopped: %s", reason)
             # Subprocess closed stdout — fail any remaining waiters.
             for fut in self._pending.values():
                 if not fut.done():
@@ -188,6 +219,33 @@ class PluginHost:
                         PluginHostError("host stdout closed")
                     )
             self._pending.clear()
+
+    def _dispatch_frame(self, raw: bytes) -> None:
+        try:
+            msg = json.loads(raw.decode("utf-8").rstrip("\n"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            logger.error("malformed frame from host: %s", exc)
+            return
+        if not isinstance(msg, dict):
+            logger.error("non-object frame from host: %r", raw[:200])
+            return
+        rid = msg.get("id")
+        fut = self._pending.pop(rid, None) if rid is not None else None
+        if fut is None:
+            logger.warning("unmatched response id=%r", rid)
+            return
+        if fut.done():
+            # The caller gave up (timeout/cancel) before the reply landed.
+            return
+        if "error" in msg:
+            err = msg["error"]
+            message = (
+                err.get("message", "unknown host error")
+                if isinstance(err, dict) else str(err)
+            )
+            fut.set_exception(PluginHostError(message))
+        else:
+            fut.set_result(msg.get("result"))
 
     async def _drain_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None

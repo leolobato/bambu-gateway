@@ -147,6 +147,11 @@ exactly like the printer ignoring the command.
 - `GET /api/ams` — AMS tray info with filament matching (units include
   `hw_version`, `ams_type`, `supports_drying`, `max_drying_temp`,
   `dry_time_remaining`)
+- Printer status and `/api/ams` carry `last_report_at` (UTC, last applied
+  printer report) so consumers can spot a frozen cache. Cloud printers read
+  `online: false` once no report arrived for 4× `BAMBU_CLOUD_PUSHALL_SECS`
+  (override: `BAMBU_CLOUD_STALE_SECS`). A supervisor respawns and re-boots the
+  cloud plugin host if its process or stdout reader dies.
 - `POST /api/parse-3mf` — parse 3MF metadata without printing
 - `POST /api/filament-matches` — match project filaments to AMS trays
 - `GET /api/slicer/{machines,processes,filaments,plate-types}` — proxy slicer profiles

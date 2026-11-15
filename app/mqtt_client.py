@@ -10,6 +10,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import paho.mqtt.client as mqtt
 
@@ -282,6 +283,7 @@ def apply_print_payload(
     .. note:: Caller is responsible for holding any necessary lock while
         calling this function.  The function does NOT acquire any locks.
     """
+    status.last_report_at = datetime.now(timezone.utc)
     new_gcode_state = print_info.get("gcode_state")
     if new_gcode_state is not None:
         gcode_state = new_gcode_state

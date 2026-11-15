@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel
@@ -134,6 +135,9 @@ class PrinterStatus(BaseModel):
     machine_model: str = ""
     default_plate_type: str = ""
     online: bool = False
+    # When the gateway last applied a report from this printer (UTC). Lets
+    # consumers tell a fresh snapshot from a cache nothing is updating.
+    last_report_at: datetime | None = None
     state: PrinterState = PrinterState.offline
     stg_cur: int = -1
     stage_name: str | None = None
@@ -247,6 +251,8 @@ class AMSResponse(BaseModel):
     vt_tray: AMSTray | None = None
     auto_refill_enabled: bool | None = None
     auto_refill_supported: bool | None = None
+    # Age marker for the tray data — see PrinterStatus.last_report_at.
+    last_report_at: datetime | None = None
 
 
 # --- Filament matching models ---

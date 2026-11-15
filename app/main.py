@@ -275,37 +275,43 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
         },
     )
     await stack.enter_async_context(host)
-    boot = await host.call("init_plugin", {})
-    if boot.get("bootstrap_rc", -1) != 0:
-        raise RuntimeError(f"Bambu plugin bootstrap failed: {boot}")
+
+    async def _boot_host() -> None:
+        # Plugin init sequence for a freshly spawned host process — run at
+        # startup and again by the supervisor after a host restart.
+        boot = await host.call("init_plugin", {})
+        if boot.get("bootstrap_rc", -1) != 0:
+            raise RuntimeError(f"Bambu plugin bootstrap failed: {boot}")
+        logger.info("Bambu plugin host ready")
+
+        # Brand the plugin agent as a BambuStudio/slicer client BEFORE connecting
+        # the cloud session. OrcaSlicer issues set_extra_http_header once at agent
+        # init (trace REQ #11, before connect_server); an unbranded session is
+        # treated as read-only and the relay rejects "print"-namespace writes with
+        # -2 while reads still succeed. The X-BBL-Device-ID must be stable.
+        try:
+            from app.cloud import get_or_create_device_id, plugin_agent_headers
+            device_id = get_or_create_device_id(
+                settings.bambu_cloud_plugin_dir / "state"
+            )
+            rc = (await host.call("set_extra_http_header", {
+                "headers": plugin_agent_headers(device_id),
+            })).get("rc", -1)
+            logger.info("Branded plugin agent (set_extra_http_header rc=%s)", rc)
+        except Exception:
+            logger.exception("set_extra_http_header failed")
+
+        # Kick off the plugin's own LAN discovery so it builds the local-device
+        # registry that connect_printer needs (control writes go over the plugin's
+        # authenticated LOCAL connection — the cloud relay rejects them). Mirrors
+        # OrcaSlicer calling start_discovery(true, false) right after login.
+        try:
+            await host.call("start_discovery", {"start": True, "sending": False})
+        except Exception:
+            logger.exception("start_discovery failed")
+
+    await _boot_host()
     app.state.cloud_host = host
-    logger.info("Bambu plugin host ready")
-
-    # Brand the plugin agent as a BambuStudio/slicer client BEFORE connecting
-    # the cloud session. OrcaSlicer issues set_extra_http_header once at agent
-    # init (trace REQ #11, before connect_server); an unbranded session is
-    # treated as read-only and the relay rejects "print"-namespace writes with
-    # -2 while reads still succeed. The X-BBL-Device-ID must be stable.
-    try:
-        from app.cloud import get_or_create_device_id, plugin_agent_headers
-        device_id = get_or_create_device_id(
-            settings.bambu_cloud_plugin_dir / "state"
-        )
-        rc = (await host.call("set_extra_http_header", {
-            "headers": plugin_agent_headers(device_id),
-        })).get("rc", -1)
-        logger.info("Branded plugin agent (set_extra_http_header rc=%s)", rc)
-    except Exception:
-        logger.exception("set_extra_http_header failed")
-
-    # Kick off the plugin's own LAN discovery so it builds the local-device
-    # registry that connect_printer needs (control writes go over the plugin's
-    # authenticated LOCAL connection — the cloud relay rejects them). Mirrors
-    # OrcaSlicer calling start_discovery(true, false) right after login.
-    try:
-        await host.call("start_discovery", {"start": True, "sending": False})
-    except Exception:
-        logger.exception("start_discovery failed")
 
     # One CloudPrinterClient per configured printer, keyed by serial. SSDP can
     # later promote a printer to a read-write LAN client; sync_printers then
@@ -494,6 +500,50 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
             )
     else:
         logger.info("Bambu cloud: no user signed in — waiting for login")
+
+    async def _cloud_supervisor() -> None:
+        # Restart the plugin host when it dies or its stdout reader stops.
+        # Either leaves every call() failing while nothing else notices: the
+        # EventPump just retries, the cached AMS/status freezes and the
+        # printer still reads online — that went unnoticed for hours in
+        # production until a container restart. Only host health triggers a
+        # restart; stale printer reports don't (a powered-off printer looks
+        # the same and would cause a restart loop).
+        check_secs = float(_os.environ.get("BAMBU_CLOUD_SUPERVISOR_SECS", "5"))
+        backoff = 5.0
+        while True:
+            await asyncio.sleep(check_secs)
+            if host.is_healthy:
+                continue
+            logger.error("Bambu plugin host is down — restarting it")
+            try:
+                await host.restart()
+                await _boot_host()
+                if printer_service is not None:
+                    printer_service.reset_cloud_link_state()
+                pushall_debounce.clear()
+                if not skip_cloud_session and await cloud_auth.is_signed_in(
+                    host=host
+                ):
+                    if await _cloud_connect():
+                        logger.info("Bambu cloud session re-established")
+                    else:
+                        logger.warning(
+                            "Bambu cloud session could not be re-established"
+                        )
+                logger.info("Bambu plugin host restarted")
+                backoff = 5.0
+            except Exception:
+                logger.exception(
+                    "Bambu plugin host restart failed; retrying in %gs", backoff
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 300.0)
+
+    supervisor = asyncio.create_task(
+        _cloud_supervisor(), name="bambu-cloud-supervisor"
+    )
+    stack.push_async_callback(_cancel_task, supervisor)
     return True
 
 
@@ -1703,6 +1753,7 @@ async def get_ams(printer_id: str | None = Query(default=None)):
         auto_refill_supported=(
             status.ams_auto_refill_supported if status is not None else None
         ),
+        last_report_at=status.last_report_at if status is not None else None,
     )
 
 

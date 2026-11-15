@@ -18,6 +18,7 @@ from app.mqtt_client import (
     build_ams_filament_setting,
 )
 from app import ftp_client
+from app.cloud.plugin_host import PluginHostError
 from app.print_tracking import ACTIVE_STATES, PrintEventBroker
 
 # Avoid a circular import at module level — imported locally when needed.
@@ -768,6 +769,20 @@ class PrinterService:
         if waiter is not None and not waiter.done():
             waiter.set_result(status)
 
+    def reset_cloud_link_state(self) -> None:
+        """Forget every per-device plugin handshake after a host restart.
+
+        A fresh plugin process has no publish channel, device cert or LAN
+        link yet; the flags must wait for its own OnPrinterConnected /
+        device_cert_installed / OnLocalConnected events. The Event objects are
+        cleared rather than replaced so in-flight waiters keep waiting on them.
+        """
+        for ev in self._cloud_ready_events.values():
+            ev.clear()
+        for ev in self._security_ready.values():
+            ev.clear()
+        self._local_ready.clear()
+
     def mark_cloud_connected(self, dev_id: str) -> None:
         """Record an ``OnPrinterConnected`` event — the device's cloud publish
         channel just opened. Wakes any write waiting to publish."""
@@ -818,6 +833,12 @@ class PrinterService:
                 "install_device_cert",
                 {"dev_id": printer_id, "lan_only": False},
             )
+        except PluginHostError as exc:
+            # Called ~1Hz by the keepalive: a traceback per tick while the
+            # host is down flooded the journal and rotated the root cause out.
+            # (A dead host is logged by the EventPump and the supervisor.)
+            if getattr(host, "is_healthy", True):
+                logger.warning("install_device_cert(%s) failed: %s", printer_id, exc)
         except Exception:
             logger.exception("install_device_cert(%s) failed", printer_id)
 

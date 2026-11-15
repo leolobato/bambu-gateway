@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from collections import deque
 
 _PENDING_EVENTS: deque = deque()
@@ -159,6 +160,20 @@ def main() -> int:
             params = req.get("params", {})
             if method == os.environ.get("FAKE_HOST_HANG_METHOD"):
                 continue  # swallow the request — simulates a wedged host
+            # Test-only hooks, kept out of _dispatch (and out of the
+            # equality-check form the host contract test parses).
+            if method in ("_test_sleep",):
+                # Reply late, so a caller can give up (cancel/timeout) first.
+                time.sleep(float(params.get("seconds", 0.2)))
+                print(json.dumps({"id": rid, "result": params}), flush=True)
+                continue
+            if method in ("_test_raw_line",):
+                # Emit a raw (possibly non-UTF-8 / non-object) stdout line
+                # before the real reply — simulates a garbled frame.
+                sys.stdout.buffer.write(bytes.fromhex(params["hex"]) + b"\n")
+                sys.stdout.buffer.flush()
+                print(json.dumps({"id": rid, "result": {"ok": True}}), flush=True)
+                continue
             result = _dispatch(method, params)
             print(json.dumps({"id": rid, "result": result}), flush=True)
         except Exception as exc:
