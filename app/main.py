@@ -415,7 +415,7 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
     # Connect the plugin's cloud MQTT relay and subscribe the printer
     # serials. Exposed on app.state so the login route can re-run it
     # the moment a session appears (without it no event ever arrives).
-    keepalive: dict[str, asyncio.Task] = {}
+    cloud_maintenance: list[asyncio.Task] = []
 
     async def _cloud_connect() -> bool:
         # config_store is the durable source of truth, so this picks
@@ -423,13 +423,21 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
         serials = [c.serial for c in config_store.load()]
         ok = await establish_session(host=host, dev_ids=serials)
         app.state.cloud_session_error = None if ok else CLOUD_SESSION_REJECTED
-        # Start the keepalive on the first successful connect — at startup or
+        # Start maintenance on the first successful connect — at startup or
         # after a re-login — so cloud writes work without a gateway restart.
-        if ok and "task" not in keepalive:
-            keepalive["task"] = asyncio.create_task(
-                _cloud_keepalive(), name="bambu-cloud-keepalive"
+        if ok and not cloud_maintenance:
+            cloud_maintenance.extend(
+                (
+                    asyncio.create_task(
+                        _cloud_keepalive(), name="bambu-cloud-keepalive"
+                    ),
+                    asyncio.create_task(
+                        _cloud_refresh_status(), name="bambu-cloud-status-refresh"
+                    ),
+                )
             )
-            stack.push_async_callback(_cancel_task, keepalive["task"])
+            for task in cloud_maintenance:
+                stack.push_async_callback(_cancel_task, task)
         return ok
 
     app.state.cloud_connect = _cloud_connect
@@ -437,37 +445,31 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
     import os as _os
 
     async def _cloud_keepalive() -> None:
-        # Two cadences:
-        #  - Secure-control-channel heartbeat (every `interval`s): re-issue
-        #    install_device_cert. OrcaSlicer sends it ~1×/s for the whole
-        #    session (trace: 232 calls in 4.5 min); that steady cadence keeps
-        #    the per-device secure channel warm so a "print"-namespace write
-        #    lands on the first try. Without it the channel goes cold and writes
-        #    bounce with -2 (CONNECT_FAILED). (This is the REAL keepalive —
-        #    pushall is not; OrcaSlicer sends pushall only a couple of times.)
-        #  - Periodic pushall (every `pushall_secs`): pull a FULL status
-        #    snapshot so the cached AMS/temps self-heal. Incremental reports
-        #    can leave the cache partial (e.g. an AMS block with no unit list
-        #    during a filament change); a full pushall restores it. Kept
-        #    infrequent so it doesn't churn the channel.
-        from app.cloud.session import request_pushall
+        # OrcaSlicer keeps the secure control channel warm by reissuing
+        # install_device_cert about once per second. Without it, print writes
+        # can bounce with -2 (CONNECT_FAILED).
         interval = float(_os.environ.get("BAMBU_CLOUD_KEEPALIVE_SECS", "1"))
-        pushall_secs = float(_os.environ.get("BAMBU_CLOUD_PUSHALL_SECS", "30"))
-        pushall_every = max(1, round(pushall_secs / max(interval, 0.1)))
-        tick = 0
         while True:
             await asyncio.sleep(interval)
             if printer_service is None:
                 continue
-            tick += 1
-            do_pushall = tick % pushall_every == 0
+            for dev_id in list(cloud_clients.keys()):
+                await printer_service.request_device_cert(dev_id)
+
+    async def _cloud_refresh_status() -> None:
+        # Full snapshots repair the cache after partial reports. Keep their
+        # cadence independent of certificate RPC latency. Await each refresh
+        # so a slow host cannot build up overlapping periodic requests.
+        from app.cloud.session import request_pushall
+
+        interval = float(_os.environ.get("BAMBU_CLOUD_PUSHALL_SECS", "30"))
+        while True:
+            await asyncio.sleep(interval)
             for dev_id in list(cloud_clients.keys()):
                 try:
-                    await printer_service.request_device_cert(dev_id)
-                    if do_pushall:
-                        await request_pushall(host=host, dev_id=dev_id)
+                    await request_pushall(host=host, dev_id=dev_id)
                 except Exception:
-                    pass
+                    logger.exception("periodic full-status request failed")
 
     async def _cancel_task(t: asyncio.Task) -> None:
         t.cancel()
