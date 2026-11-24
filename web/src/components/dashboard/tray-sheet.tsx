@@ -76,7 +76,14 @@ function TraySheetBody({
     tray.matched_filament?.name ||
     tray.tray_sub_brands ||
     'Unknown filament';
-  const grams = tray.tray_weight?.trim();
+  const spoolGrams = Number.parseInt(tray.tray_weight ?? '', 10);
+  const remaining = tray.remaining_grams;
+  const amount =
+    remaining != null
+      ? `~${remaining} g left${spoolGrams > 0 ? ` of ${spoolGrams} g` : ''}`
+      : spoolGrams > 0
+        ? `${spoolGrams} g spool · remaining unknown`
+        : null;
 
   return (
     <>
@@ -99,10 +106,8 @@ function TraySheetBody({
         />
         <div className="flex flex-col gap-0.5 min-w-0">
           <div className="text-[15px] font-semibold text-white truncate">{filamentName}</div>
-          {grams && (
-            <div className="text-xs text-text-1 font-mono tabular-nums">
-              {grams} g loaded
-            </div>
+          {amount && (
+            <div className="text-xs text-text-1 font-mono tabular-nums">{amount}</div>
           )}
         </div>
       </section>

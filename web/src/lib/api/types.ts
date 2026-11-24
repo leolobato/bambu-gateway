@@ -93,7 +93,8 @@ export interface AMSTray {
   nozzle_temp_max: string;
   bed_temp: string;
   remain: number;                // -1 if unknown
-  tray_weight: string;
+  tray_weight: string;           // nominal full-spool grams, "" or "0" if unknown
+  remaining_grams: number | null; // usable estimate; null when the printer doesn't know
   matched_filament: SlicerFilament | null;
 }
 
