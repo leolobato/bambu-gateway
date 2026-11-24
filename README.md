@@ -216,6 +216,13 @@ exists.
 
 Interactive API docs are available at `/docs` (Swagger UI).
 
+`GET /api/ams` exposes `remaining_grams` for each tray and the external spool.
+It uses the positive gram estimate reported by firmware, or estimates grams
+from a valid remaining percentage and positive nominal filament weight when
+the gram estimate is absent. A reported gram value of zero or an unusable
+estimate results in `null`. Raw `remain`, `remain_g` (when reported), and
+`tray_weight` are still available for diagnostics.
+
 The tracking stream has the same schema for LAN MQTT and cloud-plugin
 printers. It includes stable job identity, state, current/total layer,
 G-code entry, AMS mapping, active tray, and explicit source availability.
