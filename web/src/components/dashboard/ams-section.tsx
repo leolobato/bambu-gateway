@@ -23,6 +23,20 @@ export function AmsSection({
 
   if (ams.units.length === 0 && !ams.vt_tray) return null;
 
+  // The sheet stays open across polls: re-resolve the selected slot against
+  // the latest response so its remaining grams and unit state don't go stale.
+  const liveSelection: TraySheetSelection | null = selection && {
+    ...selection,
+    tray: selection.unit
+      ? ams.trays.find(
+          (t) => t.ams_id === selection.tray.ams_id && t.tray_id === selection.tray.tray_id,
+        ) ?? selection.tray
+      : ams.vt_tray ?? selection.tray,
+    unit: selection.unit
+      ? ams.units.find((u) => u.id === selection.unit!.id) ?? selection.unit
+      : null,
+  };
+
   return (
     <>
       <section className="flex flex-col gap-4">
@@ -49,7 +63,7 @@ export function AmsSection({
       </section>
       <TraySheet
         printerId={printerId}
-        selection={selection}
+        selection={liveSelection}
         onClose={() => setSelection(null)}
       />
     </>

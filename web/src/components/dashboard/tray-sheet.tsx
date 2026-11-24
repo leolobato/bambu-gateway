@@ -76,7 +76,8 @@ function TraySheetBody({
     tray.matched_filament?.name ||
     tray.tray_sub_brands ||
     'Unknown filament';
-  const spoolGrams = Number.parseInt(tray.tray_weight ?? '', 10);
+  const weight = (tray.tray_weight ?? '').trim();
+  const spoolGrams = /^\d+$/.test(weight) ? Number(weight) : 0;
   const remaining = tray.remaining_grams;
   const amount =
     remaining != null
