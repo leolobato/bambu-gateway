@@ -452,8 +452,10 @@ async def _start_cloud(app: FastAPI, stack: AsyncExitStack, configs) -> bool:
 
     async def _cloud_keepalive() -> None:
         # OrcaSlicer keeps the secure control channel warm by reissuing
-        # install_device_cert about once per second. Without it, print writes
-        # can bounce with -2 (CONNECT_FAILED).
+        # install_device_cert about once per second for the whole session
+        # (trace: 232 calls in 4.5 min). Without it, print writes can bounce
+        # with -2 (CONNECT_FAILED). This is the real keepalive — pushall is
+        # not; OrcaSlicer sends pushall only a couple of times.
         interval = float(_os.environ.get("BAMBU_CLOUD_KEEPALIVE_SECS", "1"))
         while True:
             await asyncio.sleep(interval)
